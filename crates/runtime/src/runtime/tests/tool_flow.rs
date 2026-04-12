@@ -6,12 +6,12 @@ use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::{Arc, Mutex};
 use store::{InMemorySessionStore, SessionStore};
 use tools::{
-    ApplyPatchTool, EditTool, ExecCommandTool, HOST_FEATURE_HOST_PROCESS_SURFACES, PatchTool,
-    ReadTool, ToolExecutionContext, ToolRegistry, WriteStdinTool, WriteTool,
+    DynamicToolHandler, EditTool, ExecCommandTool, HOST_FEATURE_HOST_PROCESS_SURFACES,
+    PatchFilesTool, ReadTool, ToolExecutionContext, ToolRegistry, WriteStdinTool, WriteTool,
 };
 use types::{
     DynamicToolSpec, ModelEvent, ModelRequest, SessionEventKind, ToolCall, ToolCallId,
-    ToolLifecycleEventEnvelope, ToolLifecycleEventKind, ToolOrigin, ToolSource,
+    ToolFreeformFormat, ToolLifecycleEventEnvelope, ToolLifecycleEventKind, ToolOrigin, ToolSource,
     ToolVisibilityContext,
 };
 
@@ -140,15 +140,14 @@ async fn runtime_sees_dynamic_tools_registered_after_build() {
 }
 
 #[tokio::test]
-async fn runtime_filters_patch_tools_by_provider_surface() {
+async fn runtime_keeps_patch_files_visible_on_openai_gpt5() {
     let store = Arc::new(InMemorySessionStore::new());
     let backend = Arc::new(ProviderRecordingBackend::with_model(
         "openai",
         Some("gpt-5.4"),
     ));
     let mut registry = ToolRegistry::new();
-    registry.register(ApplyPatchTool::new());
-    registry.register(PatchTool::new());
+    registry.register(PatchFilesTool::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
         .hook_runner(Arc::new(HookRunner::default()))
         .tool_registry(registry)
@@ -159,7 +158,7 @@ async fn runtime_filters_patch_tools_by_provider_surface() {
         .into_iter()
         .map(|spec| spec.name.to_string())
         .collect::<Vec<_>>();
-    assert_eq!(tool_names, vec!["apply_patch"]);
+    assert_eq!(tool_names, vec!["patch_files"]);
 
     runtime.run_user_prompt("noop").await.unwrap();
     let requests = backend.requests();
@@ -168,18 +167,18 @@ async fn runtime_filters_patch_tools_by_provider_surface() {
         .iter()
         .map(|spec| spec.name.to_string())
         .collect::<Vec<_>>();
-    assert_eq!(request_tool_names, vec!["apply_patch"]);
+    assert_eq!(request_tool_names, vec!["patch_files"]);
 }
 
 #[tokio::test]
-async fn runtime_filters_apply_patch_by_model_family() {
+async fn runtime_keeps_patch_files_visible_when_freeform_transport_is_unavailable() {
     let store = Arc::new(InMemorySessionStore::new());
     let backend = Arc::new(ProviderRecordingBackend::with_model(
         "openai",
         Some("gpt-4.1-mini"),
     ));
     let mut registry = ToolRegistry::new();
-    registry.register(ApplyPatchTool::new());
+    registry.register(PatchFilesTool::new());
     registry.register(EditTool::new());
     registry.register(WriteTool::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
@@ -192,7 +191,7 @@ async fn runtime_filters_apply_patch_by_model_family() {
         .into_iter()
         .map(|spec| spec.name.to_string())
         .collect::<Vec<_>>();
-    assert_eq!(tool_names, vec!["edit", "write"]);
+    assert_eq!(tool_names, vec!["edit", "patch_files", "write"]);
 
     runtime.run_user_prompt("noop").await.unwrap();
     let requests = backend.requests();
@@ -201,7 +200,44 @@ async fn runtime_filters_apply_patch_by_model_family() {
         .iter()
         .map(|spec| spec.name.to_string())
         .collect::<Vec<_>>();
-    assert_eq!(request_tool_names, vec!["edit", "write"]);
+    assert_eq!(request_tool_names, vec!["edit", "patch_files", "write"]);
+}
+
+#[tokio::test]
+async fn runtime_supports_dynamic_dual_transport_tools() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(ProviderRecordingBackend::with_model(
+        "openai",
+        Some("gpt-5.4"),
+    ));
+    let registry = ToolRegistry::new();
+    let handler: DynamicToolHandler = Arc::new(|call_id, _arguments, _ctx| {
+        Box::pin(async move { Ok(types::ToolResult::text(call_id, "dual_mode_tool", "ok")) })
+    });
+    registry
+        .register_dynamic(
+            DynamicToolSpec::function(
+                "dual_mode_tool",
+                "dual mode",
+                serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            )
+            .with_freeform_format(ToolFreeformFormat::grammar("lark", "start: file"))
+            .with_freeform_availability(types::ToolAvailability {
+                provider_allowlist: vec!["openai".to_string()],
+                model_allowlist: vec!["gpt-5*".to_string()],
+                ..Default::default()
+            }),
+            handler,
+        )
+        .unwrap();
+    let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(backend.clone(), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_registry(registry)
+        .build();
+
+    runtime.run_user_prompt("noop").await.unwrap();
+    let requests = backend.requests();
+    assert_eq!(requests[0].tools[0].name.as_str(), "dual_mode_tool");
 }
 
 #[tokio::test]

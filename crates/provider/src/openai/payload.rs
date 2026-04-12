@@ -1,13 +1,15 @@
 use crate::{
     ProviderError, RequestOptions, Result, data_url, merge_top_level_object,
-    render_instruction_text, stringify_json, tool_result_roundtrip_text, tool_schema,
+    render_instruction_text, stringify_json, tool_result_roundtrip_text, tool_schema_for_transport,
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use types::{
     Message, MessagePart, MessageRole, ModelRequest, ProviderContinuation, ReasoningContent,
-    ToolKind, ToolName, ToolSpec, reference_display_text,
+    ToolName, ToolSpec, ToolVisibilityContext, reference_display_text,
 };
+
+use crate::mapping::ProviderToolTransport;
 
 fn openai_instruction_text(request: &ModelRequest) -> Option<String> {
     let mut frames = request.instructions.clone();
@@ -21,13 +23,21 @@ enum OpenAiToolTransport {
     Custom,
 }
 
-fn openai_tool_transports(tools: &[ToolSpec]) -> BTreeMap<ToolName, OpenAiToolTransport> {
+fn openai_tool_transports_for_model(
+    tools: &[ToolSpec],
+    model: Option<&str>,
+) -> BTreeMap<ToolName, OpenAiToolTransport> {
+    let mut context = ToolVisibilityContext::default().with_provider("openai");
+    if let Some(model) = model {
+        context = context.with_model(model);
+    }
     tools
         .iter()
         .map(|tool| {
-            let transport = match tool.kind {
-                ToolKind::Freeform => OpenAiToolTransport::Custom,
-                _ => OpenAiToolTransport::Function,
+            let transport = if tool.supports_freeform_transport(&context) {
+                OpenAiToolTransport::Custom
+            } else {
+                OpenAiToolTransport::Function
             };
             (tool.name.clone(), transport)
         })
@@ -39,7 +49,7 @@ pub(crate) fn build_openai_realtime_request_event(
     request: ModelRequest,
     request_options: &RequestOptions,
 ) -> Result<Value> {
-    let tool_transports = openai_tool_transports(&request.tools);
+    let tool_transports = openai_tool_transports_for_model(&request.tools, Some(&model));
     let instructions = openai_instruction_text(&request);
     let mut response = Map::new();
     response.insert("model".to_string(), Value::String(model));
@@ -57,10 +67,25 @@ pub(crate) fn build_openai_realtime_request_event(
         response.insert("max_output_tokens".to_string(), json!(max_tokens));
     }
     if !request.tools.is_empty() {
-        response.insert(
-            "tools".to_string(),
-            Value::Array(request.tools.iter().map(tool_schema).collect()),
-        );
+        let tools = request
+            .tools
+            .iter()
+            .map(|tool| {
+                let transport = tool_transports
+                    .get(&tool.name)
+                    .copied()
+                    .unwrap_or(OpenAiToolTransport::Function);
+                match transport {
+                    OpenAiToolTransport::Function => {
+                        tool_schema_for_transport(tool, ProviderToolTransport::Function)
+                    }
+                    OpenAiToolTransport::Custom => {
+                        tool_schema_for_transport(tool, ProviderToolTransport::Freeform)
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        response.insert("tools".to_string(), Value::Array(tools));
     }
     let input = serialize_openai_input_items(&request.messages, &tool_transports)?;
     if !input.is_empty() {
@@ -83,7 +108,7 @@ pub(crate) fn build_openai_responses_body(
     request: ModelRequest,
     request_options: &RequestOptions,
 ) -> Result<Value> {
-    let tool_transports = openai_tool_transports(&request.tools);
+    let tool_transports = openai_tool_transports_for_model(&request.tools, Some(&model));
     let instructions = openai_instruction_text(&request);
     let mut object = Map::new();
     object.insert("model".to_string(), Value::String(model));
@@ -106,8 +131,19 @@ pub(crate) fn build_openai_responses_body(
             .tools
             .iter()
             .map(|tool| {
-                let mut schema = tool_schema(tool);
-                if matches!(tool.kind, ToolKind::Function)
+                let transport = tool_transports
+                    .get(&tool.name)
+                    .copied()
+                    .unwrap_or(OpenAiToolTransport::Function);
+                let mut schema = match transport {
+                    OpenAiToolTransport::Function => {
+                        tool_schema_for_transport(tool, ProviderToolTransport::Function)
+                    }
+                    OpenAiToolTransport::Custom => {
+                        tool_schema_for_transport(tool, ProviderToolTransport::Freeform)
+                    }
+                };
+                if matches!(transport, OpenAiToolTransport::Function)
                     && let Some(object) = schema.as_object_mut()
                 {
                     // Responses defaults function tools to strict mode. Our shared

@@ -12,7 +12,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use types::{MessagePart, ToolAvailability, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 const DEFAULT_RESULT_LIMIT: usize = 32;
 const MAX_RESULT_LIMIT: usize = 200;
@@ -69,74 +69,6 @@ pub struct CodeNavInput {
     pub include_declaration: Option<bool>,
     #[serde(default)]
     pub direction: Option<CodeCallHierarchyDirection>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct CodeDefinitionsInput {
-    #[serde(default)]
-    pub symbol: Option<String>,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub line: Option<usize>,
-    #[serde(default)]
-    pub column: Option<usize>,
-    pub limit: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct CodeReferencesInput {
-    #[serde(default)]
-    pub symbol: Option<String>,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub line: Option<usize>,
-    #[serde(default)]
-    pub column: Option<usize>,
-    pub limit: Option<usize>,
-    #[serde(default)]
-    pub include_declaration: Option<bool>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct CodeHoverInput {
-    #[serde(default)]
-    pub symbol: Option<String>,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub line: Option<usize>,
-    #[serde(default)]
-    pub column: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct CodeImplementationsInput {
-    #[serde(default)]
-    pub symbol: Option<String>,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub line: Option<usize>,
-    #[serde(default)]
-    pub column: Option<usize>,
-    pub limit: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct CodeCallHierarchyInput {
-    #[serde(default)]
-    pub symbol: Option<String>,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub line: Option<usize>,
-    #[serde(default)]
-    pub column: Option<usize>,
-    #[serde(default)]
-    pub direction: Option<CodeCallHierarchyDirection>,
-    pub limit: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -199,52 +131,6 @@ pub enum CodeNavToolOutput {
     },
 }
 
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-struct CodeDefinitionsToolOutput {
-    symbol: String,
-    limit: usize,
-    backend: String,
-    result_count: usize,
-    definitions: Vec<CodeSymbol>,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-struct CodeReferencesToolOutput {
-    symbol: String,
-    limit: usize,
-    include_declaration: bool,
-    backend: String,
-    result_count: usize,
-    references: Vec<CodeReference>,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-struct CodeHoverToolOutput {
-    target: String,
-    backend: String,
-    found: bool,
-    hover: Option<CodeHover>,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-struct CodeImplementationsToolOutput {
-    target: String,
-    limit: usize,
-    backend: String,
-    result_count: usize,
-    implementations: Vec<CodeSymbol>,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-struct CodeCallHierarchyToolOutput {
-    target: String,
-    direction: CodeCallHierarchyDirection,
-    limit: usize,
-    backend: String,
-    result_count: usize,
-    calls: Vec<CodeCallHierarchyEntry>,
-}
-
 #[derive(Clone)]
 pub struct CodeSymbolSearchTool {
     backend: Arc<dyn CodeIntelBackend>,
@@ -257,31 +143,6 @@ pub struct CodeDocumentSymbolsTool {
 
 #[derive(Clone)]
 pub struct CodeNavTool {
-    backend: Arc<dyn CodeIntelBackend>,
-}
-
-#[derive(Clone)]
-pub struct CodeDefinitionsTool {
-    backend: Arc<dyn CodeIntelBackend>,
-}
-
-#[derive(Clone)]
-pub struct CodeReferencesTool {
-    backend: Arc<dyn CodeIntelBackend>,
-}
-
-#[derive(Clone)]
-pub struct CodeHoverTool {
-    backend: Arc<dyn CodeIntelBackend>,
-}
-
-#[derive(Clone)]
-pub struct CodeImplementationsTool {
-    backend: Arc<dyn CodeIntelBackend>,
-}
-
-#[derive(Clone)]
-pub struct CodeCallHierarchyTool {
     backend: Arc<dyn CodeIntelBackend>,
 }
 
@@ -298,36 +159,6 @@ impl Default for CodeDocumentSymbolsTool {
 }
 
 impl Default for CodeNavTool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Default for CodeDefinitionsTool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Default for CodeReferencesTool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Default for CodeHoverTool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Default for CodeImplementationsTool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Default for CodeCallHierarchyTool {
     fn default() -> Self {
         Self::new()
     }
@@ -358,66 +189,6 @@ impl CodeDocumentSymbolsTool {
 }
 
 impl CodeNavTool {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
-    }
-
-    #[must_use]
-    pub fn with_backend(backend: Arc<dyn CodeIntelBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-impl CodeDefinitionsTool {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
-    }
-
-    #[must_use]
-    pub fn with_backend(backend: Arc<dyn CodeIntelBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-impl CodeReferencesTool {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
-    }
-
-    #[must_use]
-    pub fn with_backend(backend: Arc<dyn CodeIntelBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-impl CodeHoverTool {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
-    }
-
-    #[must_use]
-    pub fn with_backend(backend: Arc<dyn CodeIntelBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-impl CodeImplementationsTool {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
-    }
-
-    #[must_use]
-    pub fn with_backend(backend: Arc<dyn CodeIntelBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-impl CodeCallHierarchyTool {
     #[must_use]
     pub fn new() -> Self {
         Self::with_backend(Arc::new(WorkspaceTextCodeIntelBackend::new()))
@@ -744,72 +515,6 @@ impl CodeNavExecution {
             },
         }
     }
-
-    fn definitions_output(&self) -> CodeDefinitionsToolOutput {
-        let CodeNavExecutionData::Definitions(symbols) = &self.data else {
-            panic!("expected definitions execution data");
-        };
-        CodeDefinitionsToolOutput {
-            symbol: self.target_label(),
-            limit: self.request.limit,
-            backend: self.backend.clone(),
-            result_count: symbols.len(),
-            definitions: symbols.clone(),
-        }
-    }
-
-    fn references_output(&self) -> CodeReferencesToolOutput {
-        let CodeNavExecutionData::References(references) = &self.data else {
-            panic!("expected references execution data");
-        };
-        CodeReferencesToolOutput {
-            symbol: self.target_label(),
-            limit: self.request.limit,
-            include_declaration: self.request.include_declaration,
-            backend: self.backend.clone(),
-            result_count: references.len(),
-            references: references.clone(),
-        }
-    }
-
-    fn hover_output(&self) -> CodeHoverToolOutput {
-        let CodeNavExecutionData::Hover(hover) = &self.data else {
-            panic!("expected hover execution data");
-        };
-        CodeHoverToolOutput {
-            target: self.target_label(),
-            backend: self.backend.clone(),
-            found: hover.is_some(),
-            hover: hover.clone(),
-        }
-    }
-
-    fn implementations_output(&self) -> CodeImplementationsToolOutput {
-        let CodeNavExecutionData::Implementations(symbols) = &self.data else {
-            panic!("expected implementations execution data");
-        };
-        CodeImplementationsToolOutput {
-            target: self.target_label(),
-            limit: self.request.limit,
-            backend: self.backend.clone(),
-            result_count: symbols.len(),
-            implementations: symbols.clone(),
-        }
-    }
-
-    fn call_hierarchy_output(&self) -> CodeCallHierarchyToolOutput {
-        let CodeNavExecutionData::CallHierarchy(calls) = &self.data else {
-            panic!("expected call hierarchy execution data");
-        };
-        CodeCallHierarchyToolOutput {
-            target: self.target_label(),
-            direction: self.request.direction,
-            limit: self.request.limit,
-            backend: self.backend.clone(),
-            result_count: calls.len(),
-            calls: calls.clone(),
-        }
-    }
 }
 
 fn build_text_tool_result<T: Serialize>(
@@ -872,86 +577,6 @@ impl CodeNavInput {
             self.column,
             self.limit,
             self.include_declaration,
-            self.direction,
-            ctx,
-        )
-    }
-}
-
-impl CodeDefinitionsInput {
-    fn into_request(self, ctx: &ToolExecutionContext) -> Result<CodeNavRequest> {
-        CodeNavRequest::new(
-            CodeNavOperation::Definitions,
-            self.symbol,
-            self.path,
-            self.line,
-            self.column,
-            self.limit,
-            None,
-            None,
-            ctx,
-        )
-    }
-}
-
-impl CodeReferencesInput {
-    fn into_request(self, ctx: &ToolExecutionContext) -> Result<CodeNavRequest> {
-        CodeNavRequest::new(
-            CodeNavOperation::References,
-            self.symbol,
-            self.path,
-            self.line,
-            self.column,
-            self.limit,
-            self.include_declaration,
-            None,
-            ctx,
-        )
-    }
-}
-
-impl CodeHoverInput {
-    fn into_request(self, ctx: &ToolExecutionContext) -> Result<CodeNavRequest> {
-        CodeNavRequest::new(
-            CodeNavOperation::Hover,
-            self.symbol,
-            self.path,
-            self.line,
-            self.column,
-            None,
-            None,
-            None,
-            ctx,
-        )
-    }
-}
-
-impl CodeImplementationsInput {
-    fn into_request(self, ctx: &ToolExecutionContext) -> Result<CodeNavRequest> {
-        CodeNavRequest::new(
-            CodeNavOperation::Implementations,
-            self.symbol,
-            self.path,
-            self.line,
-            self.column,
-            self.limit,
-            None,
-            None,
-            ctx,
-        )
-    }
-}
-
-impl CodeCallHierarchyInput {
-    fn into_request(self, ctx: &ToolExecutionContext) -> Result<CodeNavRequest> {
-        CodeNavRequest::new(
-            CodeNavOperation::CallHierarchy,
-            self.symbol,
-            self.path,
-            self.line,
-            self.column,
-            self.limit,
-            None,
             self.direction,
             ctx,
         )
@@ -1032,215 +657,6 @@ impl Tool for CodeNavTool {
             "code_nav",
             execution.text_for_tool("code_nav"),
             execution.canonical_output(),
-            execution.metadata(),
-        ))
-    }
-}
-
-#[async_trait]
-impl Tool for CodeDefinitionsTool {
-    fn spec(&self) -> ToolSpec {
-        builtin_tool_spec(
-            "code_definitions",
-            "Resolve declaration locations either from a symbol name or from a file position (`path` + `line` + optional `column`) for semantic backends such as LSP.",
-            serde_json::to_value(schema_for!(CodeDefinitionsInput))
-                .expect("code_definitions schema"),
-            ToolOutputMode::Text,
-            tool_approval_profile(true, false, true, false),
-        )
-        .with_availability(ToolAvailability {
-            hidden_from_model: true,
-            ..Default::default()
-        })
-        .with_output_schema(
-            serde_json::to_value(schema_for!(CodeDefinitionsToolOutput))
-                .expect("code_definitions output schema"),
-        )
-    }
-
-    async fn execute(
-        &self,
-        call_id: ToolCallId,
-        arguments: Value,
-        ctx: &ToolExecutionContext,
-    ) -> Result<ToolResult> {
-        let external_call_id = types::CallId::from(&call_id);
-        let input: CodeDefinitionsInput = serde_json::from_value(arguments)?;
-        let execution =
-            execute_code_nav_request(self.backend.as_ref(), input.into_request(ctx)?, ctx).await?;
-        Ok(build_text_tool_result(
-            call_id,
-            external_call_id,
-            "code_definitions",
-            execution.text_for_tool("code_definitions"),
-            execution.definitions_output(),
-            execution.metadata(),
-        ))
-    }
-}
-
-#[async_trait]
-impl Tool for CodeReferencesTool {
-    fn spec(&self) -> ToolSpec {
-        builtin_tool_spec(
-            "code_references",
-            "Find symbol references either from a symbol name or from a file position (`path` + `line` + optional `column`). Semantic backends use the position form for true LSP references.",
-            serde_json::to_value(schema_for!(CodeReferencesInput))
-                .expect("code_references schema"),
-            ToolOutputMode::Text,
-            tool_approval_profile(true, false, true, false),
-        )
-        .with_availability(ToolAvailability {
-            hidden_from_model: true,
-            ..Default::default()
-        })
-        .with_output_schema(
-            serde_json::to_value(schema_for!(CodeReferencesToolOutput))
-                .expect("code_references output schema"),
-        )
-    }
-
-    async fn execute(
-        &self,
-        call_id: ToolCallId,
-        arguments: Value,
-        ctx: &ToolExecutionContext,
-    ) -> Result<ToolResult> {
-        let external_call_id = types::CallId::from(&call_id);
-        let input: CodeReferencesInput = serde_json::from_value(arguments)?;
-        let execution =
-            execute_code_nav_request(self.backend.as_ref(), input.into_request(ctx)?, ctx).await?;
-        Ok(build_text_tool_result(
-            call_id,
-            external_call_id,
-            "code_references",
-            execution.text_for_tool("code_references"),
-            execution.references_output(),
-            execution.metadata(),
-        ))
-    }
-}
-
-#[async_trait]
-impl Tool for CodeHoverTool {
-    fn spec(&self) -> ToolSpec {
-        builtin_tool_spec(
-            "code_hover",
-            "Read semantic hover information for a symbol or a source position. Position queries (`path` + `line` + optional `column`) are the most precise form.",
-            serde_json::to_value(schema_for!(CodeHoverInput)).expect("code_hover schema"),
-            ToolOutputMode::Text,
-            tool_approval_profile(true, false, true, false),
-        )
-        .with_availability(ToolAvailability {
-            hidden_from_model: true,
-            ..Default::default()
-        })
-        .with_output_schema(
-            serde_json::to_value(schema_for!(CodeHoverToolOutput))
-                .expect("code_hover output schema"),
-        )
-    }
-
-    async fn execute(
-        &self,
-        call_id: ToolCallId,
-        arguments: Value,
-        ctx: &ToolExecutionContext,
-    ) -> Result<ToolResult> {
-        let external_call_id = types::CallId::from(&call_id);
-        let input: CodeHoverInput = serde_json::from_value(arguments)?;
-        let execution =
-            execute_code_nav_request(self.backend.as_ref(), input.into_request(ctx)?, ctx).await?;
-        Ok(build_text_tool_result(
-            call_id,
-            external_call_id,
-            "code_hover",
-            execution.text_for_tool("code_hover"),
-            execution.hover_output(),
-            execution.metadata(),
-        ))
-    }
-}
-
-#[async_trait]
-impl Tool for CodeImplementationsTool {
-    fn spec(&self) -> ToolSpec {
-        builtin_tool_spec(
-            "code_implementations",
-            "Resolve semantic implementation sites for a symbol or source position. This is useful for traits, interfaces, abstract members, and polymorphic entry points.",
-            serde_json::to_value(schema_for!(CodeImplementationsInput))
-                .expect("code_implementations schema"),
-            ToolOutputMode::Text,
-            tool_approval_profile(true, false, true, false),
-        )
-        .with_availability(ToolAvailability {
-            hidden_from_model: true,
-            ..Default::default()
-        })
-        .with_output_schema(
-            serde_json::to_value(schema_for!(CodeImplementationsToolOutput))
-                .expect("code_implementations output schema"),
-        )
-    }
-
-    async fn execute(
-        &self,
-        call_id: ToolCallId,
-        arguments: Value,
-        ctx: &ToolExecutionContext,
-    ) -> Result<ToolResult> {
-        let external_call_id = types::CallId::from(&call_id);
-        let input: CodeImplementationsInput = serde_json::from_value(arguments)?;
-        let execution =
-            execute_code_nav_request(self.backend.as_ref(), input.into_request(ctx)?, ctx).await?;
-        Ok(build_text_tool_result(
-            call_id,
-            external_call_id,
-            "code_implementations",
-            execution.text_for_tool("code_implementations"),
-            execution.implementations_output(),
-            execution.metadata(),
-        ))
-    }
-}
-
-#[async_trait]
-impl Tool for CodeCallHierarchyTool {
-    fn spec(&self) -> ToolSpec {
-        builtin_tool_spec(
-            "code_call_hierarchy",
-            "Inspect incoming or outgoing semantic call edges for a symbol or source position. Position queries are the most reliable form for LSP-backed workspaces.",
-            serde_json::to_value(schema_for!(CodeCallHierarchyInput))
-                .expect("code_call_hierarchy schema"),
-            ToolOutputMode::Text,
-            tool_approval_profile(true, false, true, false),
-        )
-        .with_availability(ToolAvailability {
-            hidden_from_model: true,
-            ..Default::default()
-        })
-        .with_output_schema(
-            serde_json::to_value(schema_for!(CodeCallHierarchyToolOutput))
-                .expect("code_call_hierarchy output schema"),
-        )
-    }
-
-    async fn execute(
-        &self,
-        call_id: ToolCallId,
-        arguments: Value,
-        ctx: &ToolExecutionContext,
-    ) -> Result<ToolResult> {
-        let external_call_id = types::CallId::from(&call_id);
-        let input: CodeCallHierarchyInput = serde_json::from_value(arguments)?;
-        let execution =
-            execute_code_nav_request(self.backend.as_ref(), input.into_request(ctx)?, ctx).await?;
-        Ok(build_text_tool_result(
-            call_id,
-            external_call_id,
-            "code_call_hierarchy",
-            execution.text_for_tool("code_call_hierarchy"),
-            execution.call_hierarchy_output(),
             execution.metadata(),
         ))
     }
@@ -1537,10 +953,7 @@ fn call_hierarchy_to_json(call: &CodeCallHierarchyEntry) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CodeCallHierarchyTool, CodeDefinitionsTool, CodeDocumentSymbolsTool, CodeHoverTool,
-        CodeImplementationsTool, CodeNavTool, CodeReferencesTool, CodeSymbolSearchTool, Tool,
-    };
+    use super::{CodeDocumentSymbolsTool, CodeNavTool, CodeSymbolSearchTool, Tool};
     use crate::Result;
     use crate::ToolExecutionContext;
     use crate::code_intel::{
@@ -1747,23 +1160,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn definitions_and_references_tools_emit_expected_headers() {
+    async fn code_nav_returns_definitions_and_references_from_canonical_surface() {
         let dir = tempfile::tempdir().unwrap();
         let backend = Arc::new(StubBackend);
-        let definitions = CodeDefinitionsTool::with_backend(backend.clone())
+        let definitions = CodeNavTool::with_backend(backend.clone())
             .execute(
                 ToolCallId::new(),
                 json!({
+                    "operation": "definitions",
                     "symbol": "Engine"
                 }),
                 &context(dir.path()),
             )
             .await
             .unwrap();
-        let references = CodeReferencesTool::with_backend(backend)
+        let references = CodeNavTool::with_backend(backend)
             .execute(
                 ToolCallId::new(),
                 json!({
+                    "operation": "references",
                     "symbol": "Engine",
                     "include_declaration": true
                 }),
@@ -1772,12 +1187,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(definitions.text_content().contains("[code_definitions"));
-        assert!(references.text_content().contains("[code_references"));
+        assert!(definitions.text_content().contains("[code_nav"));
+        assert!(references.text_content().contains("[code_nav"));
         assert!(references.text_content().contains("[definition]"));
         let definitions_structured = definitions.structured_content.unwrap();
+        assert_eq!(definitions_structured["operation"], "definitions");
         assert_eq!(definitions_structured["definitions"][0]["name"], "Engine");
         let references_structured = references.structured_content.unwrap();
+        assert_eq!(references_structured["operation"], "references");
         assert_eq!(references_structured["include_declaration"], true);
         assert_eq!(
             references_structured["references"]
@@ -1789,16 +1206,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn definitions_tool_accepts_position_queries() {
+    async fn code_nav_accepts_position_queries() {
         let dir = tempfile::tempdir().unwrap();
         let sample = dir.path().join("src/lib.rs");
         std::fs::create_dir_all(sample.parent().unwrap()).unwrap();
         std::fs::write(&sample, "pub struct Engine;\n").unwrap();
 
-        let result = CodeDefinitionsTool::with_backend(Arc::new(StubBackend))
+        let result = CodeNavTool::with_backend(Arc::new(StubBackend))
             .execute(
                 ToolCallId::new(),
                 json!({
+                    "operation": "definitions",
                     "path": "src/lib.rs",
                     "line": 1,
                     "column": 12
@@ -1813,33 +1231,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hover_implementations_and_call_hierarchy_emit_expected_shapes() {
+    async fn code_nav_returns_hover_implementations_and_call_hierarchy() {
         let dir = tempfile::tempdir().unwrap();
         let backend = Arc::new(StubBackend);
-        let hover = CodeHoverTool::with_backend(backend.clone())
+        let hover = CodeNavTool::with_backend(backend.clone())
             .execute(
                 ToolCallId::new(),
                 json!({
+                    "operation": "hover",
                     "symbol": "Engine"
                 }),
                 &context(dir.path()),
             )
             .await
             .unwrap();
-        let implementations = CodeImplementationsTool::with_backend(backend.clone())
+        let implementations = CodeNavTool::with_backend(backend.clone())
             .execute(
                 ToolCallId::new(),
                 json!({
+                    "operation": "implementations",
                     "symbol": "Engine"
                 }),
                 &context(dir.path()),
             )
             .await
             .unwrap();
-        let call_hierarchy = CodeCallHierarchyTool::with_backend(backend)
+        let call_hierarchy = CodeNavTool::with_backend(backend)
             .execute(
                 ToolCallId::new(),
                 json!({
+                    "operation": "call_hierarchy",
                     "symbol": "Engine",
                     "direction": "incoming"
                 }),
@@ -1848,25 +1269,25 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(hover.text_content().contains("[code_hover"));
+        assert!(hover.text_content().contains("[code_nav"));
         assert!(hover.text_content().contains("Primary runtime handle."));
+        assert_eq!(
+            hover.structured_content.as_ref().unwrap()["operation"],
+            "hover"
+        );
         assert_eq!(hover.structured_content.as_ref().unwrap()["found"], true);
 
-        assert!(
-            implementations
-                .text_content()
-                .contains("[code_implementations")
-        );
+        assert!(implementations.text_content().contains("[code_nav"));
         assert_eq!(
             implementations.structured_content.as_ref().unwrap()["implementations"][0]["name"],
             "EngineImpl"
         );
-
-        assert!(
-            call_hierarchy
-                .text_content()
-                .contains("[code_call_hierarchy")
+        assert_eq!(
+            implementations.structured_content.as_ref().unwrap()["operation"],
+            "implementations"
         );
+
+        assert!(call_hierarchy.text_content().contains("[code_nav"));
         assert_eq!(
             call_hierarchy.structured_content.as_ref().unwrap()["direction"],
             "incoming"
@@ -1937,40 +1358,6 @@ mod tests {
         assert_eq!(
             call_hierarchy.structured_content.as_ref().unwrap()["direction"],
             "incoming"
-        );
-    }
-
-    #[test]
-    fn legacy_navigation_wrappers_stay_hidden_from_model_surface() {
-        assert!(
-            CodeNavTool::new()
-                .spec()
-                .is_model_visible_for_provider("openai")
-        );
-        assert!(
-            !CodeDefinitionsTool::new()
-                .spec()
-                .is_model_visible_for_provider("openai")
-        );
-        assert!(
-            !CodeReferencesTool::new()
-                .spec()
-                .is_model_visible_for_provider("openai")
-        );
-        assert!(
-            !CodeHoverTool::new()
-                .spec()
-                .is_model_visible_for_provider("openai")
-        );
-        assert!(
-            !CodeImplementationsTool::new()
-                .spec()
-                .is_model_visible_for_provider("openai")
-        );
-        assert!(
-            !CodeCallHierarchyTool::new()
-                .spec()
-                .is_model_visible_for_provider("openai")
         );
     }
 }

@@ -777,25 +777,65 @@ mod tests {
     }
 
     #[test]
-    fn openai_responses_body_serializes_freeform_tools_as_custom_tools() {
+    fn openai_responses_body_projects_dual_transport_patch_files_as_custom_tools_on_gpt5() {
         let mut request = base_request();
-        request.tools.push(ToolSpec::freeform(
-            "apply_patch",
-            "Apply a patch",
-            ToolFreeformFormat::grammar("lark", "start: begin_patch"),
-            ToolOutputMode::Text,
-            ToolOrigin::Local,
-            types::ToolSource::Builtin,
-        ));
+        request.tools.push(
+            ToolSpec::function(
+                "patch_files",
+                "Apply staged patch files",
+                json!({"type":"object","properties":{"operations":{"type":"array"}}}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                types::ToolSource::Builtin,
+            )
+            .with_freeform_format(ToolFreeformFormat::grammar("lark", "start: begin_patch"))
+            .with_freeform_availability(types::ToolAvailability {
+                provider_allowlist: vec!["openai".to_string()],
+                model_allowlist: vec!["gpt-5*".to_string()],
+                ..Default::default()
+            }),
+        );
 
         let body =
             build_openai_responses_body("gpt-5.4".to_string(), request, &RequestOptions::default())
                 .unwrap();
 
         assert_eq!(body["tools"][0]["type"], json!("custom"));
-        assert_eq!(body["tools"][0]["name"], json!("apply_patch"));
+        assert_eq!(body["tools"][0]["name"], json!("patch_files"));
         assert_eq!(body["tools"][0]["format"]["type"], json!("grammar"));
         assert!(body["tools"][0].get("strict").is_none());
+    }
+
+    #[test]
+    fn openai_responses_body_projects_dual_transport_patch_files_as_function_on_non_gpt5() {
+        let mut request = base_request();
+        request.tools.push(
+            ToolSpec::function(
+                "patch_files",
+                "Apply staged patch files",
+                json!({"type":"object","properties":{"operations":{"type":"array"}}}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                types::ToolSource::Builtin,
+            )
+            .with_freeform_format(ToolFreeformFormat::grammar("lark", "start: begin_patch"))
+            .with_freeform_availability(types::ToolAvailability {
+                provider_allowlist: vec!["openai".to_string()],
+                model_allowlist: vec!["gpt-5*".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        let body = build_openai_responses_body(
+            "gpt-4.1-mini".to_string(),
+            request,
+            &RequestOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(body["tools"][0]["type"], json!("function"));
+        assert_eq!(body["tools"][0]["name"], json!("patch_files"));
+        assert_eq!(body["tools"][0]["strict"], json!(false));
     }
 
     #[test]
@@ -892,20 +932,28 @@ mod tests {
     }
 
     #[test]
-    fn openai_responses_body_replays_freeform_tool_items_as_custom_calls() {
+    fn openai_responses_body_replays_patch_files_freeform_calls_as_custom_calls() {
         let mut request = base_request();
-        request.tools.push(ToolSpec::freeform(
-            "apply_patch",
-            "Apply a patch",
-            ToolFreeformFormat::grammar("lark", "start: begin_patch"),
-            ToolOutputMode::Text,
-            ToolOrigin::Local,
-            types::ToolSource::Builtin,
-        ));
+        request.tools.push(
+            ToolSpec::function(
+                "patch_files",
+                "Apply staged patch files",
+                json!({"type":"object","properties":{"operations":{"type":"array"}}}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                types::ToolSource::Builtin,
+            )
+            .with_freeform_format(ToolFreeformFormat::grammar("lark", "start: begin_patch"))
+            .with_freeform_availability(types::ToolAvailability {
+                provider_allowlist: vec!["openai".to_string()],
+                model_allowlist: vec!["gpt-5*".to_string()],
+                ..Default::default()
+            }),
+        );
         let call = ToolCall {
             id: ToolCallId::from("fc_123"),
             call_id: CallId::from("call_123"),
-            tool_name: ToolName::from("apply_patch"),
+            tool_name: ToolName::from("patch_files"),
             arguments: Value::String("*** Begin Patch\n*** End Patch".to_string()),
             origin: ToolOrigin::Local,
         };
@@ -913,7 +961,7 @@ mod tests {
             Message::user("apply the patch"),
             Message::assistant_parts(vec![MessagePart::ToolCall { call }]),
             Message::tool_result(
-                ToolResult::text("fc_123".into(), "apply_patch", "ok").with_call_id("call_123"),
+                ToolResult::text("fc_123".into(), "patch_files", "ok").with_call_id("call_123"),
             ),
         ];
 
@@ -923,7 +971,7 @@ mod tests {
 
         assert_eq!(body["input"][1]["type"], json!("custom_tool_call"));
         assert_eq!(body["input"][1]["call_id"], json!("call_123"));
-        assert_eq!(body["input"][1]["name"], json!("apply_patch"));
+        assert_eq!(body["input"][1]["name"], json!("patch_files"));
         assert_eq!(
             body["input"][1]["input"],
             json!("*** Begin Patch\n*** End Patch")
@@ -1077,6 +1125,41 @@ mod tests {
             Some(&Value::String(
                 "You are a coding agent.\n\nhook additional context".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn realtime_request_event_projects_dual_transport_patch_files_as_custom_tools_on_gpt5() {
+        let mut request = base_request();
+        request.tools.push(
+            ToolSpec::function(
+                "patch_files",
+                "Apply staged patch files",
+                json!({"type":"object","properties":{"operations":{"type":"array"}}}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                types::ToolSource::Builtin,
+            )
+            .with_freeform_format(ToolFreeformFormat::grammar("lark", "start: begin_patch"))
+            .with_freeform_availability(types::ToolAvailability {
+                provider_allowlist: vec!["openai".to_string()],
+                model_allowlist: vec!["gpt-5*".to_string()],
+                ..Default::default()
+            }),
+        );
+
+        let event = build_openai_realtime_request_event(
+            "gpt-5.4".to_string(),
+            request,
+            &RequestOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(event["response"]["tools"][0]["type"], json!("custom"));
+        assert_eq!(event["response"]["tools"][0]["name"], json!("patch_files"));
+        assert_eq!(
+            event["response"]["tools"][0]["format"]["type"],
+            json!("grammar")
         );
     }
 

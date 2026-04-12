@@ -5,6 +5,12 @@ use types::{
     MessagePart, ReasoningContent, ToolKind, ToolResult, ToolSpec, reference_display_text,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderToolTransport {
+    Function,
+    Freeform,
+}
+
 #[must_use]
 pub fn coerce_object_schema(schema: &Value) -> Value {
     // OpenAI Responses is noticeably less tolerant than the broader JSON Schema
@@ -488,8 +494,20 @@ pub fn tool_result_roundtrip_text(result: &ToolResult) -> String {
 
 #[must_use]
 pub fn tool_schema(spec: &ToolSpec) -> Value {
-    match spec.kind {
-        ToolKind::Function => {
+    let transport = match spec.kind {
+        ToolKind::Freeform => ProviderToolTransport::Freeform,
+        ToolKind::Function => ProviderToolTransport::Function,
+        ToolKind::Native => {
+            panic!("native tools are host control surfaces and must not be exposed to providers")
+        }
+    };
+    tool_schema_for_transport(spec, transport)
+}
+
+#[must_use]
+pub fn tool_schema_for_transport(spec: &ToolSpec, transport: ProviderToolTransport) -> Value {
+    match transport {
+        ProviderToolTransport::Function => {
             let input_schema = spec
                 .input_schema
                 .as_ref()
@@ -501,7 +519,7 @@ pub fn tool_schema(spec: &ToolSpec) -> Value {
                 "parameters": coerce_object_schema(input_schema),
             })
         }
-        ToolKind::Freeform => {
+        ProviderToolTransport::Freeform => {
             let format = spec
                 .freeform_format
                 .as_ref()
@@ -513,15 +531,15 @@ pub fn tool_schema(spec: &ToolSpec) -> Value {
                 "format": serde_json::to_value(format).expect("freeform format"),
             })
         }
-        ToolKind::Native => {
-            panic!("native tools are host control surfaces and must not be exposed to providers")
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{coerce_object_schema, message_part_text, tool_result_roundtrip_text, tool_schema};
+    use super::{
+        ProviderToolTransport, coerce_object_schema, message_part_text, tool_result_roundtrip_text,
+        tool_schema, tool_schema_for_transport,
+    };
     use serde_json::json;
     use types::{
         MessagePart, ToolAttachment, ToolContinuation, ToolFreeformFormat, ToolOrigin,
@@ -704,8 +722,8 @@ mod tests {
     #[test]
     fn tool_schema_emits_openai_custom_tools_for_freeform_specs() {
         let spec = ToolSpec::freeform(
-            "apply_patch",
-            "Apply a patch",
+            "custom_diff",
+            "Apply a diff",
             ToolFreeformFormat::grammar("lark", "start: \"*** Begin Patch\""),
             ToolOutputMode::Text,
             ToolOrigin::Local,
@@ -715,9 +733,28 @@ mod tests {
         let definition = tool_schema(&spec);
 
         assert_eq!(definition["type"], json!("custom"));
-        assert_eq!(definition["name"], json!("apply_patch"));
+        assert_eq!(definition["name"], json!("custom_diff"));
         assert_eq!(definition["format"]["type"], json!("grammar"));
         assert_eq!(definition["format"]["syntax"], json!("lark"));
+    }
+
+    #[test]
+    fn tool_schema_can_project_function_tools_as_freeform_when_requested() {
+        let spec = ToolSpec::function(
+            "patch_files",
+            "Apply patch files",
+            json!({"type":"object","properties":{"operations":{"type":"array"}}}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
+        .with_freeform_format(ToolFreeformFormat::grammar("lark", "start: patch"));
+
+        let definition = tool_schema_for_transport(&spec, ProviderToolTransport::Freeform);
+
+        assert_eq!(definition["type"], json!("custom"));
+        assert_eq!(definition["name"], json!("patch_files"));
+        assert_eq!(definition["format"]["type"], json!("grammar"));
     }
 
     #[test]

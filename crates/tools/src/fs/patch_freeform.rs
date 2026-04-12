@@ -1,31 +1,15 @@
 use crate::ToolExecutionContext;
-use crate::annotations::tool_approval_profile;
-use crate::file_activity::FileActivityObserver;
-use crate::fs::patch::{PatchOperation, PatchToolOutput, execute_patch_operations};
+use crate::fs::patch::PatchOperation;
 use crate::fs::{
     WriteExistingBehavior, WriteMissingBehavior, load_optional_text_file,
     resolve_tool_path_against_workspace_root, stable_text_hash,
 };
-use crate::registry::Tool;
 use crate::{Result, ToolError};
-use async_trait::async_trait;
-use schemars::schema_for;
-use serde_json::Value;
-use std::sync::Arc;
-use types::{
-    ToolAvailability, ToolCallId, ToolFreeformFormat, ToolOrigin, ToolOutputMode, ToolSource,
-    ToolSpec,
-};
 
-const APPLY_PATCH_LARK_GRAMMAR: &str = include_str!("tool_apply_patch.lark");
-
-#[derive(Clone, Default)]
-pub struct ApplyPatchTool {
-    activity_observer: Option<Arc<dyn FileActivityObserver>>,
-}
+pub(crate) const PATCH_FILES_FREEFORM_LARK_GRAMMAR: &str = include_str!("patch_files.lark");
 
 #[derive(Clone, Debug)]
-enum ApplyPatchHunk {
+enum PatchHunk {
     Add {
         path: String,
         contents: String,
@@ -48,82 +32,33 @@ struct UpdateChunk {
     is_end_of_file: bool,
 }
 
-impl ApplyPatchTool {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            activity_observer: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_file_activity_observer(activity_observer: Arc<dyn FileActivityObserver>) -> Self {
-        Self {
-            activity_observer: Some(activity_observer),
-        }
-    }
+pub(crate) async fn parse_patch_files_operations(
+    patch_text: &str,
+    ctx: &ToolExecutionContext,
+) -> Result<Vec<PatchOperation>> {
+    let hunks = parse_patch_files(patch_text)?;
+    build_patch_operations(&hunks, ctx).await
 }
 
-#[async_trait]
-impl Tool for ApplyPatchTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec::freeform(
-            "apply_patch",
-            "Apply a multi-file patch described with the apply_patch grammar. Prefer this tool for cohesive edits when the provider supports freeform tools.",
-            ToolFreeformFormat::grammar("lark", APPLY_PATCH_LARK_GRAMMAR),
-            ToolOutputMode::Text,
-            ToolOrigin::Local,
-            ToolSource::Builtin,
-        )
-        .with_output_schema(
-            serde_json::to_value(schema_for!(PatchToolOutput)).expect("apply_patch output schema"),
-        )
-        .with_approval(tool_approval_profile(false, true, true, false))
-        .with_availability(ToolAvailability {
-            hidden_from_model: true,
-            provider_allowlist: vec!["openai".to_string()],
-            model_allowlist: vec!["gpt-5*".to_string()],
-            ..ToolAvailability::default()
-        })
-    }
-
-    async fn execute(
-        &self,
-        call_id: ToolCallId,
-        arguments: Value,
-        ctx: &ToolExecutionContext,
-    ) -> Result<types::ToolResult> {
-        let patch_text = arguments
-            .as_str()
-            .ok_or_else(|| ToolError::invalid("apply_patch expects freeform patch text"))?;
-        let hunks = parse_patch(patch_text)?;
-        let operations = build_patch_operations(&hunks, ctx).await?;
-        execute_patch_operations(
-            "apply_patch",
-            self.activity_observer.clone(),
-            call_id,
-            operations,
-            ctx,
-        )
-        .await
-    }
-}
-
-fn parse_patch(patch_text: &str) -> Result<Vec<ApplyPatchHunk>> {
+fn parse_patch_files(patch_text: &str) -> Result<Vec<PatchHunk>> {
     let normalized = patch_text.replace("\r\n", "\n").replace('\r', "\n");
     let trimmed = normalized.trim();
     let lines = trimmed.split('\n').collect::<Vec<_>>();
     let begin_index = lines
         .iter()
         .position(|line| *line == "*** Begin Patch")
-        .ok_or_else(|| ToolError::invalid("apply_patch is missing `*** Begin Patch`"))?;
+        .ok_or_else(|| {
+            ToolError::invalid("patch_files freeform input is missing `*** Begin Patch`")
+        })?;
     let end_index = lines
         .iter()
         .rposition(|line| *line == "*** End Patch")
-        .ok_or_else(|| ToolError::invalid("apply_patch is missing `*** End Patch`"))?;
+        .ok_or_else(|| {
+            ToolError::invalid("patch_files freeform input is missing `*** End Patch`")
+        })?;
     if begin_index >= end_index {
         return Err(ToolError::invalid(
-            "apply_patch markers are malformed; `*** End Patch` must come after `*** Begin Patch`",
+            "patch_files freeform markers are malformed; `*** End Patch` must come after `*** Begin Patch`",
         ));
     }
 
@@ -134,13 +69,13 @@ fn parse_patch(patch_text: &str) -> Result<Vec<ApplyPatchHunk>> {
         if let Some(path) = line.strip_prefix("*** Add File: ") {
             let path = parse_non_empty_path(path, "add file")?;
             let (contents, next_index) = parse_add_contents(&lines, index + 1, end_index)?;
-            hunks.push(ApplyPatchHunk::Add { path, contents });
+            hunks.push(PatchHunk::Add { path, contents });
             index = next_index;
             continue;
         }
         if let Some(path) = line.strip_prefix("*** Delete File: ") {
             let path = parse_non_empty_path(path, "delete file")?;
-            hunks.push(ApplyPatchHunk::Delete { path });
+            hunks.push(PatchHunk::Delete { path });
             index += 1;
             continue;
         }
@@ -165,7 +100,7 @@ fn parse_patch(patch_text: &str) -> Result<Vec<ApplyPatchHunk>> {
                     path
                 )));
             }
-            hunks.push(ApplyPatchHunk::Update {
+            hunks.push(PatchHunk::Update {
                 path,
                 move_path,
                 chunks,
@@ -178,13 +113,13 @@ fn parse_patch(patch_text: &str) -> Result<Vec<ApplyPatchHunk>> {
             continue;
         }
         return Err(ToolError::invalid(format!(
-            "unexpected apply_patch line `{line}`"
+            "unexpected patch_files freeform line `{line}`"
         )));
     }
 
     if hunks.is_empty() {
         return Err(ToolError::invalid(
-            "apply_patch requires at least one file hunk between the begin/end markers",
+            "patch_files freeform input requires at least one file hunk between the begin/end markers",
         ));
     }
     Ok(hunks)
@@ -194,7 +129,7 @@ fn parse_non_empty_path(raw: &str, label: &str) -> Result<String> {
     let path = raw.trim();
     if path.is_empty() {
         return Err(ToolError::invalid(format!(
-            "apply_patch {label} path must not be empty"
+            "patch_files freeform {label} path must not be empty"
         )));
     }
     Ok(path.to_string())
@@ -208,15 +143,15 @@ fn parse_add_contents(
     let mut content_lines = Vec::new();
     while index < end_index && !lines[index].starts_with("***") {
         let line = lines[index];
-        let content = line
-            .strip_prefix('+')
-            .ok_or_else(|| ToolError::invalid("add file hunks may only contain `+` lines"))?;
+        let content = line.strip_prefix('+').ok_or_else(|| {
+            ToolError::invalid("patch_files freeform add hunks may only contain `+` lines")
+        })?;
         content_lines.push(content.to_string());
         index += 1;
     }
     if content_lines.is_empty() {
         return Err(ToolError::invalid(
-            "add file hunks must contain at least one `+` line",
+            "patch_files freeform add file hunks must contain at least one `+` line",
         ));
     }
     Ok((content_lines.join("\n"), index))
@@ -234,7 +169,7 @@ fn parse_update_chunks(
         let line = lines[index];
         let Some(context) = line.strip_prefix("@@") else {
             return Err(ToolError::invalid(format!(
-                "update hunks must start each chunk with `@@`; found `{line}`"
+                "patch_files freeform update hunks must start each chunk with `@@`; found `{line}`"
             )));
         };
         index += 1;
@@ -254,7 +189,7 @@ fn parse_update_chunks(
             }
             if change_line.is_empty() {
                 return Err(ToolError::invalid(
-                    "apply_patch change lines must begin with ` `, `+`, or `-`",
+                    "patch_files freeform change lines must begin with ` `, `+`, or `-`",
                 ));
             }
             let (prefix, content) = change_line.split_at(1);
@@ -267,7 +202,7 @@ fn parse_update_chunks(
                 "+" => new_lines.push(content.to_string()),
                 _ => {
                     return Err(ToolError::invalid(format!(
-                        "unsupported apply_patch change line `{change_line}`"
+                        "unsupported patch_files freeform change line `{change_line}`"
                     )));
                 }
             }
@@ -285,20 +220,20 @@ fn parse_update_chunks(
 }
 
 async fn build_patch_operations(
-    hunks: &[ApplyPatchHunk],
+    hunks: &[PatchHunk],
     ctx: &ToolExecutionContext,
 ) -> Result<Vec<PatchOperation>> {
     let mut operations = Vec::new();
     for hunk in hunks {
         match hunk {
-            ApplyPatchHunk::Add { path, contents } => operations.push(PatchOperation::Write {
+            PatchHunk::Add { path, contents } => operations.push(PatchOperation::Write {
                 path: path.clone(),
                 content: contents.clone(),
                 if_exists: Some(WriteExistingBehavior::Overwrite),
                 if_missing: Some(WriteMissingBehavior::Create),
                 expected_snapshot: None,
             }),
-            ApplyPatchHunk::Delete { path } => {
+            PatchHunk::Delete { path } => {
                 let snapshot = load_snapshot(path, ctx).await?;
                 operations.push(PatchOperation::Delete {
                     path: path.clone(),
@@ -306,7 +241,7 @@ async fn build_patch_operations(
                     ignore_missing: Some(false),
                 });
             }
-            ApplyPatchHunk::Update {
+            PatchHunk::Update {
                 path,
                 move_path,
                 chunks,
@@ -561,11 +496,9 @@ fn normalize_unicode(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplyPatchTool, derive_new_content, parse_patch};
-    use crate::{Tool, ToolExecutionContext};
+    use super::{derive_new_content, parse_patch_files, parse_patch_files_operations};
+    use crate::ToolExecutionContext;
     use nanoclaw_test_support::run_current_thread_test;
-    use serde_json::Value;
-    use types::ToolCallId;
 
     macro_rules! bounded_async_test {
         (async fn $name:ident() $body:block) => {
@@ -578,7 +511,7 @@ mod tests {
 
     #[test]
     fn parse_patch_reads_add_delete_and_update_hunks() {
-        let hunks = parse_patch(
+        let hunks = parse_patch_files(
             "*** Begin Patch\n*** Add File: created.txt\n+hello\n*** Delete File: old.txt\n*** Update File: sample.txt\n@@\n-old\n+new\n*** End Patch",
         )
         .unwrap();
@@ -604,149 +537,82 @@ mod tests {
     }
 
     bounded_async_test!(
-        async fn apply_patch_tool_reuses_patch_engine_for_updates() {
+        async fn parse_patch_files_operations_reuses_patch_engine_for_updates() {
             let dir = tempfile::tempdir().unwrap();
             tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
                 .await
                 .unwrap();
 
-            let result = ApplyPatchTool::new()
-                .execute(
-                    ToolCallId::new(),
-                    Value::String(
-                        "*** Begin Patch\n*** Update File: sample.txt\n@@\n-beta\n+gamma\n*** End Patch"
-                            .to_string(),
-                    ),
-                    &ToolExecutionContext {
-                        workspace_root: dir.path().to_path_buf(),
-                        workspace_only: true,
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
+            let operations = parse_patch_files_operations(
+                "*** Begin Patch\n*** Update File: sample.txt\n@@\n-beta\n+gamma\n*** End Patch",
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    workspace_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
-            assert!(!result.is_error);
-            assert_eq!(
-                tokio::fs::read_to_string(dir.path().join("sample.txt"))
-                    .await
-                    .unwrap(),
-                "alpha\ngamma\n"
-            );
+            assert_eq!(operations.len(), 1);
         }
     );
 
     bounded_async_test!(
-        async fn apply_patch_tool_supports_move_only_hunks() {
+        async fn parse_patch_files_operations_supports_move_only_hunks() {
             let dir = tempfile::tempdir().unwrap();
             tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
                 .await
                 .unwrap();
 
-            let result = ApplyPatchTool::new()
-                .execute(
-                    ToolCallId::new(),
-                    Value::String(
-                        "*** Begin Patch\n*** Update File: sample.txt\n*** Move to: renamed.txt\n*** End Patch"
-                            .to_string(),
-                    ),
-                    &ToolExecutionContext {
-                        workspace_root: dir.path().to_path_buf(),
-                        workspace_only: true,
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
+            let operations = parse_patch_files_operations(
+                "*** Begin Patch\n*** Update File: sample.txt\n*** Move to: renamed.txt\n*** End Patch",
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    workspace_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
-            assert!(!result.is_error);
-            assert!(!dir.path().join("sample.txt").exists());
-            assert_eq!(
-                tokio::fs::read_to_string(dir.path().join("renamed.txt"))
-                    .await
-                    .unwrap(),
-                "alpha\nbeta\n"
-            );
+            assert_eq!(operations.len(), 1);
         }
     );
 
     bounded_async_test!(
-        async fn apply_patch_tool_uses_end_of_file_anchor_for_repeated_lines() {
+        async fn parse_patch_files_operations_uses_end_of_file_anchor_for_repeated_lines() {
             let dir = tempfile::tempdir().unwrap();
             tokio::fs::write(dir.path().join("sample.txt"), "value\nkeep\nvalue\n")
                 .await
                 .unwrap();
 
-            let result = ApplyPatchTool::new()
-                .execute(
-                    ToolCallId::new(),
-                    Value::String(
-                        "*** Begin Patch\n*** Update File: sample.txt\n@@\n-value\n+tail\n*** End of File\n*** End Patch"
-                            .to_string(),
-                    ),
-                    &ToolExecutionContext {
-                        workspace_root: dir.path().to_path_buf(),
-                        workspace_only: true,
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
+            let operations = parse_patch_files_operations(
+                "*** Begin Patch\n*** Update File: sample.txt\n@@\n-value\n+tail\n*** End of File\n*** End Patch",
+                &ToolExecutionContext {
+                    workspace_root: dir.path().to_path_buf(),
+                    workspace_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
-            assert!(!result.is_error);
-            assert_eq!(
-                tokio::fs::read_to_string(dir.path().join("sample.txt"))
-                    .await
-                    .unwrap(),
-                "value\nkeep\ntail\n"
-            );
-        }
-    );
-
-    bounded_async_test!(
-        async fn apply_patch_tool_applies_multiple_chunks_in_one_file() {
-            let dir = tempfile::tempdir().unwrap();
-            tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\ngamma\ndelta\n")
-                .await
-                .unwrap();
-
-            let result = ApplyPatchTool::new()
-                .execute(
-                    ToolCallId::new(),
-                    Value::String(
-                        "*** Begin Patch\n*** Update File: sample.txt\n@@\n-beta\n+beta-2\n@@\n-delta\n+delta-2\n*** End Patch"
-                            .to_string(),
-                    ),
-                    &ToolExecutionContext {
-                        workspace_root: dir.path().to_path_buf(),
-                        workspace_only: true,
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
-
-            assert!(!result.is_error);
-            assert_eq!(
-                tokio::fs::read_to_string(dir.path().join("sample.txt"))
-                    .await
-                    .unwrap(),
-                "alpha\nbeta-2\ngamma\ndelta-2\n"
-            );
+            assert_eq!(operations.len(), 1);
         }
     );
 
     #[test]
     fn parse_patch_rejects_empty_paths() {
-        let error =
-            parse_patch("*** Begin Patch\n*** Add File:   \n+hello\n*** End Patch").unwrap_err();
+        let error = parse_patch_files("*** Begin Patch\n*** Add File:   \n+hello\n*** End Patch")
+            .unwrap_err();
 
         assert!(error.to_string().contains("path must not be empty"));
     }
 
     #[test]
     fn parse_patch_rejects_empty_change_lines_instead_of_panicking() {
-        let error = parse_patch(
+        let error = parse_patch_files(
             "*** Begin Patch\n*** Update File: sample.txt\n@@\n-old\n\n+new\n*** End Patch",
         )
         .unwrap_err();

@@ -101,9 +101,8 @@ Completed so far:
 - OpenAI Responses mapping now supports freeform/custom tools, including
   transcript replay through `custom_tool_call` and
   `custom_tool_call_output`
-- the runtime still carries legacy `apply_patch` and `patch` implementations,
-  but the model-visible surface is being normalized around one canonical
-  staged mutator
+- the runtime now converges mutation exposure on one canonical staged mutator:
+  `patch_files`
 
 Still pending inside this pass:
 
@@ -169,14 +168,15 @@ Use the current runtime bootstrap and type definitions as the source of truth:
 Codex currently exposes the following major tool families:
 
 - terminal and editing:
-  `exec_command`, `write_stdin`, `apply_patch`, shell variants, `js_repl`
+  `exec_command`, `write_stdin`, grammar-capable patch application, shell
+  variants, `js_repl`
 - planning and interaction:
   `update_plan`, `request_user_input`, `request_permissions`
 - discovery and resources:
-  `tool_search`, `tool_suggest`, `list_mcp_resources`,
+  `tool_discover`, `list_mcp_resources`,
   `list_mcp_resource_templates`, `read_mcp_resource`
 - media and retrieval:
-  `web_search`, `view_image`, `image_generation`
+  `web_search`, image attachment/view helpers, `image_generation`
 - multi-agent orchestration:
   `spawn_agent`, `send_input` or `send_message`, `wait_agent`, `resume_agent`,
   `list_agents`, `close_agent`, plus batch job helpers
@@ -220,10 +220,7 @@ not count here because they are not currently in the live registry.
   `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`,
   `close_agent`
 
-The runtime keeps `code_definitions`, `code_references`, `code_hover`,
-`code_implementations`, and `code_call_hierarchy` as compatibility wrappers,
-but they are hidden from the default model-visible surface so semantic
-navigation now converges on one canonical entry point.
+Semantic navigation now converges on one canonical entry point: `code_nav`.
 
 The child-control surfaces now follow Codex-style identifiers for
 `send_input`, `wait_agent`, `resume_agent`, and `close_agent`. `spawn_agent`
@@ -252,7 +249,7 @@ typed markers even when the index uses `text_content()` for matching.
 - state:
   `update_plan`, `request_user_input`, `request_permissions`
 - discovery:
-  `tool_search`, `tool_suggest`
+  `tool_discover`
 
 The `code-agent` host also now exposes a Codex-style `/permissions` control
 plane command that switches the session base sandbox mode between `default` and
@@ -283,9 +280,10 @@ These are the highest-signal missing capabilities today:
 
 - a first-class multi-kind tool spec with explicit freeform and native tool
   variants
-- a grammar-based `apply_patch`-style freeform tool surface
+- a grammar-based freeform patch transport on the canonical `patch_files`
+  surface
 - plugin-defined custom tool loading
-- image or binary-view tool surfaces comparable to `view_image`
+- image or binary-view tool surfaces beyond the current read/attachment helpers
 
 ### Implemented But Still Protocol-Weaker
 

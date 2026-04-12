@@ -1,6 +1,7 @@
 use crate::ToolExecutionContext;
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::file_activity::FileActivityObserver;
+use crate::fs::patch_freeform::{PATCH_FILES_FREEFORM_LARK_GRAMMAR, parse_patch_files_operations};
 use crate::fs::{
     TextEditOperation, WriteExistingBehavior, WriteMissingBehavior, WriteRequest, apply_delete,
     apply_text_edits, apply_write, commit_text_file, compute_diff_preview, load_optional_text_file,
@@ -15,7 +16,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use types::{MessagePart, ToolAvailability, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
+use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -56,13 +57,8 @@ pub enum PatchOperation {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct PatchToolInput {
+pub struct PatchFilesInput {
     pub operations: Vec<PatchOperation>,
-}
-
-#[derive(Clone, Default)]
-pub struct PatchTool {
-    activity_observer: Option<Arc<dyn FileActivityObserver>>,
 }
 
 #[derive(Clone, Default)]
@@ -80,7 +76,7 @@ struct StagedFile {
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum PatchToolOutput {
+pub(crate) enum PatchFilesOutput {
     Success {
         operation_count: usize,
         changed_files: Vec<String>,
@@ -93,22 +89,6 @@ pub(crate) enum PatchToolOutput {
         applied_operations: Vec<Value>,
         failed_operation: Value,
     },
-}
-
-impl PatchTool {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            activity_observer: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_file_activity_observer(activity_observer: Arc<dyn FileActivityObserver>) -> Self {
-        Self {
-            activity_observer: Some(activity_observer),
-        }
-    }
 }
 
 impl PatchFilesTool {
@@ -146,55 +126,27 @@ impl PatchOperation {
 }
 
 #[async_trait]
-impl Tool for PatchTool {
-    fn spec(&self) -> ToolSpec {
-        builtin_tool_spec(
-            "patch",
-            "Legacy compatibility wrapper for staged multi-file patch application. Prefer patch_files as the canonical model-visible mutation surface.",
-            serde_json::to_value(schema_for!(PatchToolInput)).expect("patch schema"),
-            ToolOutputMode::Text,
-            tool_approval_profile(false, true, true, false),
-        )
-        .with_output_schema(
-            serde_json::to_value(schema_for!(PatchToolOutput)).expect("patch output schema"),
-        )
-        .with_availability(ToolAvailability {
-            hidden_from_model: true,
-            provider_allowlist: vec!["anthropic".to_string()],
-            ..ToolAvailability::default()
-        })
-    }
-
-    async fn execute(
-        &self,
-        call_id: ToolCallId,
-        arguments: Value,
-        ctx: &ToolExecutionContext,
-    ) -> Result<ToolResult> {
-        let input: PatchToolInput = serde_json::from_value(arguments)?;
-        execute_patch_operations(
-            "patch",
-            self.activity_observer.clone(),
-            call_id,
-            input.operations,
-            ctx,
-        )
-        .await
-    }
-}
-
-#[async_trait]
 impl Tool for PatchFilesTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "patch_files",
             "Apply a staged multi-file patch made of write, edit, delete, and move operations. Operations are validated against staged content first so a failed operation does not partially apply earlier changes.",
-            serde_json::to_value(schema_for!(PatchToolInput)).expect("patch_files schema"),
+            serde_json::to_value(schema_for!(PatchFilesInput)).expect("patch_files schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, true, true, false),
         )
+        .with_freeform_format(types::ToolFreeformFormat::grammar(
+            "lark",
+            PATCH_FILES_FREEFORM_LARK_GRAMMAR,
+        ))
+        .with_freeform_availability(types::ToolAvailability {
+            provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
+            ..Default::default()
+        })
         .with_output_schema(
-            serde_json::to_value(schema_for!(PatchToolOutput)).expect("patch_files output schema"),
+            serde_json::to_value(schema_for!(PatchFilesOutput))
+                .expect("patch_files output schema"),
         )
     }
 
@@ -204,12 +156,15 @@ impl Tool for PatchFilesTool {
         arguments: Value,
         ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
-        let input: PatchToolInput = serde_json::from_value(arguments)?;
+        let operations = match arguments {
+            Value::String(patch_text) => parse_patch_files_operations(&patch_text, ctx).await?,
+            other => serde_json::from_value::<PatchFilesInput>(other)?.operations,
+        };
         execute_patch_operations(
             "patch_files",
             self.activity_observer.clone(),
             call_id,
-            input.operations,
+            operations,
             ctx,
         )
         .await
@@ -595,7 +550,7 @@ pub(crate) async fn execute_patch_operations(
         parts: vec![MessagePart::text(text)],
         attachments: Vec::new(),
         structured_content: Some(
-            serde_json::to_value(PatchToolOutput::Success {
+            serde_json::to_value(PatchFilesOutput::Success {
                 operation_count: operations.len(),
                 changed_files: changed_entries
                     .iter()
@@ -676,7 +631,7 @@ fn patch_error_result(
         parts: vec![MessagePart::text(summary)],
         attachments: Vec::new(),
         structured_content: Some(
-            serde_json::to_value(PatchToolOutput::Error {
+            serde_json::to_value(PatchFilesOutput::Error {
                 failed_path: operation.primary_path().to_string(),
                 failed_operation_index: operation_index,
                 applied_operations: operation_metadata.clone(),
@@ -750,7 +705,7 @@ fn compact_operation(operation: &PatchOperation) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{PatchOperation, PatchTool, PatchToolInput};
+    use super::{PatchFilesInput, PatchFilesTool, PatchOperation};
     use crate::{TextEditOperation, Tool, ToolExecutionContext};
     use nanoclaw_test_support::run_current_thread_test;
     use types::ToolCallId;
@@ -765,17 +720,17 @@ mod tests {
     }
 
     bounded_async_test!(
-        async fn patch_tool_applies_multiple_operations_without_partial_commits() {
+        async fn patch_files_tool_applies_multiple_operations_without_partial_commits() {
             let dir = tempfile::tempdir().unwrap();
             tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
                 .await
                 .unwrap();
 
-            let tool = PatchTool::new();
+            let tool = PatchFilesTool::new();
             let result = tool
                 .execute(
                     ToolCallId::new(),
-                    serde_json::to_value(PatchToolInput {
+                    serde_json::to_value(PatchFilesInput {
                         operations: vec![
                             PatchOperation::Edit {
                                 path: "sample.txt".to_string(),
@@ -826,17 +781,17 @@ mod tests {
     );
 
     bounded_async_test!(
-        async fn patch_tool_aborts_before_commit_on_failed_operation() {
+        async fn patch_files_tool_aborts_before_commit_on_failed_operation() {
             let dir = tempfile::tempdir().unwrap();
             tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
                 .await
                 .unwrap();
 
-            let tool = PatchTool::new();
+            let tool = PatchFilesTool::new();
             let result = tool
                 .execute(
                     ToolCallId::new(),
-                    serde_json::to_value(PatchToolInput {
+                    serde_json::to_value(PatchFilesInput {
                         operations: vec![
                             PatchOperation::Edit {
                                 path: "sample.txt".to_string(),
@@ -884,16 +839,16 @@ mod tests {
     );
 
     bounded_async_test!(
-        async fn patch_tool_can_move_files_atomically() {
+        async fn patch_files_tool_can_move_files_atomically() {
             let dir = tempfile::tempdir().unwrap();
             tokio::fs::write(dir.path().join("old.txt"), "payload\n")
                 .await
                 .unwrap();
 
-            let result = PatchTool::new()
+            let result = PatchFilesTool::new()
                 .execute(
                     ToolCallId::new(),
-                    serde_json::to_value(PatchToolInput {
+                    serde_json::to_value(PatchFilesInput {
                         operations: vec![PatchOperation::Move {
                             from_path: "old.txt".to_string(),
                             to_path: "new.txt".to_string(),
@@ -935,16 +890,16 @@ mod tests {
     );
 
     bounded_async_test!(
-        async fn patch_tool_returns_hunk_preview_for_changes() {
+        async fn patch_files_tool_returns_hunk_preview_for_changes() {
             let dir = tempfile::tempdir().unwrap();
             tokio::fs::write(dir.path().join("sample.txt"), "alpha\nbeta\n")
                 .await
                 .unwrap();
 
-            let result = PatchTool::new()
+            let result = PatchFilesTool::new()
                 .execute(
                     ToolCallId::new(),
-                    serde_json::to_value(PatchToolInput {
+                    serde_json::to_value(PatchFilesInput {
                         operations: vec![PatchOperation::Edit {
                             path: "sample.txt".to_string(),
                             edits: vec![TextEditOperation::StrReplace {
@@ -974,16 +929,16 @@ mod tests {
     );
 
     bounded_async_test!(
-        async fn patch_tool_rejects_protected_workspace_state_paths() {
+        async fn patch_files_tool_rejects_protected_workspace_state_paths() {
             let dir = tempfile::tempdir().unwrap();
             tokio::fs::create_dir_all(dir.path().join(".nanoclaw"))
                 .await
                 .unwrap();
 
-            let err = PatchTool::new()
+            let err = PatchFilesTool::new()
                 .execute(
                     ToolCallId::new(),
-                    serde_json::to_value(PatchToolInput {
+                    serde_json::to_value(PatchFilesInput {
                         operations: vec![PatchOperation::Write {
                             path: ".nanoclaw/state.toml".to_string(),
                             content: "x = 1\n".to_string(),

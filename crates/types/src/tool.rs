@@ -244,6 +244,8 @@ pub struct DynamicToolSpec {
     pub input_schema: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freeform_format: Option<ToolFreeformFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeform_availability: Option<ToolAvailability>,
     #[serde(default)]
     pub output_mode: ToolOutputMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,6 +274,7 @@ impl DynamicToolSpec {
             description: description.into(),
             input_schema,
             freeform_format: None,
+            freeform_availability: None,
             output_mode: ToolOutputMode::Text,
             output_schema: None,
             defer_loading: false,
@@ -291,6 +294,12 @@ impl DynamicToolSpec {
     #[must_use]
     pub fn with_freeform_format(mut self, freeform_format: ToolFreeformFormat) -> Self {
         self.freeform_format = Some(freeform_format);
+        self
+    }
+
+    #[must_use]
+    pub fn with_freeform_availability(mut self, availability: ToolAvailability) -> Self {
+        self.freeform_availability = Some(availability);
         self
     }
 
@@ -347,6 +356,9 @@ impl DynamicToolSpec {
         .with_defer_loading(self.defer_loading);
         if let Some(freeform_format) = self.freeform_format {
             tool = tool.with_freeform_format(freeform_format);
+        }
+        if let Some(freeform_availability) = self.freeform_availability {
+            tool = tool.with_freeform_availability(freeform_availability);
         }
         if let Some(output_schema) = self.output_schema {
             tool = tool.with_output_schema(output_schema);
@@ -433,6 +445,8 @@ pub struct ToolSpec {
     pub input_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freeform_format: Option<ToolFreeformFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeform_availability: Option<ToolAvailability>,
     pub output_mode: ToolOutputMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
@@ -471,6 +485,7 @@ impl ToolSpec {
             kind: ToolKind::Function,
             input_schema: Some(input_schema),
             freeform_format: None,
+            freeform_availability: None,
             output_mode,
             output_schema: None,
             defer_loading: false,
@@ -506,6 +521,7 @@ impl ToolSpec {
             kind: ToolKind::Freeform,
             input_schema: None,
             freeform_format: Some(freeform_format),
+            freeform_availability: None,
             output_mode,
             output_schema: None,
             defer_loading: false,
@@ -523,6 +539,12 @@ impl ToolSpec {
     #[must_use]
     pub fn with_freeform_format(mut self, freeform_format: ToolFreeformFormat) -> Self {
         self.freeform_format = Some(freeform_format);
+        self
+    }
+
+    #[must_use]
+    pub fn with_freeform_availability(mut self, availability: ToolAvailability) -> Self {
+        self.freeform_availability = Some(availability);
         self
     }
 
@@ -573,50 +595,25 @@ impl ToolSpec {
 
     #[must_use]
     pub fn is_model_visible(&self, context: &ToolVisibilityContext) -> bool {
-        if self.availability.hidden_from_model {
+        availability_matches_context(&self.availability, context, false)
+    }
+
+    #[must_use]
+    pub fn supports_freeform_transport(&self, context: &ToolVisibilityContext) -> bool {
+        if self.freeform_format.is_none() {
             return false;
         }
-        if !self
-            .availability
-            .feature_flags
-            .iter()
-            .all(|required| context.has_feature(required))
-        {
-            return false;
+
+        match self.kind {
+            ToolKind::Freeform => availability_matches_context(&self.availability, context, false),
+            ToolKind::Function => self
+                .freeform_availability
+                .as_ref()
+                .is_some_and(|availability| {
+                    availability_matches_context(availability, context, true)
+                }),
+            ToolKind::Native => false,
         }
-        if !self.availability.provider_allowlist.is_empty()
-            && context
-                .provider
-                .as_deref()
-                .is_some_and(|provider| provider != "unknown")
-            && !self
-                .availability
-                .provider_allowlist
-                .iter()
-                .any(|allowed| allowed == context.provider.as_ref().expect("provider checked"))
-        {
-            return false;
-        }
-        if !self.availability.model_allowlist.is_empty()
-            && context.model.as_deref().is_some()
-            && !self.availability.model_allowlist.iter().any(|allowed| {
-                matches_model_allowlist(
-                    allowed,
-                    context.model.as_ref().expect("model checked").as_str(),
-                )
-            })
-        {
-            return false;
-        }
-        if self.availability.role_allowlist.is_empty() {
-            return true;
-        }
-        context.role.as_deref().is_some_and(|role| {
-            self.availability
-                .role_allowlist
-                .iter()
-                .any(|allowed| allowed == role)
-        })
     }
 
     #[must_use]
@@ -647,6 +644,55 @@ fn normalize_visibility_value(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn availability_matches_context(
+    availability: &ToolAvailability,
+    context: &ToolVisibilityContext,
+    ignore_hidden: bool,
+) -> bool {
+    if !ignore_hidden && availability.hidden_from_model {
+        return false;
+    }
+    if !availability
+        .feature_flags
+        .iter()
+        .all(|required| context.has_feature(required))
+    {
+        return false;
+    }
+    if !availability.provider_allowlist.is_empty()
+        && context
+            .provider
+            .as_deref()
+            .is_some_and(|provider| provider != "unknown")
+        && !availability
+            .provider_allowlist
+            .iter()
+            .any(|allowed| allowed == context.provider.as_ref().expect("provider checked"))
+    {
+        return false;
+    }
+    if !availability.model_allowlist.is_empty()
+        && context.model.as_deref().is_some()
+        && !availability.model_allowlist.iter().any(|allowed| {
+            matches_model_allowlist(
+                allowed,
+                context.model.as_ref().expect("model checked").as_str(),
+            )
+        })
+    {
+        return false;
+    }
+    if availability.role_allowlist.is_empty() {
+        return true;
+    }
+    context.role.as_deref().is_some_and(|role| {
+        availability
+            .role_allowlist
+            .iter()
+            .any(|allowed| allowed == role)
+    })
 }
 
 fn matches_model_allowlist(pattern: &str, model: &str) -> bool {
@@ -802,7 +848,7 @@ impl ToolResult {
 mod tests {
     use super::{
         McpToolBoundary, McpTransportKind, ToolApprovalProfile, ToolAvailability, ToolCall,
-        ToolCallId, ToolName, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec,
+        ToolCallId, ToolFreeformFormat, ToolName, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec,
         ToolVisibilityContext,
     };
     use serde_json::json;
@@ -963,8 +1009,8 @@ mod tests {
     #[test]
     fn visibility_context_honors_provider_model_and_role_allowlists() {
         let spec = ToolSpec::function(
-            "apply_patch",
-            "apply patch",
+            "patch_files",
+            "apply patch files",
             json!({"type": "object"}),
             ToolOutputMode::Text,
             ToolOrigin::Local,
@@ -1046,8 +1092,8 @@ mod tests {
     #[test]
     fn unknown_provider_and_model_keep_legacy_visibility_behavior() {
         let spec = ToolSpec::function(
-            "apply_patch",
-            "apply patch",
+            "patch_files",
+            "apply patch files",
             json!({"type": "object"}),
             ToolOutputMode::Text,
             ToolOrigin::Local,
@@ -1061,5 +1107,41 @@ mod tests {
 
         assert!(spec.is_model_visible(&ToolVisibilityContext::default()));
         assert!(spec.is_model_visible(&ToolVisibilityContext::default().with_provider("unknown")));
+    }
+
+    #[test]
+    fn function_tools_can_offer_provider_scoped_freeform_transport() {
+        let spec = ToolSpec::function(
+            "patch_files",
+            "apply patch files",
+            json!({"type": "object"}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
+        .with_freeform_format(ToolFreeformFormat::grammar("lark", "start: patch"))
+        .with_freeform_availability(ToolAvailability {
+            provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
+            ..ToolAvailability::default()
+        });
+
+        assert!(
+            spec.supports_freeform_transport(
+                &ToolVisibilityContext::default()
+                    .with_provider("openai")
+                    .with_model("gpt-5.4")
+            )
+        );
+        assert!(
+            !spec.supports_freeform_transport(
+                &ToolVisibilityContext::default()
+                    .with_provider("openai")
+                    .with_model("gpt-4.1-mini")
+            )
+        );
+        assert!(!spec.supports_freeform_transport(
+            &ToolVisibilityContext::default().with_provider("anthropic")
+        ));
     }
 }

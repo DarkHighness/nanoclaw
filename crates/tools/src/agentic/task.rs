@@ -375,7 +375,6 @@ impl Tool for AgentSpawnTool {
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
-        .with_aliases(vec![ToolName::from("agent_spawn")])
         .with_output_schema(
             serde_json::to_value(schema_for!(AgentHandle)).expect("spawn_agent output schema"),
         )
@@ -415,7 +414,6 @@ impl Tool for AgentSendTool {
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
-        .with_aliases(vec![ToolName::from("agent_send")])
         .with_output_schema(
             serde_json::to_value(schema_for!(AgentHandle)).expect("send_input output schema"),
         )
@@ -452,7 +450,6 @@ impl Tool for AgentWaitTool {
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
-        .with_aliases(vec![ToolName::from("agent_wait")])
         .with_output_schema(
             serde_json::to_value(schema_for!(AgentWaitResponse)).expect("wait_agent output schema"),
         )
@@ -490,7 +487,6 @@ impl Tool for AgentListTool {
             ToolOutputMode::Text,
             tool_approval_profile(true, false, false, false),
         )
-        .with_aliases(vec![ToolName::from("agent_list")])
         .with_output_schema(
             serde_json::to_value(schema_for!(Vec<AgentHandle>)).expect("list_agents output schema"),
         )
@@ -561,7 +557,6 @@ impl Tool for AgentCancelTool {
             ToolOutputMode::Text,
             tool_approval_profile(false, false, false, false),
         )
-        .with_aliases(vec![ToolName::from("agent_cancel")])
         .with_output_schema(
             serde_json::to_value(schema_for!(AgentHandle)).expect("close_agent output schema"),
         )
@@ -2055,7 +2050,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_resolves_legacy_agent_aliases_to_codex_style_names() {
+    fn registry_registers_codex_style_agent_controls_without_legacy_aliases() {
         let executor = Arc::new(FakeExecutor::default());
         let mut registry = ToolRegistry::new();
         registry.register(AgentSpawnTool::new(executor.clone()));
@@ -2066,11 +2061,11 @@ mod tests {
         registry.register(AgentCancelTool::new(executor));
 
         assert_eq!(registry.specs()[0].name.as_str(), "close_agent");
-        assert!(registry.get("agent_spawn").is_some());
-        assert!(registry.get("agent_send").is_some());
-        assert!(registry.get("agent_wait").is_some());
-        assert!(registry.get("agent_list").is_some());
-        assert!(registry.get("agent_cancel").is_some());
+        assert!(registry.get("agent_spawn").is_none());
+        assert!(registry.get("agent_send").is_none());
+        assert!(registry.get("agent_wait").is_none());
+        assert!(registry.get("agent_list").is_none());
+        assert!(registry.get("agent_cancel").is_none());
         assert!(registry.get("spawn_agent").is_some());
         assert!(registry.get("send_input").is_some());
         assert!(registry.get("wait_agent").is_some());

@@ -421,6 +421,7 @@ fn tool_spec_from_rmcp(
         kind: ToolKind::Function,
         input_schema: Some(Value::Object((*tool.input_schema).clone())),
         freeform_format: None,
+        freeform_availability: None,
         output_mode: ToolOutputMode::ContentParts,
         output_schema: tool
             .output_schema

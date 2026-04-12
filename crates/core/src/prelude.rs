@@ -12,18 +12,17 @@ pub use tools::{
     SkillSummary, SkillTool, TaskTool, ToolDiscoverTool, UpdatePlanTool, UserInputAnswer,
     UserInputHandler, UserInputOption, UserInputQuestion, UserInputRequest, UserInputResponse,
 };
-pub use tools::{
-    ApplyPatchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool,
-    ListTool, ManagedPolicyProcessExecutor, PatchFilesTool, PatchTool, ReadTool, SandboxPolicy,
-    Tool, ToolExecutionContext, ToolRegistry, WriteStdinTool, WriteTool,
-};
 #[cfg(feature = "code-intel")]
 pub use tools::{
-    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeCallHierarchyTool, CodeDefinitionsTool,
-    CodeDocumentSymbolsTool, CodeHover, CodeHoverTool, CodeImplementationsTool, CodeIntelBackend,
-    CodeNavOperation, CodeNavTool, CodeReference, CodeReferencesTool, CodeSymbol, CodeSymbolKind,
+    CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDocumentSymbolsTool, CodeHover,
+    CodeIntelBackend, CodeNavOperation, CodeNavTool, CodeReference, CodeSymbol, CodeSymbolKind,
     CodeSymbolSearchTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
     WorkspaceTextCodeIntelBackend,
+};
+pub use tools::{
+    EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool, ListTool,
+    ManagedPolicyProcessExecutor, PatchFilesTool, ReadTool, SandboxPolicy, Tool,
+    ToolExecutionContext, ToolRegistry, WriteStdinTool, WriteTool,
 };
 #[cfg(feature = "web-tools")]
 pub use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};

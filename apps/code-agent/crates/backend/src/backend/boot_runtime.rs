@@ -9,14 +9,13 @@ use agent::tools::{
     SandboxError, SubagentExecutor,
 };
 use agent::{
-    ApplyPatchTool, CodeCallHierarchyTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
-    CodeHoverTool, CodeImplementationsTool, CodeIntelBackend, CodeNavTool, CodeReferencesTool,
-    CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
-    ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchFilesTool,
-    PatchTool, PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy,
-    SkillCatalog, SkillTool, ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry,
-    ToolResult, UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
-    WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
+    CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool, CodeSymbolSearchTool, EditTool,
+    ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool, ManagedCodeIntelBackend,
+    ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchFilesTool, PlanState, ReadTool,
+    RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool,
+    ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry, ToolResult, UpdatePlanTool,
+    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend,
+    WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -538,12 +537,6 @@ fn build_builtin_tools(
     tools.register(PatchFilesTool::with_file_activity_observer(
         file_activity_observer.clone(),
     ));
-    tools.register(ApplyPatchTool::with_file_activity_observer(
-        file_activity_observer.clone(),
-    ));
-    tools.register(PatchTool::with_file_activity_observer(
-        file_activity_observer,
-    ));
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());
@@ -569,15 +562,6 @@ fn build_builtin_tools(
         code_intel_backend.clone(),
     ));
     tools.register(CodeNavTool::with_backend(code_intel_backend.clone()));
-    tools.register(CodeDefinitionsTool::with_backend(
-        code_intel_backend.clone(),
-    ));
-    tools.register(CodeReferencesTool::with_backend(code_intel_backend.clone()));
-    tools.register(CodeHoverTool::with_backend(code_intel_backend.clone()));
-    tools.register(CodeImplementationsTool::with_backend(
-        code_intel_backend.clone(),
-    ));
-    tools.register(CodeCallHierarchyTool::with_backend(code_intel_backend));
     tools.register(ToolDiscoverTool::new(discovery_registry));
     tools.register(UpdatePlanTool::new(plan_state));
     tools.register(SkillTool::new(skill_catalog));
@@ -760,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn patch_visibility_prefers_patch_files_over_legacy_patch_names() {
+    fn patch_visibility_uses_patch_files_as_the_only_runtime_patch_surface() {
         let options = load_options();
         let workspace = tempdir().unwrap();
         let tooling = build_runtime_tooling(
@@ -782,12 +766,10 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(openai_visible.iter().any(|name| name == "patch_files"));
-        assert!(!openai_visible.iter().any(|name| name == "patch"));
-        assert!(!openai_visible.iter().any(|name| name == "apply_patch"));
     }
 
     #[test]
-    fn code_nav_visibility_prefers_canonical_surface_over_legacy_navigation_tools() {
+    fn code_nav_visibility_uses_canonical_surface_only() {
         let options = load_options();
         let workspace = tempdir().unwrap();
         let tooling = build_runtime_tooling(
@@ -809,19 +791,6 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(openai_visible.iter().any(|name| name == "code_nav"));
-        assert!(!openai_visible.iter().any(|name| name == "code_definitions"));
-        assert!(!openai_visible.iter().any(|name| name == "code_references"));
-        assert!(!openai_visible.iter().any(|name| name == "code_hover"));
-        assert!(
-            !openai_visible
-                .iter()
-                .any(|name| name == "code_implementations")
-        );
-        assert!(
-            !openai_visible
-                .iter()
-                .any(|name| name == "code_call_hierarchy")
-        );
     }
 
     #[test]

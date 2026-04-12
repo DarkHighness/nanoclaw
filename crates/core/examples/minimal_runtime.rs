@@ -1,8 +1,8 @@
 use agent::{
-    AgentRuntimeBuilder, ApplyPatchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, HookRunner,
+    AgentRuntimeBuilder, EditTool, ExecCommandTool, GlobTool, GrepTool, HookRunner,
     InMemorySessionStore, ListTool, Message, MessageRole, ModelBackend, ModelEvent, ModelRequest,
-    PatchTool, ReadTool, Skill, SkillCatalog, ToolExecutionContext, ToolRegistry, WriteStdinTool,
-    WriteTool,
+    PatchFilesTool, ReadTool, Skill, SkillCatalog, ToolExecutionContext, ToolRegistry,
+    WriteStdinTool, WriteTool,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -107,8 +107,7 @@ async fn main() -> Result<()> {
     tools.register(ReadTool::new());
     tools.register(WriteTool::new());
     tools.register(EditTool::new());
-    tools.register(ApplyPatchTool::new());
-    tools.register(PatchTool::new());
+    tools.register(PatchFilesTool::new());
     tools.register(GlobTool::new());
     tools.register(GrepTool::new());
     tools.register(ListTool::new());

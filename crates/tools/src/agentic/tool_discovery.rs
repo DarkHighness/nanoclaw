@@ -14,7 +14,7 @@ use types::{
 
 const DEFAULT_DISCOVERY_LIMIT: usize = 8;
 const MAX_DISCOVERY_LIMIT: usize = 20;
-const DISCOVERY_TOOL_NAMES: &[&str] = &["tool_discover", "tool_search", "tool_suggest"];
+const DISCOVERY_TOOL_NAMES: &[&str] = &["tool_discover"];
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ToolDiscoverInput {
@@ -64,7 +64,6 @@ impl Tool for ToolDiscoverTool {
             ToolOutputMode::Text,
             tool_approval_profile(true, false, false, false),
         )
-        .with_aliases(vec!["tool_search".into(), "tool_suggest".into()])
         .with_output_schema(
             serde_json::to_value(schema_for!(ToolDiscoveryOutput))
                 .expect("tool_discover output schema"),
@@ -397,7 +396,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_discover_aliases_remain_live_after_registration() {
+    async fn tool_discover_filters_hidden_matches_without_legacy_aliases() {
         let mut registry = ToolRegistry::new();
         let discovery_registry = registry.clone();
         registry.register(ToolDiscoverTool::new(discovery_registry));
@@ -427,7 +426,7 @@ mod tests {
         });
 
         let tool = registry
-            .get("tool_suggest")
+            .get("tool_discover")
             .expect("tool should be registered");
         let result = tool
             .execute(
@@ -474,7 +473,7 @@ mod tests {
         let discovery_registry = registry.clone();
         registry.register(ToolDiscoverTool::new(discovery_registry));
         registry.register(FakeTool {
-            name: "apply_patch",
+            name: "patch_files",
             description: "Apply one multi-file patch.",
             hidden_from_model: false,
             provider_allowlist: vec!["openai".to_string()],
@@ -536,7 +535,7 @@ mod tests {
         assert!(
             worker_matches
                 .iter()
-                .any(|entry| entry["name"] == "apply_patch")
+                .any(|entry| entry["name"] == "patch_files")
         );
         assert!(
             worker_matches

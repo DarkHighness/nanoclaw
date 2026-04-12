@@ -37,11 +37,6 @@ const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
     "resume_agent",
     "list_agents",
     "close_agent",
-    "agent_spawn",
-    "agent_send",
-    "agent_wait",
-    "agent_list",
-    "agent_cancel",
 ];
 const READY_CHILD_LAUNCH_CONCURRENCY: usize = 4;
 

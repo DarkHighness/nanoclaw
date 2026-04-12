@@ -33,7 +33,7 @@ impl ToolRenderKind {
             "wait_agent" => Self::WaitAgent,
             "resume_agent" => Self::ResumeAgent,
             "close_agent" => Self::CloseAgent,
-            "write" | "edit" | "patch" | "patch_files" | "apply_patch" => Self::FileMutation,
+            "write" | "edit" | "patch_files" => Self::FileMutation,
             _ => Self::Generic,
         }
     }
