@@ -418,6 +418,7 @@ impl SharedRenderObserver {
                 parent_agent_id,
                 status,
                 summary,
+                ..
             } => {
                 apply_task_created(
                     &mut state.tracked_tasks,
@@ -1503,6 +1504,8 @@ mod tests {
             parent_agent_id: None,
             status: TaskStatus::Open,
             summary: Some("Inspect repo".to_string()),
+            worktree_id: None,
+            worktree_root: None,
         });
         observer.apply_event(SessionEvent::TaskUpdated {
             task_id: task.task_id.clone(),

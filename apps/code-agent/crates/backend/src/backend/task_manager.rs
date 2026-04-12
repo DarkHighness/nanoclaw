@@ -107,6 +107,8 @@ impl TaskManager for SessionTaskManager {
                 parent_agent_id: parent.parent_agent_id.clone(),
                 status,
                 summary: initial_summary.clone(),
+                worktree_id: parent.active_worktree_id.clone(),
+                worktree_root: parent.worktree_root.clone(),
             },
         )
         .await?;
@@ -115,6 +117,8 @@ impl TaskManager for SessionTaskManager {
             parent_agent_id: parent.parent_agent_id.clone(),
             status,
             summary: initial_summary.clone(),
+            worktree_id: parent.active_worktree_id.clone(),
+            worktree_root: parent.worktree_root.clone(),
         });
         Ok(TaskRecord {
             summary: TaskSummaryRecord {
@@ -255,8 +259,8 @@ fn task_summary_record_from_summary(summary: crate::ui::PersistedTaskSummary) ->
         parent_agent_id: None,
         child_agent_id: None,
         summary: Some(summary.summary),
-        worktree_id: None,
-        worktree_root: None,
+        worktree_id: summary.worktree_id,
+        worktree_root: summary.worktree_root,
     }
 }
 
@@ -280,8 +284,8 @@ fn task_record_from_loaded_task(loaded: LoadedTask) -> TaskRecord {
             parent_agent_id: None,
             child_agent_id,
             summary: summary_text,
-            worktree_id: None,
-            worktree_root: None,
+            worktree_id: loaded.summary.worktree_id.clone(),
+            worktree_root: loaded.summary.worktree_root.clone(),
         },
         spec: loaded.spec,
         claimed_files,

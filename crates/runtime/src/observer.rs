@@ -1,7 +1,8 @@
 use crate::Result;
+use std::path::PathBuf;
 use types::{
     AgentHandle, AgentId, AgentResultEnvelope, AgentTaskSpec, MessageId, TaskId, TaskStatus,
-    TokenLedgerSnapshot, TokenUsagePhase, ToolCall, ToolLifecycleEventEnvelope, TurnId,
+    TokenLedgerSnapshot, TokenUsagePhase, ToolCall, ToolLifecycleEventEnvelope, TurnId, WorktreeId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +76,8 @@ pub enum RuntimeProgressEvent {
         parent_agent_id: Option<AgentId>,
         status: TaskStatus,
         summary: Option<String>,
+        worktree_id: Option<WorktreeId>,
+        worktree_root: Option<PathBuf>,
     },
     TaskUpdated {
         task_id: TaskId,

@@ -56,10 +56,31 @@ pub trait WorktreeManager: Send + Sync {
         runtime: WorktreeRuntimeContext,
         worktree_id: Option<WorktreeId>,
     ) -> Result<WorktreeSummaryRecord>;
+
+    async fn create_child_worktree(
+        &self,
+        runtime: WorktreeRuntimeContext,
+        request: ChildWorktreeRequest,
+    ) -> Result<WorktreeSummaryRecord>;
+
+    async fn release_child_worktree(
+        &self,
+        runtime: WorktreeRuntimeContext,
+        worktree_id: &WorktreeId,
+    ) -> Result<Option<WorktreeSummaryRecord>>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorktreeEnterRequest {
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildWorktreeRequest {
+    pub child_agent_id: AgentId,
+    pub child_session_id: SessionId,
+    pub child_agent_session_id: AgentSessionId,
+    pub task_id: TaskId,
     pub label: Option<String>,
 }
 

@@ -10,7 +10,7 @@ Status: Active
 | --- | --- | --- |
 | Phase 1: Task Model | Complete | `task_create`, `task_get`, `task_list`, `task_update`, `task_stop` are registered, `update_plan` has been removed, and the TUI now restores live/current task state from typed task events. |
 | Phase 2: Monitor | Complete | `monitor_start`, `monitor_list`, `monitor_stop` are registered and surfaced through typed monitor/session flows. |
-| Phase 3: Worktree Lifecycle | In Progress | `worktree_enter`, `worktree_list`, and `worktree_exit` now exist with persisted worktree events, shared runtime context switching, and typed transcript rendering. Child-agent dedicated worktree opt-in and persisted task/worktree summaries are still pending. |
+| Phase 3: Worktree Lifecycle | Complete | `worktree_enter`, `worktree_list`, and `worktree_exit` now exist with persisted worktree events, shared runtime context switching, child-agent dedicated worktree opt-in, and persisted task/worktree summaries that survive reload. |
 | Phase 4: Checkpoint And Restore | Not Started | Rollback remains transcript/history-centric. |
 | Phase 5: Diagnostics | Complete | `code_diagnostics` exists as a typed tool surface and no longer has a mirrored slash command. |
 | Phase 6: Cron / Automation | Not Started | No scheduled execution tool family yet. |
@@ -300,9 +300,11 @@ sandbox/workspace-root detail.
   later tools in the same session inherit the active worktree root.
 - Worktree lifecycle is persisted through typed session events and projected
   into transcript/history surfaces.
-- Still pending:
-  - child-agent dedicated worktree opt-in
-  - persisted task summaries that retain worktree attachment across reload
+- `spawn_agent` now exposes typed `worktree_mode` input, and dedicated child
+  worktrees are created and released through the shared worktree manager.
+- Persisted task summaries now retain `worktree_id` and `worktree_root`, so
+  task history survives reload without losing worktree ownership.
+- Remaining follow-up is presentation-only:
   - richer operator review for worktree ownership and rollback
 
 ### User-facing outcome
@@ -348,6 +350,7 @@ sandbox/workspace-root detail.
 ### Exit criteria
 
 - Worktree lifecycle becomes a typed, operator-visible tool family.
+- Child-agent worktree ownership survives spawn, completion, and task reload.
 
 ## Phase 4: Checkpoint And Restore
 

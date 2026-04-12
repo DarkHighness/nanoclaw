@@ -2,10 +2,11 @@ use super::session_history::{list_sessions, resolve_session_reference};
 use crate::ui::{LoadedTask, LoadedTaskMessage, PersistedTaskSummary};
 use agent::types::{
     AgentEnvelope, AgentEnvelopeKind, AgentTaskSpec, Message, SessionEventEnvelope,
-    SessionEventKind, SessionId, TaskId, TaskStatus,
+    SessionEventKind, SessionId, TaskId, TaskStatus, WorktreeId,
 };
 use anyhow::{Result, anyhow};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use store::{SessionStore, TokenUsageRecord};
 
@@ -99,6 +100,8 @@ fn persisted_task_summaries(
         first_timestamp_ms: u128,
         last_timestamp_ms: u128,
         summary: Option<String>,
+        worktree_id: Option<WorktreeId>,
+        worktree_root: Option<PathBuf>,
     }
 
     let mut by_task = BTreeMap::<TaskId, TaskAccumulator>::new();
@@ -108,6 +111,8 @@ fn persisted_task_summaries(
                 task,
                 status,
                 summary,
+                worktree_id,
+                worktree_root,
                 ..
             } => {
                 by_task
@@ -123,6 +128,8 @@ fn persisted_task_summaries(
                         summary: summary
                             .clone()
                             .or_else(|| Some(preview_text(&task.prompt, 64))),
+                        worktree_id: worktree_id.clone(),
+                        worktree_root: worktree_root.clone(),
                     });
             }
             SessionEventKind::SubagentStart { handle, task } => {
@@ -138,12 +145,16 @@ fn persisted_task_summaries(
                             first_timestamp_ms: event.timestamp_ms,
                             last_timestamp_ms: event.timestamp_ms,
                             summary: Some(preview_text(&task.prompt, 64)),
+                            worktree_id: handle.worktree_id.clone(),
+                            worktree_root: handle.worktree_root.clone(),
                         });
                 entry.spec = task.clone();
                 entry.parent_agent_session_ref = event.agent_session_id.to_string();
                 entry.child_session_ref = Some(handle.session_id.to_string());
                 entry.child_agent_session_ref = Some(handle.agent_session_id.to_string());
                 entry.status = TaskStatus::from(&handle.status);
+                entry.worktree_id = handle.worktree_id.clone();
+                entry.worktree_root = handle.worktree_root.clone();
                 entry.first_timestamp_ms = entry.first_timestamp_ms.min(event.timestamp_ms);
                 entry.last_timestamp_ms = entry.last_timestamp_ms.max(event.timestamp_ms);
             }
@@ -182,6 +193,8 @@ fn persisted_task_summaries(
                         .as_ref()
                         .map(|result| TaskStatus::from(&result.status))
                         .unwrap_or_else(|| TaskStatus::from(&handle.status));
+                    entry.worktree_id = handle.worktree_id.clone();
+                    entry.worktree_root = handle.worktree_root.clone();
                     entry.summary = result
                         .as_ref()
                         .map(|result| result.summary.clone())
@@ -208,6 +221,8 @@ fn persisted_task_summaries(
             first_timestamp_ms: entry.first_timestamp_ms,
             last_timestamp_ms: entry.last_timestamp_ms,
             summary: entry.summary.unwrap_or_else(|| "task".to_string()),
+            worktree_id: entry.worktree_id,
+            worktree_root: entry.worktree_root,
         })
         .collect()
 }
@@ -353,6 +368,7 @@ mod tests {
         AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
         AgentSessionId, AgentStatus, AgentTaskSpec, Message, SessionEventEnvelope,
         SessionEventKind, SessionId, TaskId, TaskOrigin, TaskStatus, TokenLedgerSnapshot,
+        WorktreeId,
     };
     use store::{TokenUsageRecord, TokenUsageScope};
 
@@ -381,8 +397,8 @@ mod tests {
             task_id: task.task_id.clone(),
             role: task.role.clone(),
             status: AgentStatus::Completed,
-            worktree_id: None,
-            worktree_root: None,
+            worktree_id: Some(WorktreeId::from("worktree_child")),
+            worktree_root: Some(std::path::PathBuf::from("/tmp/worktree-child")),
         };
         let events = vec![
             SessionEventEnvelope::new(
@@ -395,6 +411,8 @@ mod tests {
                     parent_agent_id: None,
                     status: TaskStatus::Queued,
                     summary: Some("inspect the patch".to_string()),
+                    worktree_id: None,
+                    worktree_root: None,
                 },
             ),
             SessionEventEnvelope::new(
@@ -443,6 +461,18 @@ mod tests {
         );
         assert_eq!(summaries[0].origin, TaskOrigin::ChildAgentBacked);
         assert_eq!(summaries[0].status, TaskStatus::Completed);
+        assert_eq!(
+            summaries[0].worktree_id.as_ref().map(WorktreeId::as_str),
+            Some("worktree_child")
+        );
+        assert_eq!(
+            summaries[0]
+                .worktree_root
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string())
+                .as_deref(),
+            Some("/tmp/worktree-child")
+        );
     }
 
     #[test]
@@ -459,6 +489,8 @@ mod tests {
             first_timestamp_ms: 1,
             last_timestamp_ms: 2,
             summary: "looks good".to_string(),
+            worktree_id: None,
+            worktree_root: None,
         };
         let task = AgentTaskSpec {
             task_id: summary.task_id.clone(),
@@ -484,6 +516,8 @@ mod tests {
                     parent_agent_id: None,
                     status: TaskStatus::Queued,
                     summary: Some("inspect the patch".to_string()),
+                    worktree_id: None,
+                    worktree_root: None,
                 },
             ),
             SessionEventEnvelope::new(

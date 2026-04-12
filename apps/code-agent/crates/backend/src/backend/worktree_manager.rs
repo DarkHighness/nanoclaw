@@ -1,9 +1,9 @@
 use crate::backend::SessionEventStream;
 use crate::ui::SessionEvent;
 use agent::tools::{
-    ExecRequest, ExecutionOrigin, PRIMARY_WORKTREE_ID, ProcessExecutor, ProcessStdio,
-    Result as ToolResult, SandboxPolicy, ToolError, ToolExecutionContext, WorktreeEnterRequest,
-    WorktreeManager, WorktreeRuntimeContext,
+    ChildWorktreeRequest, ExecRequest, ExecutionOrigin, PRIMARY_WORKTREE_ID, ProcessExecutor,
+    ProcessStdio, Result as ToolResult, SandboxPolicy, ToolError, ToolExecutionContext,
+    WorktreeEnterRequest, WorktreeManager, WorktreeRuntimeContext,
 };
 use agent::types::{
     AgentSessionId, SessionEventEnvelope, SessionEventKind, SessionId, WorktreeId, WorktreeScope,
@@ -297,6 +297,31 @@ impl SessionWorktreeManager {
         self.worktree_parent_dir().join(slug)
     }
 
+    async fn create_git_worktree(
+        &self,
+        label: Option<&str>,
+        default_label: &str,
+    ) -> ToolResult<PathBuf> {
+        let root = self.make_worktree_path(label.or(Some(default_label)));
+        tokio::fs::create_dir_all(self.worktree_parent_dir())
+            .await
+            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        let root_string = root.to_string_lossy().to_string();
+        self.run_git(
+            &self.primary_root,
+            &["worktree", "add", "--detach", &root_string, "HEAD"],
+        )
+        .await?;
+        Ok(root)
+    }
+
+    fn normalized_label(label: Option<String>) -> Option<String> {
+        label.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+    }
+
     async fn remove_active_non_primary_if_needed(
         &self,
         runtime: &WorktreeRuntimeContext,
@@ -359,16 +384,9 @@ impl WorktreeManager for SessionWorktreeManager {
         let mut state = self.load_or_restore_state(&runtime).await?;
         self.remove_active_non_primary_if_needed(&runtime, &mut state)
             .await?;
-        let root = self.make_worktree_path(request.label.as_deref());
-        tokio::fs::create_dir_all(self.worktree_parent_dir())
-            .await
-            .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-        let root_string = root.to_string_lossy().to_string();
-        self.run_git(
-            &self.primary_root,
-            &["worktree", "add", "--detach", &root_string, "HEAD"],
-        )
-        .await?;
+        let root = self
+            .create_git_worktree(request.label.as_deref(), "session")
+            .await?;
         let mut primary = state
             .entries
             .get(&WorktreeId::from(PRIMARY_WORKTREE_ID))
@@ -383,7 +401,7 @@ impl WorktreeManager for SessionWorktreeManager {
 
         let summary = WorktreeSummaryRecord {
             worktree_id: WorktreeId::from(format!("worktree_{}", new_opaque_id())),
-            session_id,
+            session_id: session_id.clone(),
             agent_session_id,
             scope: WorktreeScope::Session,
             status: WorktreeStatus::Active,
@@ -391,10 +409,7 @@ impl WorktreeManager for SessionWorktreeManager {
             parent_agent_id: runtime.parent_agent_id.clone(),
             task_id: runtime.task_id.clone(),
             child_agent_id: None,
-            label: request.label.and_then(|value| {
-                let trimmed = value.trim();
-                (!trimmed.is_empty()).then(|| trimmed.to_string())
-            }),
+            label: Self::normalized_label(request.label),
             created_at_unix_s: unix_timestamp_s(),
             updated_at_unix_s: None,
         };
@@ -406,7 +421,7 @@ impl WorktreeManager for SessionWorktreeManager {
         self.states
             .lock()
             .expect("worktree state lock")
-            .insert(summary.session_id.clone(), state);
+            .insert(session_id, state);
         self.publish_entered(&runtime, summary.clone()).await?;
         Ok(summary)
     }
@@ -439,6 +454,7 @@ impl WorktreeManager for SessionWorktreeManager {
         runtime: WorktreeRuntimeContext,
         worktree_id: Option<WorktreeId>,
     ) -> ToolResult<WorktreeSummaryRecord> {
+        let (session_id, _) = Self::require_attached_runtime(&runtime)?;
         let mut state = self.load_or_restore_state(&runtime).await?;
         let target_id = worktree_id.unwrap_or_else(|| state.current_worktree_id.clone());
         let summary = state
@@ -451,8 +467,81 @@ impl WorktreeManager for SessionWorktreeManager {
         self.states
             .lock()
             .expect("worktree state lock")
-            .insert(summary.session_id.clone(), state);
+            .insert(session_id, state);
         Ok(summary)
+    }
+
+    async fn create_child_worktree(
+        &self,
+        runtime: WorktreeRuntimeContext,
+        request: ChildWorktreeRequest,
+    ) -> ToolResult<WorktreeSummaryRecord> {
+        let (session_id, _) = Self::require_attached_runtime(&runtime)?;
+        let mut state = self.load_or_restore_state(&runtime).await?;
+        let root = self
+            .create_git_worktree(request.label.as_deref(), "child")
+            .await?;
+        let summary = WorktreeSummaryRecord {
+            worktree_id: WorktreeId::from(format!("worktree_{}", new_opaque_id())),
+            session_id: request.child_session_id,
+            agent_session_id: request.child_agent_session_id,
+            scope: WorktreeScope::ChildAgent,
+            status: WorktreeStatus::Active,
+            root,
+            parent_agent_id: runtime.parent_agent_id.clone(),
+            task_id: Some(request.task_id),
+            child_agent_id: Some(request.child_agent_id),
+            label: Self::normalized_label(request.label),
+            created_at_unix_s: unix_timestamp_s(),
+            updated_at_unix_s: None,
+        };
+        state
+            .entries
+            .insert(summary.worktree_id.clone(), summary.clone());
+        self.states
+            .lock()
+            .expect("worktree state lock")
+            .insert(session_id, state);
+        self.publish_entered(&runtime, summary.clone()).await?;
+        Ok(summary)
+    }
+
+    async fn release_child_worktree(
+        &self,
+        runtime: WorktreeRuntimeContext,
+        worktree_id: &WorktreeId,
+    ) -> ToolResult<Option<WorktreeSummaryRecord>> {
+        let (session_id, _) = Self::require_attached_runtime(&runtime)?;
+        let mut state = self.load_or_restore_state(&runtime).await?;
+        let Some(summary) = state.entries.get(worktree_id).cloned() else {
+            return Ok(None);
+        };
+        if summary.scope != WorktreeScope::ChildAgent {
+            return Err(ToolError::invalid(format!(
+                "worktree {worktree_id} is not a child-agent worktree"
+            )));
+        }
+        if summary.status == WorktreeStatus::Removed {
+            return Ok(Some(summary));
+        }
+        let root_string = summary.root.to_string_lossy().to_string();
+        self.run_git(
+            &self.primary_root,
+            &["worktree", "remove", "--force", &root_string],
+        )
+        .await?;
+        let mut removed = summary;
+        removed.status = WorktreeStatus::Removed;
+        removed.updated_at_unix_s = Some(unix_timestamp_s());
+        state
+            .entries
+            .insert(removed.worktree_id.clone(), removed.clone());
+        self.states
+            .lock()
+            .expect("worktree state lock")
+            .insert(session_id, state);
+        self.publish_updated(&runtime, removed.clone()).await?;
+        Ok(Some(removed))
     }
 }
 
@@ -491,10 +580,13 @@ mod tests {
     use crate::backend::SessionEventStream;
     use agent::ManagedPolicyProcessExecutor;
     use agent::tools::{
-        PRIMARY_WORKTREE_ID, ToolExecutionContext, WorktreeEnterRequest, WorktreeManager,
-        WorktreeRuntimeContext,
+        ChildWorktreeRequest, PRIMARY_WORKTREE_ID, ToolExecutionContext, WorktreeEnterRequest,
+        WorktreeManager, WorktreeRuntimeContext,
     };
-    use agent::types::{AgentSessionId, SessionEventKind, SessionId, WorktreeId, WorktreeStatus};
+    use agent::types::{
+        AgentId, AgentSessionId, SessionEventKind, SessionId, TaskId, WorktreeId, WorktreeScope,
+        WorktreeStatus,
+    };
     use std::fs;
     use std::path::Path;
     use std::process::Command;
@@ -634,6 +726,91 @@ mod tests {
         let restored = restored_context.read().unwrap().clone();
         assert_eq!(restored.active_worktree_id, Some(entered.worktree_id));
         assert_eq!(restored.workspace_root, entered.root);
+    }
+
+    #[tokio::test]
+    async fn child_worktrees_are_tracked_without_switching_session_context() {
+        let repo = tempfile::tempdir().unwrap();
+        init_git_repo(repo.path());
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let tool_context = Arc::new(RwLock::new(ToolExecutionContext {
+            workspace_root: repo.path().to_path_buf(),
+            worktree_root: Some(repo.path().to_path_buf()),
+            active_worktree_id: Some(WorktreeId::from(PRIMARY_WORKTREE_ID)),
+            ..Default::default()
+        }));
+        let manager = SessionWorktreeManager::new(
+            store.clone(),
+            SessionEventStream::default(),
+            Arc::new(ManagedPolicyProcessExecutor::new()),
+            repo.path().to_path_buf(),
+            tool_context.clone(),
+        );
+        let runtime = WorktreeRuntimeContext {
+            session_id: Some(SessionId::from("session_root")),
+            agent_session_id: Some(AgentSessionId::from("agent_session_root")),
+            parent_agent_id: Some(AgentId::from("agent_parent")),
+            ..Default::default()
+        };
+
+        let child = manager
+            .create_child_worktree(
+                runtime.clone(),
+                ChildWorktreeRequest {
+                    child_agent_id: AgentId::from("agent_child"),
+                    child_session_id: SessionId::from("session_child"),
+                    child_agent_session_id: AgentSessionId::from("agent_session_child"),
+                    task_id: TaskId::from("task_child"),
+                    label: Some("reviewer".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(child.scope, WorktreeScope::ChildAgent);
+        assert_eq!(child.child_agent_id, Some(AgentId::from("agent_child")));
+        assert_eq!(
+            tool_context.read().unwrap().workspace_root,
+            repo.path().to_path_buf()
+        );
+
+        let listed = manager.list_worktrees(runtime.clone(), true).await.unwrap();
+        assert!(
+            listed
+                .iter()
+                .any(|summary| summary.worktree_id == child.worktree_id)
+        );
+
+        let released = manager
+            .release_child_worktree(runtime.clone(), &child.worktree_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(released.status, WorktreeStatus::Removed);
+        assert_eq!(
+            tool_context.read().unwrap().workspace_root,
+            repo.path().to_path_buf()
+        );
+
+        let events = store
+            .events(&SessionId::from("session_root"))
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                SessionEventKind::WorktreeEntered { summary }
+                    if summary.worktree_id == child.worktree_id
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.event,
+                SessionEventKind::WorktreeUpdated { summary }
+                    if summary.worktree_id == child.worktree_id
+                        && summary.status == WorktreeStatus::Removed
+            )
+        }));
     }
 
     fn init_git_repo(path: &Path) {

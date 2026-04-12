@@ -806,6 +806,13 @@ where
     let approval_policy: Arc<dyn ToolApprovalPolicy> = Arc::new(
         build_code_agent_tool_approval_policy(&options.approval_policy),
     );
+    let worktree_manager = Arc::new(SessionWorktreeManager::new(
+        store.clone(),
+        events.clone(),
+        runtime_tooling.process_executor.clone(),
+        workspace_root.to_path_buf(),
+        session_tool_context.clone(),
+    ));
     let subagent_executor: Arc<dyn SubagentExecutor> = Arc::new(RuntimeSubagentExecutor::new(
         hook_runner.clone(),
         store.clone(),
@@ -817,6 +824,7 @@ where
         runtime_hook_state.clone(),
         skill_catalog.clone(),
         subagent_profile_resolver,
+        Some(worktree_manager.clone()),
         Some(subagent_progress_sink),
     ));
     let task_manager: Arc<dyn agent::tools::TaskManager> = Arc::new(SessionTaskManager::new(
@@ -830,13 +838,6 @@ where
             events.clone(),
             runtime_tooling.process_executor.clone(),
         ));
-    let worktree_manager = Arc::new(SessionWorktreeManager::new(
-        store.clone(),
-        events.clone(),
-        runtime_tooling.process_executor.clone(),
-        workspace_root.to_path_buf(),
-        session_tool_context.clone(),
-    ));
     register_monitor_tools(&mut tools, monitor_manager.clone());
     register_worktree_tools(&mut tools, worktree_manager.clone());
     register_subagent_tools(&mut tools, subagent_executor.clone(), task_manager);

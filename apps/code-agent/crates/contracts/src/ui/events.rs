@@ -1,8 +1,9 @@
 use agent::types::{
     AgentHandle, AgentId, AgentResultEnvelope, AgentTaskSpec, MessageId, MonitorEventRecord,
-    MonitorSummaryRecord, TaskId, TaskStatus, TokenLedgerSnapshot, TokenUsagePhase,
+    MonitorSummaryRecord, TaskId, TaskStatus, TokenLedgerSnapshot, TokenUsagePhase, WorktreeId,
     WorktreeSummaryRecord,
 };
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionToolOrigin {
@@ -155,6 +156,8 @@ pub enum SessionEvent {
         parent_agent_id: Option<AgentId>,
         status: TaskStatus,
         summary: Option<String>,
+        worktree_id: Option<WorktreeId>,
+        worktree_root: Option<PathBuf>,
     },
     TaskUpdated {
         task_id: TaskId,

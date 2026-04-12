@@ -562,9 +562,16 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 .get("fork_context")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let dedicated_worktree = arguments
+                .get("worktree_mode")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value.trim() == "dedicated");
             let mut summary = format!("spawn {agent_type}");
             if fork_context {
                 summary.push_str(" forked");
+            }
+            if dedicated_worktree {
+                summary.push_str(" worktree=dedicated");
             }
             if let Some(model) = model {
                 summary.push_str(&format!(" model={model}"));
@@ -2239,6 +2246,19 @@ mod tests {
         assert_eq!(rendered[0], "spawn reviewer");
         assert!(rendered[1].contains("[local_image] path=artifacts/failure.png"));
         assert!(rendered[2].contains("[mention] name=workspace path=app://workspace/snapshot"));
+    }
+
+    #[test]
+    fn spawn_agent_arguments_surface_dedicated_worktree_mode() {
+        let rendered = tool_arguments_preview_lines(
+            "spawn_agent",
+            &json!({
+                "agent_type": "reviewer",
+                "worktree_mode": "dedicated",
+            }),
+        );
+
+        assert_eq!(rendered[0], "spawn reviewer worktree=dedicated");
     }
 
     #[test]

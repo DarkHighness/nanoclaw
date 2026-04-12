@@ -92,6 +92,8 @@ pub struct PersistedTaskSummary {
     pub first_timestamp_ms: u128,
     pub last_timestamp_ms: u128,
     pub summary: String,
+    pub worktree_id: Option<WorktreeId>,
+    pub worktree_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

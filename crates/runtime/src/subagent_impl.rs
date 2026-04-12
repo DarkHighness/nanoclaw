@@ -18,14 +18,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use store::SessionStore;
 use tools::{
-    SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, ToolError,
-    ToolExecutionContext, ToolRegistry, resolve_tool_path_against_workspace_root,
+    ChildWorktreeMode, ChildWorktreeRequest, SandboxMode, SandboxPolicy, SubagentExecutor,
+    SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, ToolError,
+    ToolExecutionContext, ToolRegistry, WorktreeManager, WorktreeRuntimeContext,
+    resolve_tool_path_against_workspace_root,
 };
 use types::{
     AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
     AgentSessionId, AgentStatus, AgentTaskSpec, AgentWaitRequest, AgentWaitResponse,
     HookRegistration, Message, MessageRole, SessionEventEnvelope, SessionEventKind, SessionId,
-    TaskStatus, ToolName,
+    TaskStatus, ToolName, WorktreeId,
 };
 
 const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
@@ -68,6 +70,7 @@ pub struct RuntimeSubagentExecutor {
     hooks: Arc<RwLock<Vec<HookRegistration>>>,
     skill_catalog: SkillCatalog,
     profile_resolver: Arc<dyn SubagentProfileResolver>,
+    worktree_manager: Option<Arc<dyn WorktreeManager>>,
     progress_sink: Option<Arc<dyn RuntimeProgressSink>>,
     session_manager: AgentSessionManager,
     write_lease_manager: Arc<WriteLeaseManager>,
@@ -147,11 +150,15 @@ fn runtime_progress_event_from_parent_event(
             parent_agent_id,
             status,
             summary,
+            worktree_id,
+            worktree_root,
         } => Some(RuntimeProgressEvent::TaskCreated {
             task,
             parent_agent_id,
             status,
             summary,
+            worktree_id,
+            worktree_root,
         }),
         SessionEventKind::TaskUpdated {
             task_id,
@@ -201,6 +208,7 @@ impl RuntimeSubagentExecutor {
         hooks: Arc<RwLock<Vec<HookRegistration>>>,
         skill_catalog: SkillCatalog,
         profile_resolver: Arc<dyn SubagentProfileResolver>,
+        worktree_manager: Option<Arc<dyn WorktreeManager>>,
         progress_sink: Option<Arc<dyn RuntimeProgressSink>>,
     ) -> Self {
         Self {
@@ -214,6 +222,7 @@ impl RuntimeSubagentExecutor {
             hooks,
             skill_catalog,
             profile_resolver,
+            worktree_manager,
             progress_sink,
             session_manager: AgentSessionManager::new(),
             write_lease_manager: Arc::new(WriteLeaseManager::new()),
@@ -586,6 +595,106 @@ impl RuntimeSubagentExecutor {
             .collect()
     }
 
+    fn child_worktree_runtime(
+        &self,
+        parent: &SubagentParentContext,
+        task: &AgentTaskSpec,
+    ) -> WorktreeRuntimeContext {
+        WorktreeRuntimeContext {
+            session_id: parent.session_id.clone(),
+            agent_session_id: parent.agent_session_id.clone(),
+            turn_id: parent.turn_id.clone(),
+            parent_agent_id: parent.parent_agent_id.clone(),
+            task_id: Some(task.task_id.clone()),
+            active_worktree_id: parent.active_worktree_id.clone(),
+        }
+    }
+
+    fn apply_worktree_summary_to_tool_context(
+        tool_context: &ToolExecutionContext,
+        worktree_id: WorktreeId,
+        worktree_root: PathBuf,
+    ) -> ToolExecutionContext {
+        let mut scoped = tool_context.clone();
+        let previous_policy = scoped.sandbox_policy();
+        scoped.workspace_root = worktree_root.clone();
+        scoped.worktree_root = Some(worktree_root);
+        scoped.active_worktree_id = Some(worktree_id);
+        scoped.effective_sandbox_policy = Some(
+            if matches!(previous_policy.mode, SandboxMode::DangerFullAccess) {
+                SandboxPolicy::permissive()
+                    .with_fail_if_unavailable(previous_policy.fail_if_unavailable)
+            } else {
+                scoped
+                    .sandbox_scope()
+                    .recommended_policy()
+                    .with_fail_if_unavailable(previous_policy.fail_if_unavailable)
+            },
+        );
+        scoped
+    }
+
+    async fn maybe_allocate_child_worktree(
+        &self,
+        parent: &SubagentParentContext,
+        task: &AgentTaskSpec,
+        worktree_mode: ChildWorktreeMode,
+        handle: &AgentHandle,
+        profile: &SubagentRuntimeProfile,
+    ) -> std::result::Result<SubagentRuntimeProfile, ToolError> {
+        if worktree_mode != ChildWorktreeMode::Dedicated {
+            return Ok(profile.clone());
+        }
+        let manager = self.worktree_manager.as_ref().ok_or_else(|| {
+            ToolError::invalid_state("spawn_agent dedicated worktrees require a worktree manager")
+        })?;
+        let summary = manager
+            .create_child_worktree(
+                self.child_worktree_runtime(parent, task),
+                ChildWorktreeRequest {
+                    child_agent_id: handle.agent_id.clone(),
+                    child_session_id: handle.session_id.clone(),
+                    child_agent_session_id: handle.agent_session_id.clone(),
+                    task_id: task.task_id.clone(),
+                    label: Some(task.role.clone()),
+                },
+            )
+            .await?;
+        let mut updated = profile.clone();
+        updated.tool_context = Self::apply_worktree_summary_to_tool_context(
+            &updated.tool_context,
+            summary.worktree_id,
+            summary.root,
+        );
+        Ok(updated)
+    }
+
+    async fn release_child_worktree(&self, parent: &SubagentParentContext, handle: &AgentHandle) {
+        let Some(worktree_id) = handle.worktree_id.as_ref() else {
+            return;
+        };
+        let Some(manager) = self.worktree_manager.as_ref() else {
+            return;
+        };
+        let task = self
+            .session_manager
+            .task(&handle.agent_id)
+            .unwrap_or_else(|_| AgentTaskSpec {
+                task_id: handle.task_id.clone(),
+                role: handle.role.clone(),
+                prompt: String::new(),
+                origin: types::TaskOrigin::ChildAgentBacked,
+                steer: None,
+                allowed_tools: Vec::new(),
+                requested_write_set: Vec::new(),
+                dependency_ids: Vec::new(),
+                timeout_seconds: None,
+            });
+        let _ = manager
+            .release_child_worktree(self.child_worktree_runtime(parent, &task), worktree_id)
+            .await;
+    }
+
     fn ensure_parent_can_access(
         &self,
         parent: &SubagentParentContext,
@@ -622,6 +731,8 @@ impl RuntimeSubagentExecutor {
                     parent_agent_id: parent.parent_agent_id.clone(),
                     status: TaskStatus::Queued,
                     summary: Some(child.task.prompt.clone()),
+                    worktree_id: child.handle.worktree_id.clone(),
+                    worktree_root: child.handle.worktree_root.clone(),
                 },
                 SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
@@ -791,6 +902,7 @@ impl RuntimeSubagentExecutor {
             store: self.store.clone(),
             session_manager: self.session_manager.clone(),
             write_lease_manager: self.write_lease_manager.clone(),
+            worktree_manager: self.worktree_manager.clone(),
             handle: handle.clone(),
             task: plan.task,
             runtime,
@@ -1060,12 +1172,13 @@ impl RuntimeSubagentExecutor {
             .append_parent_event(
                 parent,
                 SessionEventKind::SubagentStop {
-                    handle,
+                    handle: handle.clone(),
                     result: Some(result),
                     error: Some(summary),
                 },
             )
             .await;
+        self.release_child_worktree(parent, &handle).await;
         self.write_lease_manager.release(&released_agent_id);
     }
 
@@ -1137,12 +1250,13 @@ impl RuntimeSubagentExecutor {
             .append_parent_event(
                 parent,
                 SessionEventKind::SubagentStop {
-                    handle,
+                    handle: handle.clone(),
                     result: Some(result),
                     error: Some(summary),
                 },
             )
             .await;
+        self.release_child_worktree(parent, &handle).await;
         self.write_lease_manager.release(&released_agent_id);
     }
 }
@@ -1163,6 +1277,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 .profile_resolver
                 .resolve_profile(&launch)
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            let worktree_mode = launch.worktree_mode;
             let task = launch.task;
             if !profile.supports_tool_calls && !tool_registry.names().is_empty() {
                 return Err(ToolError::invalid(format!(
@@ -1177,7 +1292,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
             let requested_files = self
                 .resolve_write_set(&task.requested_write_set)
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
-            let handle = AgentHandle {
+            let mut handle = AgentHandle {
                 agent_id: AgentId::new(),
                 parent_agent_id: parent.parent_agent_id.clone(),
                 session_id: SessionId::new(),
@@ -1188,6 +1303,11 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
                 worktree_id: parent.active_worktree_id.clone(),
                 worktree_root: parent.worktree_root.clone(),
             };
+            let profile = self
+                .maybe_allocate_child_worktree(&parent, &task, worktree_mode, &handle, &profile)
+                .await?;
+            handle.worktree_id = profile.tool_context.active_worktree_id.clone();
+            handle.worktree_root = profile.tool_context.worktree_root.clone();
             let (session, persist_session_seed) = self
                 .build_child_session(&parent, &handle, launch.fork_context)
                 .await?;
@@ -1472,6 +1592,7 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
         )
         .await
         .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+        self.release_child_worktree(&parent, &handle).await;
         Ok(handle)
     }
 }
@@ -1481,6 +1602,7 @@ struct ChildAgentWorker {
     store: Arc<dyn SessionStore>,
     session_manager: AgentSessionManager,
     write_lease_manager: Arc<WriteLeaseManager>,
+    worktree_manager: Option<Arc<dyn WorktreeManager>>,
     handle: AgentHandle,
     task: AgentTaskSpec,
     runtime: AgentRuntime,
@@ -1714,6 +1836,7 @@ impl ChildAgentWorker {
             error: None,
         });
         let _ = self.append_parent_events(events).await;
+        self.release_child_worktree().await;
         self.write_lease_manager.release(&self.handle.agent_id);
         let _ = self
             .runtime
@@ -1780,6 +1903,7 @@ impl ChildAgentWorker {
                 },
             ])
             .await;
+        self.release_child_worktree().await;
         self.write_lease_manager.release(&self.handle.agent_id);
         let _ = self.runtime.end_session(reason).await;
     }
@@ -1841,8 +1965,33 @@ impl ChildAgentWorker {
                 },
             ])
             .await;
+        self.release_child_worktree().await;
         self.write_lease_manager.release(&self.handle.agent_id);
         let _ = self.runtime.end_session(Some("failed".to_string())).await;
+    }
+
+    async fn release_child_worktree(&self) {
+        let Some(worktree_id) = self.handle.worktree_id.as_ref() else {
+            return;
+        };
+        let Some(manager) = self.worktree_manager.as_ref() else {
+            return;
+        };
+        let Some(session_id) = self.parent.session_id.clone() else {
+            return;
+        };
+        let Some(agent_session_id) = self.parent.agent_session_id.clone() else {
+            return;
+        };
+        let runtime = WorktreeRuntimeContext {
+            session_id: Some(session_id),
+            agent_session_id: Some(agent_session_id),
+            turn_id: self.parent.turn_id.clone(),
+            parent_agent_id: self.parent.parent_agent_id.clone(),
+            task_id: Some(self.task.task_id.clone()),
+            active_worktree_id: self.parent.active_worktree_id.clone(),
+        };
+        let _ = manager.release_child_worktree(runtime, worktree_id).await;
     }
 
     async fn append_parent_events(&self, events: Vec<SessionEventKind>) -> Result<()> {
@@ -2250,6 +2399,7 @@ mod tests {
                 tool_context,
                 supports_tool_calls,
             )),
+            None,
         )
     }
 
@@ -2375,6 +2525,7 @@ mod tests {
                     },
                     initial_input: Message::user("review child"),
                     fork_context: true,
+                    worktree_mode: ChildWorktreeMode::Inherit,
                     model: None,
                     reasoning_effort: None,
                 }],

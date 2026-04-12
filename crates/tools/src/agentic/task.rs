@@ -115,6 +115,8 @@ pub struct AgentSpawnToolInput {
     pub agent_type: Option<String>,
     #[serde(default)]
     pub fork_context: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_mode: Option<ChildWorktreeMode>,
     #[serde(default)]
     pub items: Vec<AgentInputItem>,
     #[serde(default)]
@@ -167,11 +169,20 @@ pub struct AgentResumeToolInput {
     pub id: AgentId,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildWorktreeMode {
+    #[default]
+    Inherit,
+    Dedicated,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SubagentLaunchSpec {
     pub task: AgentTaskSpec,
     pub initial_input: Message,
     pub fork_context: bool,
+    pub worktree_mode: ChildWorktreeMode,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
 }
@@ -186,6 +197,7 @@ impl SubagentLaunchSpec {
             task,
             initial_input,
             fork_context: false,
+            worktree_mode: ChildWorktreeMode::Inherit,
             model: None,
             reasoning_effort: None,
         }
@@ -837,6 +849,7 @@ async fn normalize_spawn_input(
         },
         initial_input: normalized.message,
         fork_context: input.fork_context,
+        worktree_mode: input.worktree_mode.unwrap_or_default(),
         model: normalize_optional_non_empty(input.model),
         reasoning_effort: normalize_optional_non_empty(input.reasoning_effort),
     })
@@ -2280,6 +2293,26 @@ mod tests {
         let state = executor.state.lock().unwrap();
         assert_eq!(state.spawned_launches.len(), 1);
         assert!(state.spawned_launches[0].fork_context);
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_forwards_dedicated_worktree_mode_to_executor() {
+        let executor = Arc::new(FakeExecutor::default());
+        let tool = AgentSpawnTool::new(executor.clone());
+        tool.execute(
+            ToolCallId::new(),
+            json!({"worktree_mode": "dedicated", "message": "continue"}),
+            &ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        let state = executor.state.lock().unwrap();
+        assert_eq!(state.spawned_launches.len(), 1);
+        assert_eq!(
+            state.spawned_launches[0].worktree_mode,
+            super::ChildWorktreeMode::Dedicated
+        );
     }
 
     #[tokio::test]

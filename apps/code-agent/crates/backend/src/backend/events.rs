@@ -207,11 +207,15 @@ fn project_session_event(event: RuntimeProgressEvent) -> SessionEvent {
             parent_agent_id,
             status,
             summary,
+            worktree_id,
+            worktree_root,
         } => SessionEvent::TaskCreated {
             task,
             parent_agent_id,
             status,
             summary,
+            worktree_id,
+            worktree_root,
         },
         RuntimeProgressEvent::TaskUpdated {
             task_id,

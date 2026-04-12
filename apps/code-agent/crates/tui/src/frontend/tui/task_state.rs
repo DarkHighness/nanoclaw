@@ -14,6 +14,7 @@ pub(crate) fn restore_tracked_tasks(events: &[SessionEventEnvelope]) -> Vec<Trac
                 parent_agent_id,
                 status,
                 summary,
+                ..
             } => apply_task_created_map(
                 &mut tasks,
                 task,
