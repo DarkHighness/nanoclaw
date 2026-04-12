@@ -1,5 +1,6 @@
 use agent::AgentWorkspaceLayout;
 use agent::types::SubmittedPromptSnapshot;
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -7,6 +8,44 @@ use tracing::warn;
 
 const COMPOSER_HISTORY_FILE_NAME: &str = "code-agent-prompt-history.jsonl";
 pub(crate) const MAX_COMPOSER_HISTORY_ENTRIES: usize = 200;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ComposerHistoryKind {
+    #[default]
+    Prompt,
+    Command,
+}
+
+impl ComposerHistoryKind {
+    pub(crate) fn classify_text(text: &str) -> Self {
+        if text.trim_start().starts_with('/') {
+            Self::Command
+        } else {
+            Self::Prompt
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PersistedComposerHistoryEntry {
+    #[serde(default)]
+    pub(crate) kind: ComposerHistoryKind,
+    pub(crate) prompt: SubmittedPromptSnapshot,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LoadedComposerHistory {
+    pub(crate) prompts: Vec<SubmittedPromptSnapshot>,
+    pub(crate) commands: Vec<SubmittedPromptSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+enum StoredComposerHistoryLine {
+    Typed(PersistedComposerHistoryEntry),
+    Legacy(SubmittedPromptSnapshot),
+}
 
 fn composer_history_path(workspace_root: &Path) -> PathBuf {
     AgentWorkspaceLayout::new(workspace_root)
@@ -20,24 +59,26 @@ pub(crate) fn normalized_history_text(value: &str) -> Option<String> {
 }
 
 pub(crate) fn normalized_history_entry(
-    mut entry: SubmittedPromptSnapshot,
-) -> Option<SubmittedPromptSnapshot> {
-    if let Some(text) = normalized_history_text(&entry.text) {
-        entry.text = text;
-        return Some(entry);
+    kind: ComposerHistoryKind,
+    mut prompt: SubmittedPromptSnapshot,
+) -> Option<PersistedComposerHistoryEntry> {
+    if let Some(text) = normalized_history_text(&prompt.text) {
+        prompt.text = text;
+        return Some(PersistedComposerHistoryEntry { kind, prompt });
     }
-    if entry.attachments.is_empty() {
+    if prompt.attachments.is_empty() {
         return None;
     }
-    entry.text.clear();
-    Some(entry)
+    prompt.text.clear();
+    Some(PersistedComposerHistoryEntry { kind, prompt })
 }
 
 pub(crate) fn record_input_history(
-    entries: &mut Vec<SubmittedPromptSnapshot>,
-    entry: SubmittedPromptSnapshot,
+    entries: &mut Vec<PersistedComposerHistoryEntry>,
+    kind: ComposerHistoryKind,
+    prompt: SubmittedPromptSnapshot,
 ) -> bool {
-    let Some(entry) = normalized_history_entry(entry) else {
+    let Some(entry) = normalized_history_entry(kind, prompt) else {
         return false;
     };
     if entries.last() == Some(&entry) {
@@ -51,18 +92,20 @@ pub(crate) fn record_input_history(
     true
 }
 
-pub(crate) fn load_input_history(workspace_root: &Path) -> Vec<SubmittedPromptSnapshot> {
+pub(crate) fn load_input_history(workspace_root: &Path) -> LoadedComposerHistory {
     let path = composer_history_path(workspace_root);
     let file = match File::open(&path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return LoadedComposerHistory::default();
+        }
         Err(error) => {
             warn!(
                 path = %path.display(),
                 error = %error,
                 "failed to open composer history file"
             );
-            return Vec::new();
+            return LoadedComposerHistory::default();
         }
     };
 
@@ -80,8 +123,12 @@ pub(crate) fn load_input_history(workspace_root: &Path) -> Vec<SubmittedPromptSn
                 continue;
             }
         };
-        let parsed = match serde_json::from_str::<SubmittedPromptSnapshot>(&line) {
-            Ok(entry) => entry,
+        let parsed = match serde_json::from_str::<StoredComposerHistoryLine>(&line) {
+            Ok(StoredComposerHistoryLine::Typed(entry)) => entry,
+            Ok(StoredComposerHistoryLine::Legacy(prompt)) => PersistedComposerHistoryEntry {
+                kind: ComposerHistoryKind::classify_text(&prompt.text),
+                prompt,
+            },
             Err(error) => {
                 warn!(
                     path = %path.display(),
@@ -92,13 +139,24 @@ pub(crate) fn load_input_history(workspace_root: &Path) -> Vec<SubmittedPromptSn
                 continue;
             }
         };
-        let _ = record_input_history(&mut entries, parsed);
+        let _ = record_input_history(&mut entries, parsed.kind, parsed.prompt);
     }
 
-    entries
+    let mut loaded = LoadedComposerHistory::default();
+    for entry in entries {
+        match entry.kind {
+            ComposerHistoryKind::Prompt => loaded.prompts.push(entry.prompt),
+            ComposerHistoryKind::Command => loaded.commands.push(entry.prompt),
+        }
+    }
+    loaded
 }
 
-pub(crate) fn persist_input_history(workspace_root: &Path, entries: &[SubmittedPromptSnapshot]) {
+pub(crate) fn persist_input_history(
+    workspace_root: &Path,
+    prompt_entries: &[SubmittedPromptSnapshot],
+    command_entries: &[SubmittedPromptSnapshot],
+) {
     let path = composer_history_path(workspace_root);
     if let Some(parent) = path.parent()
         && let Err(error) = fs::create_dir_all(parent)
@@ -123,8 +181,29 @@ pub(crate) fn persist_input_history(workspace_root: &Path, entries: &[SubmittedP
         }
     };
     let mut writer = BufWriter::new(file);
+    let mut entries = Vec::with_capacity(prompt_entries.len() + command_entries.len());
+    entries.extend(
+        prompt_entries
+            .iter()
+            .cloned()
+            .map(|prompt| PersistedComposerHistoryEntry {
+                kind: ComposerHistoryKind::Prompt,
+                prompt,
+            }),
+    );
+    entries.extend(
+        command_entries
+            .iter()
+            .cloned()
+            .map(|prompt| PersistedComposerHistoryEntry {
+                kind: ComposerHistoryKind::Command,
+                prompt,
+            }),
+    );
     for entry in entries {
-        if let Err(error) = serde_json::to_writer(&mut writer, entry) {
+        if let Err(error) =
+            serde_json::to_writer(&mut writer, &StoredComposerHistoryLine::Typed(entry))
+        {
             warn!(
                 path = %path.display(),
                 error = %error,
@@ -153,8 +232,8 @@ pub(crate) fn persist_input_history(workspace_root: &Path, entries: &[SubmittedP
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_COMPOSER_HISTORY_ENTRIES, load_input_history, persist_input_history,
-        record_input_history,
+        ComposerHistoryKind, MAX_COMPOSER_HISTORY_ENTRIES, load_input_history,
+        persist_input_history, record_input_history,
     };
     use agent::AgentWorkspaceLayout;
     use agent::types::{
@@ -168,26 +247,36 @@ mod tests {
 
         assert!(!record_input_history(
             &mut entries,
+            ComposerHistoryKind::Prompt,
             SubmittedPromptSnapshot::from_text("   ")
         ));
         assert!(record_input_history(
             &mut entries,
+            ComposerHistoryKind::Prompt,
             SubmittedPromptSnapshot::from_text(" first ")
         ));
         assert!(!record_input_history(
             &mut entries,
+            ComposerHistoryKind::Prompt,
             SubmittedPromptSnapshot::from_text("first")
         ));
         assert!(record_input_history(
             &mut entries,
+            ComposerHistoryKind::Prompt,
             SubmittedPromptSnapshot::from_text("second")
         ));
 
         assert_eq!(
             entries,
             vec![
-                SubmittedPromptSnapshot::from_text("first"),
-                SubmittedPromptSnapshot::from_text("second")
+                super::PersistedComposerHistoryEntry {
+                    kind: ComposerHistoryKind::Prompt,
+                    prompt: SubmittedPromptSnapshot::from_text("first"),
+                },
+                super::PersistedComposerHistoryEntry {
+                    kind: ComposerHistoryKind::Prompt,
+                    prompt: SubmittedPromptSnapshot::from_text("second"),
+                }
             ]
         );
     }
@@ -203,23 +292,33 @@ mod tests {
                 SubmittedPromptSnapshot::from_text("prompt one"),
                 SubmittedPromptSnapshot::from_text("prompt two"),
             ],
+            &[SubmittedPromptSnapshot::from_text("/help")],
         );
         persist_input_history(
             second.path(),
             &[SubmittedPromptSnapshot::from_text("other workspace")],
+            &[],
         );
 
+        let first_loaded = load_input_history(first.path());
         assert_eq!(
-            load_input_history(first.path()),
+            first_loaded.prompts,
             vec![
                 SubmittedPromptSnapshot::from_text("prompt one"),
                 SubmittedPromptSnapshot::from_text("prompt two")
             ]
         );
         assert_eq!(
-            load_input_history(second.path()),
+            first_loaded.commands,
+            vec![SubmittedPromptSnapshot::from_text("/help")]
+        );
+
+        let second_loaded = load_input_history(second.path());
+        assert_eq!(
+            second_loaded.prompts,
             vec![SubmittedPromptSnapshot::from_text("other workspace")]
         );
+        assert!(second_loaded.commands.is_empty());
     }
 
     #[test]
@@ -233,9 +332,30 @@ mod tests {
         )
         .unwrap();
 
+        let loaded = load_input_history(dir.path());
         assert_eq!(
-            load_input_history(dir.path()),
+            loaded.prompts,
             vec![SubmittedPromptSnapshot::from_text("prompt one")]
+        );
+        assert!(loaded.commands.is_empty());
+    }
+
+    #[test]
+    fn persisted_history_classifies_legacy_slash_commands_into_command_history() {
+        let dir = tempdir().unwrap();
+        let apps_dir = AgentWorkspaceLayout::new(dir.path()).apps_dir();
+        std::fs::create_dir_all(&apps_dir).unwrap();
+        std::fs::write(
+            apps_dir.join("code-agent-prompt-history.jsonl"),
+            "{\"text\":\"/help\"}\n",
+        )
+        .unwrap();
+
+        let loaded = load_input_history(dir.path());
+        assert!(loaded.prompts.is_empty());
+        assert_eq!(
+            loaded.commands,
+            vec![SubmittedPromptSnapshot::from_text("/help")]
         );
     }
 
@@ -245,6 +365,7 @@ mod tests {
 
         assert!(record_input_history(
             &mut entries,
+            ComposerHistoryKind::Prompt,
             SubmittedPromptSnapshot {
                 text: String::new(),
                 attachments: vec![SubmittedPromptAttachment {
@@ -266,6 +387,7 @@ mod tests {
         for index in 0..(MAX_COMPOSER_HISTORY_ENTRIES + 5) {
             assert!(record_input_history(
                 &mut entries,
+                ComposerHistoryKind::Prompt,
                 SubmittedPromptSnapshot::from_text(format!("prompt {index}"))
             ));
         }
@@ -273,11 +395,11 @@ mod tests {
         let expected_last = format!("prompt {}", MAX_COMPOSER_HISTORY_ENTRIES + 4);
         assert_eq!(entries.len(), MAX_COMPOSER_HISTORY_ENTRIES);
         assert_eq!(
-            entries.first().map(|entry| entry.text.as_str()),
+            entries.first().map(|entry| entry.prompt.text.as_str()),
             Some("prompt 5")
         );
         assert_eq!(
-            entries.last().map(|entry| entry.text.as_str()),
+            entries.last().map(|entry| entry.prompt.text.as_str()),
             Some(expected_last.as_str())
         );
     }

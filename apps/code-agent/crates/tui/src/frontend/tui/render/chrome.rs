@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-const MAX_COMPOSER_HEIGHT: u16 = 6;
+const MAX_COMPOSER_HEIGHT: u16 = 8;
 
 pub(super) fn render_composer(
     frame: &mut ratatui::Frame<'_>,
@@ -40,7 +40,7 @@ pub(super) fn render_composer(
 }
 
 pub(super) fn composer_height(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
-    composer_text_line_count(state, user_input).min(MAX_COMPOSER_HEIGHT)
+    composer_text_line_count(state, user_input).clamp(2, MAX_COMPOSER_HEIGHT)
 }
 
 pub(super) fn composer_cursor_position(
@@ -156,7 +156,7 @@ pub(super) fn render_permission_request_modal(
 pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
     let mut lines = vec![Line::from(vec![
         Span::styled(
-            "approval required",
+            "Approval Required",
             Style::default()
                 .fg(palette().warn)
                 .add_modifier(Modifier::BOLD),
@@ -190,7 +190,7 @@ pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
                 .enumerate()
                 .map(|(index, reason)| {
                     approval_detail_line(
-                        (index == 0).then_some("reason"),
+                        (index == 0).then_some("Reason"),
                         vec![Span::styled(
                             preview_text(reason, 96),
                             Style::default().fg(palette().muted),
@@ -200,7 +200,7 @@ pub(super) fn build_approval_text(approval: &ApprovalPrompt) -> Text<'static> {
         );
     }
     lines.push(approval_detail_line(
-        Some("keys"),
+        Some("Keys"),
         vec![
             Span::styled("y", Style::default().fg(palette().accent)),
             Span::styled(" approve", Style::default().fg(palette().muted)),
@@ -271,7 +271,7 @@ fn approval_context_line(approval: &ApprovalPrompt) -> Option<Line<'static>> {
             Style::default().fg(palette().accent),
         ));
     }
-    (!spans.is_empty()).then(|| approval_detail_line(Some("context"), spans))
+    (!spans.is_empty()).then(|| approval_detail_line(Some("Context"), spans))
 }
 
 fn approval_detail_line(label: Option<&str>, mut body: Vec<Span<'static>>) -> Line<'static> {

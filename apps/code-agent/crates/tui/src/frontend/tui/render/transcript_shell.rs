@@ -916,7 +916,7 @@ fn render_tool_text_block(lines: &[String], kind: TranscriptEntryKind) -> Vec<Li
         rendered.push(detail_line(
             false,
             labeled_detail_spans(
-                "output",
+                "Output",
                 palette().muted,
                 vec![Span::styled(
                     first.clone(),
@@ -1102,8 +1102,8 @@ fn tool_detail_value_style(label: ToolDetailLabel, value: &str) -> Style {
         | ToolDetailLabel::Effect
         | ToolDetailLabel::Intent
         | ToolDetailLabel::Context
-        | ToolDetailLabel::Snapshot => Style::default().fg(palette().text),
-        ToolDetailLabel::Output => Style::default().fg(palette().muted),
+        | ToolDetailLabel::Snapshot
+        | ToolDetailLabel::Output => Style::default().fg(palette().text),
         _ => Style::default().fg(palette().muted),
     }
 }

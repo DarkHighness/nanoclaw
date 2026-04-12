@@ -1,5 +1,5 @@
 use crate::preview::{PreviewCollapse, collapse_preview_text, command_output_collapse};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolDetailBlockKind {
@@ -60,18 +60,18 @@ pub enum ToolDetailLabel {
 impl ToolDetailLabel {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Intent => "intent",
-            Self::Context => "context",
-            Self::Session => "session",
-            Self::State => "state",
-            Self::Result => "result",
-            Self::Effect => "effect",
-            Self::Snapshot => "snapshot",
-            Self::Files => "files",
-            Self::Output => "output",
-            Self::Origin => "origin",
-            Self::Reason => "reason",
-            Self::Note => "note",
+            Self::Intent => "Intent",
+            Self::Context => "Context",
+            Self::Session => "Session",
+            Self::State => "State",
+            Self::Result => "Result",
+            Self::Effect => "Effect",
+            Self::Snapshot => "Snapshot",
+            Self::Files => "Files",
+            Self::Output => "Output",
+            Self::Origin => "Origin",
+            Self::Reason => "Reason",
+            Self::Note => "Note",
         }
     }
 }
@@ -531,15 +531,16 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
         | ToolRenderKind::Generic => {}
     }
 
-    for key in ["path", "uri", "query", "prompt", "message", "cmd"] {
-        if let Some(value) = arguments.get(key).and_then(Value::as_str)
-            && !value.trim().is_empty()
-        {
-            return collapse_preview_text(value.trim(), 4, 96, PreviewCollapse::Head);
+    if let Some(object) = arguments.as_object() {
+        let lines = summarize_generic_argument_object(object);
+        if !lines.is_empty() {
+            return lines;
         }
     }
 
-    collapse_preview_text(&arguments.to_string(), 4, 96, PreviewCollapse::Head)
+    summarize_json_preview_lines(arguments, 4).unwrap_or_else(|| {
+        collapse_preview_text(&arguments.to_string(), 4, 96, PreviewCollapse::HeadTail)
+    })
 }
 
 fn preview_input_item_argument_lines(items: Option<&Value>, max_items: usize) -> Vec<String> {
@@ -1001,6 +1002,12 @@ pub fn tool_output_details(
         | ToolRenderKind::Generic => {}
     }
 
+    if let Some(structured) = structured
+        && let Some(details) = generic_structured_output_details(structured)
+    {
+        return details;
+    }
+
     generic_output_details(output_preview)
 }
 
@@ -1220,14 +1227,14 @@ fn process_output_details(
 
     if has_stdout_preview {
         detail_lines.push(ToolDetail::NamedBlock {
-            label: "stdout".to_string(),
+            label: "Stdout".to_string(),
             kind: ToolDetailBlockKind::Stdout,
             lines: stdout_preview,
         });
     }
     if has_stderr_preview {
         detail_lines.push(ToolDetail::NamedBlock {
-            label: "stderr".to_string(),
+            label: "Stderr".to_string(),
             kind: ToolDetailBlockKind::Stderr,
             lines: stderr_preview,
         });
@@ -1265,13 +1272,21 @@ fn generic_output_details(output_preview: &str) -> Vec<ToolDetail> {
         return Vec::new();
     }
 
-    if output_preview.lines().count() > 1 || output_preview.chars().count() > 96 {
-        return vec![ToolDetail::TextBlock(collapse_preview_text(
-            output_preview,
-            8,
-            120,
-            PreviewCollapse::HeadTail,
-        ))];
+    if let Ok(parsed) = serde_json::from_str::<Value>(trimmed)
+        && let Some(details) = generic_structured_output_details(&parsed)
+    {
+        return details;
+    }
+
+    let collapsed = collapse_preview_text(output_preview, 8, 120, PreviewCollapse::HeadTail);
+    if collapsed.len() > 1
+        || output_preview.chars().count() > 96
+        || output_preview.lines().count() > 1
+    {
+        return vec![ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Output,
+            lines: collapsed,
+        }];
     }
 
     vec![ToolDetail::LabeledValue {
@@ -1379,6 +1394,211 @@ fn serialize_detail_block(lines: &[String]) -> Vec<String> {
         }
     }
     rendered
+}
+
+fn summarize_generic_argument_object(object: &Map<String, Value>) -> Vec<String> {
+    if object.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    let mut used_primary_key = None;
+    for (key, prefix) in [
+        ("query", "Search"),
+        ("prompt", "Prompt"),
+        ("message", "Message"),
+        ("path", "Path"),
+        ("uri", "URI"),
+        ("url", "URL"),
+        ("target", "Target"),
+        ("session_id", "Session"),
+        ("id", "ID"),
+    ] {
+        if let Some(value) = object.get(key).and_then(Value::as_str).map(str::trim)
+            && !value.is_empty()
+        {
+            lines.push(format!("{prefix} {}", inline_preview_text(value, 88)));
+            used_primary_key = Some(key);
+            break;
+        }
+    }
+
+    let mut keys = object.keys().cloned().collect::<Vec<_>>();
+    keys.sort_by(|left, right| {
+        field_rank(left.as_str())
+            .cmp(&field_rank(right.as_str()))
+            .then_with(|| left.cmp(right))
+    });
+    for key in keys {
+        if Some(key.as_str()) == used_primary_key {
+            continue;
+        }
+        if let Some(value) = object.get(&key) {
+            lines.extend(summarize_named_value_lines(
+                &humanize_json_key(&key),
+                value,
+                2,
+            ));
+        }
+        if lines.len() >= 4 {
+            break;
+        }
+    }
+    if lines.len() > 4 {
+        lines.truncate(4);
+    }
+    lines
+}
+
+fn summarize_json_preview_lines(value: &Value, max_lines: usize) -> Option<Vec<String>> {
+    let lines = match value {
+        Value::Object(object) => {
+            let mut keys = object.keys().cloned().collect::<Vec<_>>();
+            keys.sort_by(|left, right| {
+                field_rank(left.as_str())
+                    .cmp(&field_rank(right.as_str()))
+                    .then_with(|| left.cmp(right))
+            });
+            let mut lines = Vec::new();
+            for key in keys.into_iter().take(max_lines) {
+                if let Some(entry) = object.get(&key) {
+                    lines.extend(summarize_named_value_lines(
+                        &humanize_json_key(&key),
+                        entry,
+                        2,
+                    ));
+                }
+                if lines.len() >= max_lines {
+                    break;
+                }
+            }
+            let remaining = object.len().saturating_sub(lines.len());
+            if remaining > 0 {
+                lines.push(format!("… {remaining} more field(s)"));
+            }
+            lines
+        }
+        Value::Array(items) => summarize_array_value_lines("Items", items),
+        Value::String(text) => {
+            collapse_preview_text(text, max_lines, 96, PreviewCollapse::HeadTail)
+        }
+        Value::Number(number) => vec![number.to_string()],
+        Value::Bool(boolean) => vec![boolean.to_string()],
+        Value::Null => Vec::new(),
+    };
+    (!lines.is_empty()).then_some(lines)
+}
+
+fn generic_structured_output_details(value: &Value) -> Option<Vec<ToolDetail>> {
+    let lines = summarize_json_preview_lines(value, 6)?;
+    Some(if lines.len() == 1 {
+        vec![ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Output,
+            value: lines[0].clone(),
+        }]
+    } else {
+        vec![ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Output,
+            lines,
+        }]
+    })
+}
+
+fn summarize_named_value_lines(label: &str, value: &Value, max_lines: usize) -> Vec<String> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::String(text) => prefixed_collapse_lines(label, text, max_lines),
+        Value::Number(number) => vec![format!("{label} {number}")],
+        Value::Bool(boolean) => vec![format!("{label} {boolean}")],
+        Value::Array(items) => summarize_array_value_lines(label, items),
+        Value::Object(object) => {
+            if let Some(summary) = summarize_object_value(object) {
+                vec![format!("{label} {summary}")]
+            } else {
+                vec![format!("{label} {} field(s)", object.len())]
+            }
+        }
+    }
+}
+
+fn summarize_array_value_lines(label: &str, items: &[Value]) -> Vec<String> {
+    if items.is_empty() {
+        return vec![format!("{label} 0 item(s)")];
+    }
+    let scalar_items = items
+        .iter()
+        .filter_map(scalar_json_preview)
+        .take(3)
+        .collect::<Vec<_>>();
+    if scalar_items.len() == items.len() && !scalar_items.is_empty() {
+        return vec![format!("{label} {}", scalar_items.join(" · "))];
+    }
+    vec![format!("{label} {} item(s)", items.len())]
+}
+
+fn summarize_object_value(object: &Map<String, Value>) -> Option<String> {
+    for key in [
+        "summary", "message", "name", "title", "path", "url", "state", "status", "id",
+    ] {
+        if let Some(value) = object.get(key).and_then(scalar_json_preview) {
+            return Some(value);
+        }
+    }
+    (!object.is_empty()).then(|| format!("{} field(s)", object.len()))
+}
+
+fn scalar_json_preview(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| inline_preview_text(trimmed, 72))
+        }
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(boolean) => Some(boolean.to_string()),
+        _ => None,
+    }
+}
+
+fn prefixed_collapse_lines(label: &str, value: &str, max_lines: usize) -> Vec<String> {
+    let collapsed = collapse_preview_text(value.trim(), max_lines, 96, PreviewCollapse::HeadTail);
+    let Some((first, rest)) = collapsed.split_first() else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!("{label} {first}")];
+    lines.extend(rest.iter().cloned());
+    lines
+}
+
+fn humanize_json_key(key: &str) -> String {
+    key.split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let upper = part.to_ascii_uppercase();
+            if matches!(
+                upper.as_str(),
+                "URL" | "URI" | "ID" | "CWD" | "STDOUT" | "STDERR"
+            ) {
+                upper
+            } else {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn field_rank(key: &str) -> u8 {
+    match key {
+        "status" | "state" | "result" | "summary" => 0,
+        "query" | "prompt" | "message" => 1,
+        "path" | "uri" | "url" | "target" | "session_id" | "id" => 2,
+        "cwd" | "workdir" | "timeout_ms" | "model" | "reasoning_effort" => 3,
+        _ => 4,
+    }
 }
 
 fn inline_preview_text(value: &str, max_chars: usize) -> String {
@@ -1509,6 +1729,27 @@ mod tests {
     }
 
     #[test]
+    fn generic_argument_preview_humanizes_structured_fields_without_raw_json() {
+        let rendered = tool_arguments_preview_lines(
+            "custom_tool",
+            &json!({
+                "query": "latest release",
+                "url": "https://example.com/releases",
+                "limit": 5
+            }),
+        );
+
+        assert_eq!(rendered[0], "Search latest release");
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "URL https://example.com/releases")
+        );
+        assert!(rendered.iter().any(|line| line == "Limit 5"));
+        assert!(rendered.iter().all(|line| !line.contains('{')));
+    }
+
+    #[test]
     fn exec_command_output_uses_tree_details_instead_of_fences() {
         let rendered = summarize_tool_entry(
             "• Finished exec_command",
@@ -1528,10 +1769,32 @@ mod tests {
             ),
         );
 
-        assert!(rendered.contains("  └ result exit 0"));
-        assert!(rendered.contains("  └ stdout"));
+        assert!(rendered.contains("  └ Result exit 0"));
+        assert!(rendered.contains("  └ Stdout"));
         assert!(rendered.contains("    ok"));
         assert!(!rendered.contains("```"));
+    }
+
+    #[test]
+    fn generic_output_details_humanize_structured_json_without_dumping_raw_payloads() {
+        let rendered = tool_output_detail_lines(
+            "custom_tool",
+            "{\"status\":\"ok\",\"url\":\"https://example.com/releases\",\"count\":3}",
+            Some(&json!({
+                "status": "ok",
+                "url": "https://example.com/releases",
+                "count": 3
+            })),
+        );
+
+        assert!(rendered.iter().any(|line| line == "  └ Output Status ok"));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "    URL https://example.com/releases")
+        );
+        assert!(rendered.iter().any(|line| line == "    Count 3"));
+        assert!(rendered.iter().all(|line| !line.contains('{')));
     }
 
     #[test]
@@ -1551,9 +1814,9 @@ mod tests {
         assert!(
             rendered
                 .iter()
-                .any(|line| line == "  └ effect Wrote 18 bytes to src/lib.rs")
+                .any(|line| line == "  └ Effect Wrote 18 bytes to src/lib.rs")
         );
-        assert!(rendered.iter().any(|line| line == "  └ files src/lib.rs"));
+        assert!(rendered.iter().any(|line| line == "  └ Files src/lib.rs"));
         assert!(
             rendered
                 .iter()
@@ -1575,9 +1838,9 @@ mod tests {
             })),
         );
 
-        assert!(rendered.iter().any(|line| line == "  └ session exec_123"));
-        assert!(rendered.iter().any(|line| line == "  └ result exit 0"));
-        assert!(rendered.iter().any(|line| line == "  └ stdout"));
+        assert!(rendered.iter().any(|line| line == "  └ Session exec_123"));
+        assert!(rendered.iter().any(|line| line == "  └ Result exit 0"));
+        assert!(rendered.iter().any(|line| line == "  └ Stdout"));
         assert!(rendered.iter().any(|line| line == "    ok"));
     }
 

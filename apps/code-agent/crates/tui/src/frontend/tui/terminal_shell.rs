@@ -184,8 +184,12 @@ impl CodeAgentTui {
             KeyCode::BackTab => {
                 let _ = self.apply_command_completion(true);
             }
-            KeyCode::Up if self.handle_tool_selection_navigation(true) => {}
-            KeyCode::Down if self.handle_tool_selection_navigation(false) => {}
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let _ = self.handle_tool_selection_navigation(true);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let _ = self.handle_tool_selection_navigation(false);
+            }
             KeyCode::Up => self.handle_vertical_navigation(true),
             KeyCode::Down => self.handle_vertical_navigation(false),
             KeyCode::Left => {
@@ -202,13 +206,17 @@ impl CodeAgentTui {
                 self.ui_state
                     .mutate(|state| state.scroll_focused_page(viewport_height, false, false));
             }
-            KeyCode::Home if self.handle_tool_selection_boundary(true) => {}
+            KeyCode::Home
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.handle_tool_selection_boundary(true) => {}
             KeyCode::Home => {
                 if !self.move_input_cursor_home() {
                     self.ui_state.mutate(|state| state.scroll_focused_home());
                 }
             }
-            KeyCode::End if self.handle_tool_selection_boundary(false) => {}
+            KeyCode::End
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.handle_tool_selection_boundary(false) => {}
             KeyCode::End => {
                 if !self.move_input_cursor_end() {
                     self.ui_state.mutate(|state| state.scroll_focused_end());
@@ -277,8 +285,8 @@ impl CodeAgentTui {
     }
 
     fn handle_vertical_navigation(&mut self, backwards: bool) {
-        if self.move_command_selection(backwards)
-            || self.move_selected_row_attachment(backwards)
+        if self.move_selected_row_attachment(backwards)
+            || self.move_command_selection(backwards)
             || self.navigate_input_history(backwards)
             || self.move_input_cursor_vertical(backwards)
             || self.move_input_cursor_boundary(backwards)

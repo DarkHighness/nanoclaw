@@ -44,7 +44,7 @@ impl CodeAgentTui {
             follow_transcript: true,
             ..TuiState::default()
         };
-        state.set_input_history(input_history);
+        state.set_input_history(input_history.prompts, input_history.commands);
         state.push_activity("session ready");
         state
     }

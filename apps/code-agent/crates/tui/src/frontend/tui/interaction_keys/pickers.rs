@@ -86,20 +86,6 @@ impl CodeAgentTui {
         }
     }
 
-    pub(crate) fn move_command_selection(&mut self, backwards: bool) -> bool {
-        let snapshot = self.ui_state.snapshot();
-        let Some(index) = move_slash_command_selection(
-            &snapshot.input,
-            snapshot.command_completion_index,
-            backwards,
-        ) else {
-            return false;
-        };
-        self.ui_state
-            .mutate(|state| state.command_completion_index = index);
-        true
-    }
-
     pub(crate) fn handle_statusline_picker_key(&mut self, key: KeyEvent) -> bool {
         let snapshot = self.ui_state.snapshot();
         if snapshot.statusline_picker.is_none() || !snapshot.input.is_empty() {

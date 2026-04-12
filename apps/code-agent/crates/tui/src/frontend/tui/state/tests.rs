@@ -530,6 +530,41 @@ fn local_history_overrides_persistent_suffix_with_richer_drafts() {
 }
 
 #[test]
+fn slash_input_history_recalls_command_entries_without_mixing_prompt_history() {
+    let mut state = TuiState {
+        input: "/".to_string(),
+        input_cursor: 1,
+        input_history: vec![SubmittedPromptSnapshot::from_text("regular prompt")],
+        command_history: vec![
+            SubmittedPromptSnapshot::from_text("/help"),
+            SubmittedPromptSnapshot::from_text("/sessions recent"),
+        ],
+        ..TuiState::default()
+    };
+
+    assert!(state.browse_input_history(true));
+    assert_eq!(state.input, "/sessions recent");
+
+    assert!(state.browse_input_history(true));
+    assert_eq!(state.input, "/help");
+}
+
+#[test]
+fn empty_input_history_prefers_prompt_entries_over_command_history() {
+    let mut state = TuiState {
+        input_history: vec![
+            SubmittedPromptSnapshot::from_text("first prompt"),
+            SubmittedPromptSnapshot::from_text("second prompt"),
+        ],
+        command_history: vec![SubmittedPromptSnapshot::from_text("/help")],
+        ..TuiState::default()
+    };
+
+    assert!(state.browse_input_history(true));
+    assert_eq!(state.input, "second prompt");
+}
+
+#[test]
 fn inserting_and_deleting_respect_the_cursor_position() {
     let mut state = TuiState {
         input: "helo".to_string(),

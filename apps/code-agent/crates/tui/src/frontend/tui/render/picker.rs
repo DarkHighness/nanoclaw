@@ -8,39 +8,62 @@ use super::shared::{
 use super::shell::bottom_band_inner_area;
 use super::theme::palette;
 use crate::frontend::tui::commands::{SlashCommandHint, SlashCommandSpec};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-pub(super) fn render_command_hint_band(
+pub(super) fn render_command_hint_modal(
     frame: &mut ratatui::Frame<'_>,
-    area: ratatui::layout::Rect,
+    area: Rect,
     command_hint: &SlashCommandHint,
 ) {
+    let height = build_command_hint_text(command_hint)
+        .lines
+        .len()
+        .saturating_add(3)
+        .clamp(8, 16) as u16;
+    let popup = centered_rect(area, 78, height.min(area.height.saturating_sub(2)).max(8));
+    frame.render_widget(Clear, popup);
     frame.render_widget(
-        Block::default().style(Style::default().bg(palette().bottom_pane_bg)),
-        area,
+        Block::default()
+            .title(" Commands ")
+            .title_style(
+                Style::default()
+                    .fg(palette().accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(palette().border_active))
+            .style(Style::default().bg(palette().footer_bg)),
+        popup,
     );
-    let inner = bottom_band_inner_area(area);
+    let inner = popup.inner(Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
     frame.render_widget(
         Paragraph::new(build_command_hint_text(command_hint))
             .wrap(Wrap { trim: false })
-            .style(
-                Style::default()
-                    .fg(palette().text)
-                    .bg(palette().bottom_pane_bg),
-            ),
+            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
         inner,
     );
 }
 
 pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
     let mut lines = vec![Line::from(vec![
-        Span::styled("commands", Style::default().fg(palette().header)),
+        Span::styled(
+            "Commands",
+            Style::default()
+                .fg(palette().header)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
-            format!("{} matches", command_hint.matches.len()),
-            Style::default().fg(palette().accent),
+            format!("{} Matches", command_hint.matches.len()),
+            Style::default()
+                .fg(palette().accent)
+                .add_modifier(Modifier::BOLD),
         ),
     ])];
 
@@ -73,7 +96,7 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
             ]));
             if !spec.aliases().is_empty() {
                 lines.push(Line::from(vec![
-                    Span::styled("  aliases ", Style::default().fg(palette().subtle)),
+                    Span::styled("  Aliases ", Style::default().fg(palette().subtle)),
                     Span::styled(
                         spec.aliases()
                             .iter()
@@ -102,7 +125,7 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
         if arguments.provided.is_empty() {
             if let Some(next) = arguments.next {
                 spans.push(Span::styled(
-                    "  next ",
+                    "  Next ",
                     Style::default().fg(palette().subtle),
                 ));
                 spans.push(Span::styled(
@@ -128,7 +151,7 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
             }
             if let Some(next) = arguments.next {
                 spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
-                spans.push(Span::styled("next ", Style::default().fg(palette().subtle)));
+                spans.push(Span::styled("Next ", Style::default().fg(palette().subtle)));
                 spans.push(Span::styled(
                     next.placeholder,
                     Style::default().fg(palette().muted),
@@ -154,14 +177,14 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
             .and_then(|arguments| arguments.next)
             .is_some_and(|argument| argument.required)
         {
-            "keep typing"
+            "Keep Typing"
         } else if command_hint.matches.len() > 1 {
-            "tab next"
+            "Tab Next"
         } else {
-            "enter run"
+            "Enter Run"
         }
     } else {
-        "tab complete"
+        "Tab Complete"
     };
     let enter_hint = if command_hint.exact {
         if command_hint
@@ -170,22 +193,22 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
             .and_then(|arguments| arguments.next)
             .is_some_and(|argument| argument.required)
         {
-            "keep typing"
+            "Keep Typing"
         } else {
-            "enter run"
+            "Enter Run"
         }
     } else if command_hint.matches.len() == 1 && !command_hint.selected.requires_arguments() {
-        "enter run"
+        "Enter Run"
     } else {
-        "enter accept"
+        "Enter Accept"
     };
     lines.push(Line::from(vec![
         Span::styled("↑↓", Style::default().fg(palette().muted)),
-        Span::styled(" move", Style::default().fg(palette().muted)),
+        Span::styled(" Move", Style::default().fg(palette().muted)),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(tab_hint, Style::default().fg(palette().muted)),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
-        Span::styled("shift+tab previous", Style::default().fg(palette().muted)),
+        Span::styled("Shift+Tab Previous", Style::default().fg(palette().muted)),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(enter_hint, Style::default().fg(palette().muted)),
     ]));
@@ -193,11 +216,26 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
     Text::from(lines)
 }
 
-pub(super) fn command_hint_height(command_hint: &SlashCommandHint) -> u16 {
-    build_command_hint_text(command_hint)
-        .lines
-        .len()
-        .clamp(2, 9) as u16
+fn centered_rect(area: Rect, width_percent: u16, height: u16) -> Rect {
+    let popup_height = height.min(area.height.saturating_sub(2)).max(1);
+    let vertical_margin = area.height.saturating_sub(popup_height) / 2;
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(vertical_margin),
+            Constraint::Length(popup_height),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
+            Constraint::Percentage(width_percent),
+            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
+        ])
+        .split(vertical[1]);
+    horizontal[1]
 }
 
 pub(super) fn render_pending_control_band(

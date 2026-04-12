@@ -1,4 +1,4 @@
-use super::super::input_history;
+use super::super::input_history::{self, ComposerHistoryKind};
 use super::{ComposerContextHint, TuiState, preview_text};
 use agent::types::{
     AgentStatus, Message, MessagePart, MessageRole, SubmittedPromptAttachment,
@@ -542,8 +542,13 @@ impl TuiState {
         lines.join("\n")
     }
 
-    pub(crate) fn set_input_history(&mut self, entries: Vec<SubmittedPromptSnapshot>) {
-        self.input_history = entries;
+    pub(crate) fn set_input_history(
+        &mut self,
+        prompts: Vec<SubmittedPromptSnapshot>,
+        commands: Vec<SubmittedPromptSnapshot>,
+    ) {
+        self.input_history = prompts;
+        self.command_history = commands;
         self.input_history_navigation = None;
     }
 
@@ -551,9 +556,26 @@ impl TuiState {
         &self.input_history
     }
 
+    pub(crate) fn command_history(&self) -> &[SubmittedPromptSnapshot] {
+        &self.command_history
+    }
+
     pub(crate) fn record_input_history(&mut self, prompt: SubmittedPromptSnapshot) -> bool {
         self.input_history_navigation = None;
-        input_history::record_input_history(&mut self.input_history, prompt)
+        record_persistent_history_entry(
+            &mut self.input_history,
+            ComposerHistoryKind::Prompt,
+            prompt,
+        )
+    }
+
+    pub(crate) fn record_command_history(&mut self, prompt: SubmittedPromptSnapshot) -> bool {
+        self.input_history_navigation = None;
+        record_persistent_history_entry(
+            &mut self.command_history,
+            ComposerHistoryKind::Command,
+            prompt,
+        )
     }
 
     pub(crate) fn record_local_input_history(&mut self, input: &str) -> bool {
@@ -580,17 +602,21 @@ impl TuiState {
             }
         }
         let draft = draft.normalized();
-        if self.local_input_history.last().is_some_and(|existing| {
+        let kind = ComposerHistoryKind::classify_text(&draft.text);
+        let local_history = match kind {
+            ComposerHistoryKind::Prompt => &mut self.local_input_history,
+            ComposerHistoryKind::Command => &mut self.local_command_history,
+        };
+        if local_history.last().is_some_and(|existing| {
             submitted_prompt_snapshot_from_draft(existing)
                 == submitted_prompt_snapshot_from_draft(&draft)
         }) {
             return false;
         }
-        self.local_input_history.push(draft);
-        if self.local_input_history.len() > input_history::MAX_COMPOSER_HISTORY_ENTRIES {
-            let overflow =
-                self.local_input_history.len() - input_history::MAX_COMPOSER_HISTORY_ENTRIES;
-            self.local_input_history.drain(0..overflow);
+        local_history.push(draft);
+        if local_history.len() > input_history::MAX_COMPOSER_HISTORY_ENTRIES {
+            let overflow = local_history.len() - input_history::MAX_COMPOSER_HISTORY_ENTRIES;
+            local_history.drain(0..overflow);
         }
         true
     }
@@ -602,17 +628,21 @@ impl TuiState {
         }
 
         let draft = self.current_input_draft();
-        if self.local_input_history.last().is_some_and(|existing| {
+        let kind = ComposerHistoryKind::classify_text(&draft.text);
+        let local_history = match kind {
+            ComposerHistoryKind::Prompt => &mut self.local_input_history,
+            ComposerHistoryKind::Command => &mut self.local_command_history,
+        };
+        if local_history.last().is_some_and(|existing| {
             submitted_prompt_snapshot_from_draft(existing)
                 == submitted_prompt_snapshot_from_draft(&draft)
         }) {
             return false;
         }
-        self.local_input_history.push(draft);
-        if self.local_input_history.len() > input_history::MAX_COMPOSER_HISTORY_ENTRIES {
-            let overflow =
-                self.local_input_history.len() - input_history::MAX_COMPOSER_HISTORY_ENTRIES;
-            self.local_input_history.drain(0..overflow);
+        local_history.push(draft);
+        if local_history.len() > input_history::MAX_COMPOSER_HISTORY_ENTRIES {
+            let overflow = local_history.len() - input_history::MAX_COMPOSER_HISTORY_ENTRIES;
+            local_history.drain(0..overflow);
         }
         true
     }
@@ -1068,21 +1098,29 @@ impl TuiState {
     }
 
     fn history_entry_drafts(&self) -> Vec<ComposerDraftState> {
-        let mut entries = self
-            .input_history
+        let history_kind = ComposerHistoryKind::classify_text(&self.input);
+        let persistent_history = match history_kind {
+            ComposerHistoryKind::Prompt => &self.input_history,
+            ComposerHistoryKind::Command => &self.command_history,
+        };
+        let local_history = match history_kind {
+            ComposerHistoryKind::Prompt => &self.local_input_history,
+            ComposerHistoryKind::Command => &self.local_command_history,
+        };
+
+        let mut entries = persistent_history
             .iter()
             .cloned()
             .map(|snapshot| composer_draft_from_prompt_snapshot(&snapshot))
             .collect::<Vec<_>>();
-        if self.local_input_history.is_empty() {
+        if local_history.is_empty() {
             return entries;
         }
 
         // Local history retains richer in-session draft state. When it matches
         // the persistent suffix, replace the plain-text entries instead of
         // recalling duplicate prompts back-to-back.
-        let shared_suffix = self
-            .local_input_history
+        let shared_suffix = local_history
             .iter()
             .rev()
             .zip(entries.iter().rev())
@@ -1092,7 +1130,7 @@ impl TuiState {
             })
             .count();
         entries.truncate(entries.len().saturating_sub(shared_suffix));
-        entries.extend(self.local_input_history.iter().cloned());
+        entries.extend(local_history.iter().cloned());
         entries
     }
 
@@ -1304,6 +1342,25 @@ impl TuiState {
             .filter(|attachment| attachment.is_row_attachment())
             .count()
     }
+}
+
+fn record_persistent_history_entry(
+    entries: &mut Vec<SubmittedPromptSnapshot>,
+    kind: ComposerHistoryKind,
+    prompt: SubmittedPromptSnapshot,
+) -> bool {
+    let Some(entry) = input_history::normalized_history_entry(kind, prompt) else {
+        return false;
+    };
+    if entries.last() == Some(&entry.prompt) {
+        return false;
+    }
+    entries.push(entry.prompt);
+    if entries.len() > input_history::MAX_COMPOSER_HISTORY_ENTRIES {
+        let overflow = entries.len() - input_history::MAX_COMPOSER_HISTORY_ENTRIES;
+        entries.drain(0..overflow);
+    }
+    true
 }
 
 fn summarize_row_attachments(

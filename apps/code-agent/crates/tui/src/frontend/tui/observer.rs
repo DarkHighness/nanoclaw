@@ -1155,7 +1155,7 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Ran cargo test\n  └ $ cargo test\n  └ result exit 0\n  └ stdout\n    ok"
+            "• Ran cargo test\n  └ $ cargo test\n  └ Result exit 0\n  └ Stdout\n    ok"
         );
     }
 
@@ -1190,8 +1190,8 @@ mod tests {
         });
 
         let transcript = transcript_text(&ui_state.snapshot().transcript[0]);
-        assert!(transcript.contains("  └ result exit 1"));
-        assert!(transcript.contains("  └ stderr"));
+        assert!(transcript.contains("  └ Result exit 1"));
+        assert!(transcript.contains("  └ Stderr"));
         assert!(transcript.contains("… +"));
         assert!(transcript.contains("    20"));
         assert!(!transcript.contains("    1\n"));
@@ -1234,7 +1234,7 @@ mod tests {
 
         let snapshot = ui_state.snapshot();
         let transcript = transcript_text(&snapshot.transcript[0]);
-        assert!(transcript.contains("  └ files src/lib.rs"));
+        assert!(transcript.contains("  └ Files src/lib.rs"));
         assert!(transcript.contains("action [r] review diff"));
         assert!(
             snapshot.transcript[0]

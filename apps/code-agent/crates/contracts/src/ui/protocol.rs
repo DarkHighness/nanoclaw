@@ -21,7 +21,7 @@ use crate::interaction::{
     PermissionProfile, PermissionRequestDecision, PermissionRequestPrompt, SessionPermissionMode,
     SessionPermissionModeOutcome, SkillSummary, UserInputPrompt, UserInputSubmission,
 };
-use agent::RuntimeCommand;
+use agent::runtime::RuntimeCommand;
 use agent::types::{Message, SubmittedPromptSnapshot};
 use std::path::PathBuf;
 

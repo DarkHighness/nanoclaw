@@ -25,6 +25,20 @@ impl CodeAgentTui {
         navigated
     }
 
+    pub(super) fn move_command_selection(&mut self, backwards: bool) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        let Some(index) = move_slash_command_selection(
+            &snapshot.input,
+            snapshot.command_completion_index,
+            backwards,
+        ) else {
+            return false;
+        };
+        self.ui_state
+            .mutate(|state| state.command_completion_index = index);
+        true
+    }
+
     pub(super) async fn flush_due_paste_burst(&mut self) {
         let now = Instant::now();
         match self.paste_burst.flush_if_due(now) {
@@ -326,14 +340,28 @@ impl CodeAgentTui {
     pub(super) fn record_submitted_input(&mut self, input: &str) {
         let workspace_root = self.workspace_root_buf();
         let mut persisted = None;
+        let command_submission = input.trim_start().starts_with('/');
         self.ui_state.mutate(|state| {
             let _ = state.record_local_input_history(input);
-            if state.record_input_history(SubmittedPromptSnapshot::from_text(input.to_string())) {
-                persisted = Some(state.input_history().to_vec());
+            let prompt = SubmittedPromptSnapshot::from_text(input.to_string());
+            let recorded = if command_submission {
+                state.record_command_history(prompt)
+            } else {
+                state.record_input_history(prompt)
+            };
+            if recorded {
+                persisted = Some((
+                    state.input_history().to_vec(),
+                    state.command_history().to_vec(),
+                ));
             }
         });
-        if let Some(entries) = persisted {
-            input_history::persist_input_history(&workspace_root, &entries);
+        if let Some((prompt_entries, command_entries)) = persisted {
+            input_history::persist_input_history(
+                &workspace_root,
+                &prompt_entries,
+                &command_entries,
+            );
         }
     }
 
@@ -345,11 +373,18 @@ impl CodeAgentTui {
             state.clear_toast();
             let _ = state.record_local_input_draft(submission.local_history_draft.clone());
             if state.record_input_history(submission.prompt_snapshot.clone()) {
-                persisted = Some(state.input_history().to_vec());
+                persisted = Some((
+                    state.input_history().to_vec(),
+                    state.command_history().to_vec(),
+                ));
             }
         });
-        if let Some(entries) = persisted {
-            input_history::persist_input_history(&workspace_root, &entries);
+        if let Some((prompt_entries, command_entries)) = persisted {
+            input_history::persist_input_history(
+                &workspace_root,
+                &prompt_entries,
+                &command_entries,
+            );
         }
     }
 

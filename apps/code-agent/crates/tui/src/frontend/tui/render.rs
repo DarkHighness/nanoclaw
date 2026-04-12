@@ -24,10 +24,7 @@ use chrome::{
     render_permission_request_modal, render_user_input_band, user_input_band_height,
 };
 use history_rollback_overlay::render_history_rollback_overlay;
-use picker::{
-    command_hint_height, pending_control_height, render_command_hint_band,
-    render_pending_control_band,
-};
+use picker::{pending_control_height, render_command_hint_modal, render_pending_control_band};
 use ratatui::layout::{Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Block;
@@ -66,7 +63,6 @@ pub(crate) fn render(
     } else {
         None
     };
-    let command_hint_height = command_hint.as_ref().map(command_hint_height);
     let toast_height = toast_height(state);
     let composer_height = composer_height(state, user_input);
     let vertical = Layout::default()
@@ -74,7 +70,6 @@ pub(crate) fn render(
         .constraints(bottom_layout_constraints(
             prompt_height,
             pending_height,
-            command_hint_height,
             toast_height,
             composer_height,
         ))
@@ -88,11 +83,6 @@ pub(crate) fn render(
         area
     });
     let pending_area = pending_height.map(|_| {
-        let area = vertical[next_index];
-        next_index += 1;
-        area
-    });
-    let command_hint_area = command_hint_height.map(|_| {
         let area = vertical[next_index];
         next_index += 1;
         area
@@ -113,11 +103,7 @@ pub(crate) fn render(
         render_pending_control_band(frame, pending_area.expect("pending area"), state);
     }
     if let Some(command_hint) = command_hint.as_ref() {
-        render_command_hint_band(
-            frame,
-            command_hint_area.expect("command hint area"),
-            command_hint,
-        );
+        render_command_hint_modal(frame, area, command_hint);
     }
     if toast_height.is_some() {
         render_toast_band(frame, toast_area.expect("toast area"), state);
@@ -165,12 +151,6 @@ pub(crate) fn main_pane_viewport_height(
     } else {
         None
     };
-    let command_hint = if !approval_active && !permission_request_active && user_input.is_none() {
-        slash_command_hint(&state.input, state.command_completion_index)
-    } else {
-        None
-    };
-    let command_hint_height = command_hint.as_ref().map(command_hint_height);
     let toast_height = toast_height(state);
     let composer_height = composer_height(state, user_input);
     let vertical = Layout::default()
@@ -178,7 +158,6 @@ pub(crate) fn main_pane_viewport_height(
         .constraints(bottom_layout_constraints(
             prompt_height,
             pending_height,
-            command_hint_height,
             toast_height,
             composer_height,
         ))

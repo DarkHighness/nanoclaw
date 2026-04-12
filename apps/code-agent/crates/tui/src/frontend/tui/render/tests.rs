@@ -427,7 +427,7 @@ fn history_rollback_overlay_renders_selection_list_and_preview() {
     assert!(
         text_lines(&preview)
             .iter()
-            .any(|line| line.contains("Turn Preview"))
+            .any(|line| line.contains("Prompt"))
     );
     assert!(
         text_lines(&preview)
@@ -1891,18 +1891,18 @@ fn approval_modal_uses_structured_command_preview() {
         reasons: vec!["sandbox policy requires approval".to_string()],
     });
 
-    assert!(line_text_for(&text.lines[0]).contains("approval required"));
+    assert!(line_text_for(&text.lines[0]).contains("Approval Required"));
     assert!(line_text_for(&text.lines[0]).contains("exec_command"));
-    assert!(line_text_for(&text.lines[1]).contains("context"));
+    assert!(line_text_for(&text.lines[1]).contains("Context"));
     assert!(line_text_for(&text.lines[1]).contains("/workspace/apps/code-agent"));
     assert!(line_text_for(&text.lines[1]).contains("run"));
     assert!(!line_text_for(&text.lines[1]).contains("local"));
     assert!(line_text_for(&text.lines[2]).contains("command"));
-    assert!(line_text_for(&text.lines[3]).contains("reason"));
+    assert!(line_text_for(&text.lines[3]).contains("Reason"));
     assert!(
         text.lines
             .iter()
-            .any(|line| line_text_for(line).contains("keys"))
+            .any(|line| line_text_for(line).contains("Keys"))
     );
     assert!(text.lines.iter().any(|line| {
         line.spans
@@ -1932,7 +1932,7 @@ fn approval_modal_hides_local_origin_when_it_adds_no_operator_value() {
         reasons: vec!["needs approval".to_string()],
     });
 
-    assert!(line_text_for(&text.lines[0]).contains("approval required"));
+    assert!(line_text_for(&text.lines[0]).contains("Approval Required"));
     assert!(line_text_for(&text.lines[0]).contains("write"));
     assert!(line_text_for(&text.lines[1]).contains("arguments"));
     assert!(
@@ -1979,7 +1979,7 @@ fn permission_request_modal_does_not_shrink_main_pane_viewport() {
 
     let viewport = main_pane_viewport_height(area, &state, None, Some(&prompt), None);
 
-    assert_eq!(viewport, 28);
+    assert_eq!(viewport, 27);
 }
 
 #[test]
@@ -2010,7 +2010,7 @@ fn command_hint_text_surfaces_selected_usage_and_matches() {
         exact: false,
     });
 
-    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "commands");
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Commands");
     assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "›");
     assert_eq!(
         rendered.lines[1].spans[2].content.as_ref(),
@@ -2024,8 +2024,8 @@ fn command_hint_text_surfaces_selected_usage_and_matches() {
         rendered.lines[2].spans[1].content.as_ref(),
         "/session <session-ref>"
     );
-    assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "tab complete");
-    assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "enter accept");
+    assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "Tab Complete");
+    assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "Enter Accept");
 }
 
 #[test]
@@ -2065,8 +2065,8 @@ fn command_hint_text_surfaces_argument_progress() {
             .iter()
             .any(|span| span.content.as_ref().contains("<prompt>"))
     );
-    assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "keep typing");
-    assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "keep typing");
+    assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "Keep Typing");
+    assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "Keep Typing");
 }
 
 #[test]
@@ -2096,8 +2096,8 @@ fn command_hint_text_keeps_enter_run_for_optional_arguments() {
     });
 
     assert_eq!(rendered.lines[2].spans[1].content.as_ref(), "[query]");
-    assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "enter run");
-    assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "enter run");
+    assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "Enter Run");
+    assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "Enter Run");
 }
 
 #[test]
@@ -2158,7 +2158,7 @@ fn command_hint_text_shows_browse_window_ellipsis() {
         exact: false,
     });
 
-    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "commands");
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Commands");
     assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "… 2 earlier");
     assert_eq!(
         rendered.lines[5].spans[2].content.as_ref(),

@@ -17,6 +17,7 @@ crossterm = "0.28.1"
 futures.workspace = true
 ratatui.workspace = true
 ratatui-core = "0.1.0"
+serde.workspace = true
 serde_json.workspace = true
 shlex.workspace = true
 store = { path = "../../../../crates/store" }

@@ -349,7 +349,9 @@ pub(crate) struct TuiState {
     // latest killed tail even after submit/clear transitions.
     pub(crate) kill_buffer: Option<ComposerKillBufferState>,
     pub(crate) input_history: Vec<SubmittedPromptSnapshot>,
+    pub(crate) command_history: Vec<SubmittedPromptSnapshot>,
     pub(crate) local_input_history: Vec<ComposerDraftState>,
+    pub(crate) local_command_history: Vec<ComposerDraftState>,
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
     pub(crate) command_completion_index: usize,
     pub(crate) composer_context_hint: Option<ComposerContextHint>,
