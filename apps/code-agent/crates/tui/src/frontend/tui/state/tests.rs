@@ -133,6 +133,20 @@ fn transcript_entry_from_string_round_trips_prefixed_summary_blocks() {
 
 #[test]
 fn code_diagnostics_tool_entry_uses_diagnostics_headline() {
+    let notebook_edit_entry = TranscriptEntry::tool_with_completion(
+        TranscriptToolStatus::Finished,
+        "notebook_edit",
+        vec![ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Effect,
+            value: "Updated analysis.ipynb with 1 notebook operation(s)".to_string(),
+        }],
+        ToolCompletionState::Success,
+    );
+    assert_eq!(
+        notebook_edit_entry.serialized(),
+        "• Updated notebook\n  └ Effect Updated analysis.ipynb with 1 notebook operation(s)"
+    );
+
     let notebook_entry = TranscriptEntry::tool_with_completion(
         TranscriptToolStatus::Finished,
         "notebook_read",

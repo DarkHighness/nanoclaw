@@ -418,6 +418,9 @@ fn tool_headline_prefix(
     }
 
     match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::NotebookEdit => {
+            lifecycle_headline_text(status, "Editing notebook", "Updated notebook")
+        }
         ToolRenderKind::NotebookRead => {
             lifecycle_headline_text(status, "Reading notebook", "Read notebook")
         }
@@ -487,7 +490,8 @@ fn tool_headline_subject_kind(
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
             TranscriptToolHeadlineSubjectKind::ToolName
         }
-        ToolRenderKind::NotebookRead
+        ToolRenderKind::NotebookEdit
+        | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorStart

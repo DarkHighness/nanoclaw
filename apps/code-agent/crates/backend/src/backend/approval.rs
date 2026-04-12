@@ -200,6 +200,36 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::NotebookEdit => {
+            let path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let operation_count = arguments
+                .get("operations")
+                .and_then(Value::as_array)
+                .map(|operations| operations.len())
+                .unwrap_or(0);
+            let mut preview = vec![format!("edit notebook {path}")];
+            if operation_count > 0 {
+                preview.push(format!("{operation_count} operation(s)"));
+            }
+            if arguments
+                .get("expected_snapshot")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some()
+            {
+                preview.push("snapshot guarded".to_string());
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::CodeSearch => {
             let query = arguments
                 .get("query")

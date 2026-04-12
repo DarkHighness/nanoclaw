@@ -16,7 +16,7 @@ Status: Active
 | Phase 6: Cron / Automation | Not Started | No scheduled execution tool family yet. |
 | Phase 7: Code Search | Complete | Canonical `code_search` now returns typed ranked matches with explicit scores; managed backends merge semantic workspace-symbol hits with lexical snippet fallback, while lexical-only hosts still expose deterministic index-backed ranking. |
 | Phase 8: Browser / Computer Use | Not Started | No first-class browser session tools yet. |
-| Phase 9: Notebook Editing | In Progress | Feature-gated `notebook_read` now exposes typed notebook cells and metadata; notebook mutation still falls back to generic file tooling until `notebook_edit` lands. |
+| Phase 9: Notebook Editing | Complete | Feature-gated `notebook_read` and `notebook_edit` now expose typed notebook inspection and mutation without falling back to raw `.ipynb` JSON tooling. |
 | Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; operator/session commands remain, and installed skills are now surfaced as explicit `/skill_name` slash invocations plus `$skill_name` composer directives. |
 | Cross-cutting: Tool Review Surface | In Progress | Typed transcript cells exist, but operator review for running input/output/failure still needs a fuller design pass. |
 | Cross-cutting: Skill Lifecycle & Self-Evolution | In Progress | Hermes-style `skills_list`, `skill_view`, and `skill_manage` now exist with managed-vs-external roots, managed roots deterministically override readonly external copies, and shadowed copies are now surfaced as provenance; verifier-backed extraction, richer provenance update flows, and archival/promotion are still missing. |
@@ -610,10 +610,14 @@ Support notebook-native workflows without degrading them into JSON patching.
   metadata.
 - The transcript renders notebook edits as notebook objects, not giant JSON
   diffs.
+- Notebook tools stay behind the `notebook-tools` feature instead of widening
+  the default model-visible surface.
 
 ### Exit criteria
 
 - Common notebook workflows no longer require brittle raw JSON edits.
+- Both notebook inspection and mutation are available as typed tool surfaces
+  when `notebook-tools` is enabled.
 
 ## Cross-Cutting Workstream: Skill Lifecycle And Self-Evolution
 

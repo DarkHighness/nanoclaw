@@ -1,6 +1,4 @@
 use crate::options::AppOptions;
-#[cfg(feature = "notebook-tools")]
-use agent::NotebookReadTool;
 use agent::runtime::RuntimeError;
 use agent::runtime::{
     CommandHookExecutor, DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig,
@@ -22,6 +20,8 @@ use agent::{
     WorkspaceTextCodeIntelBackend, WorktreeEnterTool, WorktreeExitTool, WorktreeListTool,
     WriteStdinTool, WriteTool,
 };
+#[cfg(feature = "notebook-tools")]
+use agent::{NotebookEditTool, NotebookReadTool};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -578,6 +578,10 @@ fn build_builtin_tools(
 
     let file_activity_observer: Arc<dyn FileActivityObserver> = file_activity_backend;
     #[cfg(feature = "notebook-tools")]
+    tools.register(NotebookEditTool::with_file_activity_observer(
+        file_activity_observer.clone(),
+    ));
+    #[cfg(feature = "notebook-tools")]
     tools.register(NotebookReadTool::with_file_activity_observer(
         file_activity_observer.clone(),
     ));
@@ -773,6 +777,12 @@ mod tests {
         assert!(
             tool_names
                 .iter()
+                .any(|name| name.as_str() == "notebook_edit")
+        );
+        #[cfg(feature = "notebook-tools")]
+        assert!(
+            tool_names
+                .iter()
                 .any(|name| name.as_str() == "notebook_read")
         );
         assert!(
@@ -798,6 +808,11 @@ mod tests {
         );
 
         let tool_names = tooling.tools.names();
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "notebook_edit")
+        );
         assert!(
             tool_names
                 .iter()

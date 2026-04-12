@@ -1,16 +1,20 @@
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::file_activity::FileActivityObserver;
-use crate::fs::resolve_tool_path_against_workspace_root;
+use crate::fs::{
+    commit_text_file, compute_diff_preview, resolve_tool_path_against_workspace_root,
+    stable_text_hash,
+};
 use crate::registry::Tool;
 use crate::{Result, ToolError, ToolExecutionContext};
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::fs;
 use types::{MessagePart, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
+const NOTEBOOK_EDIT_TOOL_NAME: &str = "notebook_edit";
 const NOTEBOOK_READ_TOOL_NAME: &str = "notebook_read";
 const DEFAULT_NOTEBOOK_CELL_COUNT: usize = 8;
 const MAX_NOTEBOOK_CELL_COUNT: usize = 64;
@@ -29,6 +33,40 @@ pub struct NotebookReadToolInput {
     pub cell_count: Option<usize>,
     #[serde(default)]
     pub include_outputs: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct NotebookEditToolInput {
+    pub path: String,
+    pub operations: Vec<NotebookEditOperation>,
+    #[serde(default)]
+    pub expected_snapshot: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotebookEditableCellType {
+    Code,
+    Markdown,
+    Raw,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum NotebookEditOperation {
+    ReplaceCell {
+        cell_index: usize,
+        cell_type: NotebookEditableCellType,
+        source: String,
+    },
+    InsertCell {
+        cell_index: usize,
+        cell_type: NotebookEditableCellType,
+        source: String,
+    },
+    DeleteCell {
+        cell_index: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, JsonSchema, PartialEq, Eq)]
@@ -97,8 +135,59 @@ struct NotebookReadToolOutput {
     empty: bool,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum NotebookAppliedEdit {
+    ReplaceCell {
+        cell_index: usize,
+        cell_type: NotebookEditableCellType,
+    },
+    InsertCell {
+        cell_index: usize,
+        cell_type: NotebookEditableCellType,
+    },
+    DeleteCell {
+        cell_index: usize,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum NotebookEditToolOutput {
+    Success {
+        requested_path: String,
+        resolved_path: String,
+        summary: String,
+        snapshot_before: String,
+        snapshot_after: String,
+        cell_count_before: usize,
+        cell_count_after: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kernelspec_name: Option<String>,
+        operations: Vec<NotebookAppliedEdit>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        changed_cells: Vec<NotebookCellPreview>,
+        file_diffs: Vec<Value>,
+    },
+    Error {
+        requested_path: String,
+        resolved_path: String,
+        summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_before: Option<String>,
+        operation_count: usize,
+    },
+}
+
 #[derive(Clone, Default)]
 pub struct NotebookReadTool {
+    activity_observer: Option<Arc<dyn FileActivityObserver>>,
+}
+
+#[derive(Clone, Default)]
+pub struct NotebookEditTool {
     activity_observer: Option<Arc<dyn FileActivityObserver>>,
 }
 
@@ -115,6 +204,189 @@ impl NotebookReadTool {
         Self {
             activity_observer: Some(activity_observer),
         }
+    }
+}
+
+impl NotebookEditTool {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            activity_observer: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_file_activity_observer(activity_observer: Arc<dyn FileActivityObserver>) -> Self {
+        Self {
+            activity_observer: Some(activity_observer),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for NotebookEditTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            NOTEBOOK_EDIT_TOOL_NAME,
+            "Edit an existing Jupyter notebook (`.ipynb`) through typed cell operations. Use expected_snapshot to guard against stale reads. Replace and insert operations create clean cells, and code-cell outputs are reset instead of carrying stale execution state forward.",
+            serde_json::to_value(schema_for!(NotebookEditToolInput))
+                .expect("notebook_edit schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(NotebookEditToolOutput))
+                .expect("notebook_edit output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: NotebookEditToolInput = serde_json::from_value(arguments)?;
+        if input.operations.is_empty() {
+            return Err(ToolError::invalid(
+                "notebook_edit requires at least one operation",
+            ));
+        }
+
+        let resolved = resolve_tool_path_against_workspace_root(
+            &input.path,
+            ctx.effective_root(),
+            ctx.container_workdir.as_deref(),
+        )?;
+        ctx.assert_path_write_allowed(&resolved)?;
+        if resolved.extension().and_then(|value| value.to_str()) != Some("ipynb") {
+            return Err(ToolError::invalid(
+                "notebook_edit requires a .ipynb notebook path",
+            ));
+        }
+
+        let before = fs::read_to_string(&resolved).await?;
+        let snapshot_before = stable_text_hash(&before);
+        if let Some(expected_snapshot) = input.expected_snapshot.as_deref()
+            && expected_snapshot != snapshot_before
+        {
+            let structured_output = NotebookEditToolOutput::Error {
+                requested_path: input.path.clone(),
+                resolved_path: resolved.display().to_string(),
+                summary: format!(
+                    "Snapshot mismatch for {}. Expected {expected_snapshot}, found {snapshot_before}. Re-read the notebook before editing.",
+                    input.path
+                ),
+                snapshot_before: Some(snapshot_before.clone()),
+                operation_count: input.operations.len(),
+            };
+            return Ok(ToolResult {
+                id: call_id,
+                call_id: external_call_id,
+                tool_name: NOTEBOOK_EDIT_TOOL_NAME.into(),
+                parts: vec![MessagePart::text(match &structured_output {
+                    NotebookEditToolOutput::Error { summary, .. } => summary.clone(),
+                    NotebookEditToolOutput::Success { .. } => unreachable!(),
+                })],
+                attachments: Vec::new(),
+                structured_content: Some(
+                    serde_json::to_value(structured_output).expect("notebook_edit error output"),
+                ),
+                continuation: None,
+                metadata: Some(json!({
+                    "path": resolved,
+                    "snapshot_before": snapshot_before,
+                    "operation_count": input.operations.len(),
+                })),
+                is_error: true,
+            });
+        }
+
+        let mut notebook: Value = serde_json::from_str(&before)
+            .map_err(|_| ToolError::invalid("notebook_edit: file is not valid notebook JSON"))?;
+        let cell_count_before = notebook
+            .get("cells")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let language_name = notebook_language_name(&notebook);
+        let kernelspec_name = notebook_kernelspec_name(&notebook);
+
+        let mut applied = Vec::new();
+        let mut changed_indices = Vec::new();
+        for operation in input.operations {
+            apply_notebook_edit_operation(
+                &mut notebook,
+                operation,
+                &mut applied,
+                &mut changed_indices,
+            )?;
+        }
+
+        let after = serde_json::to_string_pretty(&notebook)
+            .map_err(|_| ToolError::invalid("notebook_edit: failed to serialize notebook"))?;
+        let snapshot_after = stable_text_hash(&after);
+        commit_text_file(&resolved, Some(&after)).await?;
+        if let Some(observer) = &self.activity_observer {
+            observer.did_change(resolved.clone());
+            observer.did_save(resolved.clone());
+        }
+
+        let file_diffs = compute_diff_preview(&input.path, Some(&before), Some(&after))
+            .into_iter()
+            .collect::<Vec<_>>();
+        let changed_cells = collect_changed_cell_previews(&notebook, &changed_indices);
+        let cell_count_after = notebook
+            .get("cells")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let summary = format!(
+            "Updated {} with {} notebook operation(s)",
+            input.path,
+            applied.len()
+        );
+        let structured_output = NotebookEditToolOutput::Success {
+            requested_path: input.path.clone(),
+            resolved_path: resolved.display().to_string(),
+            summary: summary.clone(),
+            snapshot_before: snapshot_before.clone(),
+            snapshot_after: snapshot_after.clone(),
+            cell_count_before,
+            cell_count_after,
+            language_name,
+            kernelspec_name,
+            operations: applied.clone(),
+            changed_cells: changed_cells.clone(),
+            file_diffs: file_diffs.clone(),
+        };
+
+        Ok(ToolResult {
+            id: call_id,
+            call_id: external_call_id,
+            tool_name: NOTEBOOK_EDIT_TOOL_NAME.into(),
+            parts: vec![MessagePart::text(render_notebook_edit_text(
+                &summary,
+                &snapshot_before,
+                &snapshot_after,
+                &applied,
+                &changed_cells,
+            ))],
+            attachments: Vec::new(),
+            structured_content: Some(
+                serde_json::to_value(structured_output).expect("notebook_edit success output"),
+            ),
+            continuation: None,
+            metadata: Some(json!({
+                "path": resolved,
+                "snapshot_before": snapshot_before,
+                "snapshot_after": snapshot_after,
+                "cell_count_before": cell_count_before,
+                "cell_count_after": cell_count_after,
+                "operations": applied,
+                "file_diffs": file_diffs,
+            })),
+            is_error: false,
+        })
     }
 }
 
@@ -591,9 +863,190 @@ fn notebook_kernelspec_display_name(notebook: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn apply_notebook_edit_operation(
+    notebook: &mut Value,
+    operation: NotebookEditOperation,
+    applied: &mut Vec<NotebookAppliedEdit>,
+    changed_indices: &mut Vec<usize>,
+) -> Result<()> {
+    let cells = notebook
+        .get_mut("cells")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| ToolError::invalid("notebook_edit: notebook is missing a cells array"))?;
+    match operation {
+        NotebookEditOperation::ReplaceCell {
+            cell_index,
+            cell_type,
+            source,
+        } => {
+            if !(1..=cells.len()).contains(&cell_index) {
+                return Err(ToolError::invalid(format!(
+                    "notebook_edit replace_cell index {cell_index} is out of range for {} cells",
+                    cells.len()
+                )));
+            }
+            let metadata = cells[cell_index - 1]
+                .get("metadata")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            cells[cell_index - 1] = build_notebook_cell(cell_type, &source, metadata);
+            applied.push(NotebookAppliedEdit::ReplaceCell {
+                cell_index,
+                cell_type,
+            });
+            push_changed_index(changed_indices, cell_index);
+        }
+        NotebookEditOperation::InsertCell {
+            cell_index,
+            cell_type,
+            source,
+        } => {
+            if !(1..=cells.len() + 1).contains(&cell_index) {
+                return Err(ToolError::invalid(format!(
+                    "notebook_edit insert_cell index {cell_index} is out of range for insertion into {} cells",
+                    cells.len()
+                )));
+            }
+            cells.insert(
+                cell_index - 1,
+                build_notebook_cell(cell_type, &source, json!({})),
+            );
+            applied.push(NotebookAppliedEdit::InsertCell {
+                cell_index,
+                cell_type,
+            });
+            push_changed_index(changed_indices, cell_index);
+        }
+        NotebookEditOperation::DeleteCell { cell_index } => {
+            if !(1..=cells.len()).contains(&cell_index) {
+                return Err(ToolError::invalid(format!(
+                    "notebook_edit delete_cell index {cell_index} is out of range for {} cells",
+                    cells.len()
+                )));
+            }
+            cells.remove(cell_index - 1);
+            applied.push(NotebookAppliedEdit::DeleteCell { cell_index });
+        }
+    }
+    Ok(())
+}
+
+fn build_notebook_cell(
+    cell_type: NotebookEditableCellType,
+    source: &str,
+    metadata: Value,
+) -> Value {
+    let source = notebook_source_value(source);
+    match cell_type {
+        NotebookEditableCellType::Code => json!({
+            "cell_type": "code",
+            "metadata": metadata,
+            "source": source,
+            "execution_count": Value::Null,
+            "outputs": [],
+        }),
+        NotebookEditableCellType::Markdown => json!({
+            "cell_type": "markdown",
+            "metadata": metadata,
+            "source": source,
+        }),
+        NotebookEditableCellType::Raw => json!({
+            "cell_type": "raw",
+            "metadata": metadata,
+            "source": source,
+        }),
+    }
+}
+
+fn notebook_source_value(source: &str) -> Value {
+    let lines = if source.is_empty() {
+        Vec::new()
+    } else {
+        source
+            .split_inclusive('\n')
+            .map(|line| Value::String(line.to_string()))
+            .collect::<Vec<_>>()
+    };
+    Value::Array(lines)
+}
+
+fn push_changed_index(changed_indices: &mut Vec<usize>, index: usize) {
+    if !changed_indices.contains(&index) {
+        changed_indices.push(index);
+    }
+}
+
+fn collect_changed_cell_previews(
+    notebook: &Value,
+    changed_indices: &[usize],
+) -> Vec<NotebookCellPreview> {
+    let Some(cells) = notebook.get("cells").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    changed_indices
+        .iter()
+        .copied()
+        .filter_map(|index| cells.get(index.saturating_sub(1)).map(|cell| (index, cell)))
+        .map(|(index, cell)| notebook_cell_preview(cell, index, true))
+        .collect()
+}
+
+fn render_notebook_edit_text(
+    summary: &str,
+    snapshot_before: &str,
+    snapshot_after: &str,
+    operations: &[NotebookAppliedEdit],
+    changed_cells: &[NotebookCellPreview],
+) -> String {
+    let mut lines = vec![
+        summary.to_string(),
+        format!("[snapshot {snapshot_before} -> {snapshot_after}]"),
+    ];
+    for operation in operations {
+        lines.push(render_notebook_edit_operation(operation));
+    }
+    for cell in changed_cells {
+        lines.push(String::new());
+        lines.push(render_notebook_cell_header(cell));
+        lines.extend(cell.source_preview.iter().map(|line| format!("  {line}")));
+    }
+    lines.join("\n")
+}
+
+fn render_notebook_edit_operation(operation: &NotebookAppliedEdit) -> String {
+    match operation {
+        NotebookAppliedEdit::ReplaceCell {
+            cell_index,
+            cell_type,
+        } => format!(
+            "replaced cell {cell_index} as {}",
+            notebook_editable_cell_type_label(*cell_type)
+        ),
+        NotebookAppliedEdit::InsertCell {
+            cell_index,
+            cell_type,
+        } => format!(
+            "inserted {} cell at {cell_index}",
+            notebook_editable_cell_type_label(*cell_type)
+        ),
+        NotebookAppliedEdit::DeleteCell { cell_index } => format!("deleted cell {cell_index}"),
+    }
+}
+
+fn notebook_editable_cell_type_label(cell_type: NotebookEditableCellType) -> &'static str {
+    match cell_type {
+        NotebookEditableCellType::Code => "code",
+        NotebookEditableCellType::Markdown => "markdown",
+        NotebookEditableCellType::Raw => "raw",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{NotebookReadTool, NotebookReadToolInput};
+    use super::{
+        NotebookEditOperation, NotebookEditTool, NotebookEditToolInput, NotebookEditableCellType,
+        NotebookReadTool, NotebookReadToolInput,
+    };
     use crate::{Tool, ToolExecutionContext};
     use nanoclaw_test_support::run_current_thread_test;
     use serde_json::Value;
@@ -785,6 +1238,133 @@ mod tests {
                 .unwrap_err();
 
             assert!(err.to_string().contains(".ipynb"));
+        }
+    );
+
+    bounded_async_test!(
+        async fn notebook_edit_applies_typed_operations_and_resets_code_outputs() {
+            let dir = tempfile::tempdir().unwrap();
+            let notebook_path = dir.path().join("sample.ipynb");
+            std::fs::write(&notebook_path, sample_notebook()).unwrap();
+
+            let result = NotebookEditTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(NotebookEditToolInput {
+                        path: "sample.ipynb".to_string(),
+                        operations: vec![
+                            NotebookEditOperation::ReplaceCell {
+                                cell_index: 2,
+                                cell_type: NotebookEditableCellType::Code,
+                                source: "print('updated')\n".to_string(),
+                            },
+                            NotebookEditOperation::InsertCell {
+                                cell_index: 3,
+                                cell_type: NotebookEditableCellType::Markdown,
+                                source: "## Added\n".to_string(),
+                            },
+                        ],
+                        expected_snapshot: None,
+                    })
+                    .unwrap(),
+                    &context(dir.path()),
+                )
+                .await
+                .unwrap();
+
+            assert!(!result.is_error);
+            let structured = result.structured_content.unwrap();
+            assert_eq!(
+                structured.get("kind").and_then(Value::as_str),
+                Some("success")
+            );
+            assert_eq!(
+                structured.get("cell_count_before").and_then(Value::as_u64),
+                Some(3)
+            );
+            assert_eq!(
+                structured.get("cell_count_after").and_then(Value::as_u64),
+                Some(4)
+            );
+            let operations = structured
+                .get("operations")
+                .and_then(Value::as_array)
+                .expect("operations");
+            assert_eq!(operations.len(), 2);
+            let changed_cells = structured
+                .get("changed_cells")
+                .and_then(Value::as_array)
+                .expect("changed cells");
+            assert_eq!(changed_cells.len(), 2);
+
+            let written: Value =
+                serde_json::from_str(&std::fs::read_to_string(&notebook_path).unwrap()).unwrap();
+            let cells = written.get("cells").and_then(Value::as_array).unwrap();
+            assert_eq!(cells.len(), 4);
+            assert_eq!(
+                cells[1].get("cell_type").and_then(Value::as_str),
+                Some("code")
+            );
+            assert_eq!(cells[1].get("execution_count"), Some(&Value::Null));
+            assert_eq!(
+                cells[1]
+                    .get("outputs")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(0)
+            );
+            assert_eq!(
+                cells[2].get("cell_type").and_then(Value::as_str),
+                Some("markdown")
+            );
+            let MessagePart::Text { text } = &result.parts[0] else {
+                panic!("expected text output");
+            };
+            assert!(text.contains("Updated sample.ipynb with 2 notebook operation(s)"));
+            assert!(text.contains("replaced cell 2 as code"));
+            assert!(text.contains("inserted markdown cell at 3"));
+        }
+    );
+
+    bounded_async_test!(
+        async fn notebook_edit_rejects_stale_snapshot_guards() {
+            let dir = tempfile::tempdir().unwrap();
+            let notebook_path = dir.path().join("sample.ipynb");
+            std::fs::write(&notebook_path, sample_notebook()).unwrap();
+
+            let result = NotebookEditTool::new()
+                .execute(
+                    ToolCallId::new(),
+                    serde_json::to_value(NotebookEditToolInput {
+                        path: "sample.ipynb".to_string(),
+                        operations: vec![NotebookEditOperation::DeleteCell { cell_index: 1 }],
+                        expected_snapshot: Some("stale-snapshot".to_string()),
+                    })
+                    .unwrap(),
+                    &context(dir.path()),
+                )
+                .await
+                .unwrap();
+
+            assert!(result.is_error);
+            let structured = result.structured_content.unwrap();
+            assert_eq!(
+                structured.get("kind").and_then(Value::as_str),
+                Some("error")
+            );
+            assert_eq!(
+                structured.get("operation_count").and_then(Value::as_u64),
+                Some(1)
+            );
+            assert!(
+                structured
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .is_some_and(|summary| summary.contains("Snapshot mismatch"))
+            );
+
+            let written = std::fs::read_to_string(&notebook_path).unwrap();
+            assert_eq!(written, sample_notebook());
         }
     );
 }

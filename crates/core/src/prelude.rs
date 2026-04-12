@@ -7,8 +7,6 @@ pub use skills::{
     load_skill_roots,
 };
 pub use store::{FileSessionStore, InMemorySessionStore, SessionStore};
-#[cfg(feature = "notebook-tools")]
-pub use tools::NotebookReadTool;
 #[cfg(feature = "agentic-tools")]
 pub use tools::{
     AgentResumeTool, PRIMARY_WORKTREE_ID, PermissionGrantScope, RequestPermissionProfile,
@@ -33,6 +31,8 @@ pub use tools::{
     MonitorStartTool, MonitorStopTool, PatchFilesTool, ReadTool, SandboxPolicy, Tool,
     ToolExecutionContext, ToolRegistry, WriteStdinTool, WriteTool,
 };
+#[cfg(feature = "notebook-tools")]
+pub use tools::{NotebookEditTool, NotebookReadTool};
 #[cfg(feature = "web-tools")]
 pub use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};
 pub use types::*;

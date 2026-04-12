@@ -6,7 +6,7 @@ compact `ratatui` terminal UI that still feels like a real product surface.
 It intentionally keeps the host layer thin:
 
 - model-visible coding tools: `read`, `write`, `edit`, `patch_files`, `glob`, `grep`, `list`, `exec_command`, `write_stdin`
-- optional notebook tools (`notebook-tools` feature): `notebook_read`
+- optional notebook tools (`notebook-tools` feature): `notebook_read`, `notebook_edit`
 - discovery tools: `tool_discover`
 - operator/debug-only tools: `web_search_backends`
 - optional code-intel tools: `code_search`, `code_symbol_search`, `code_document_symbols`, `code_nav`

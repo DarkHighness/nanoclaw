@@ -12,6 +12,7 @@ pub enum ToolDetailBlockKind {
 pub enum ToolRenderKind {
     ExecCommand,
     WriteStdin,
+    NotebookEdit,
     NotebookRead,
     CodeSearch,
     CodeDiagnostics,
@@ -35,6 +36,7 @@ impl ToolRenderKind {
         match tool_name {
             "exec_command" => Self::ExecCommand,
             "write_stdin" => Self::WriteStdin,
+            "notebook_edit" => Self::NotebookEdit,
             "notebook_read" => Self::NotebookRead,
             "code_search" => Self::CodeSearch,
             "code_diagnostics" => Self::CodeDiagnostics,
@@ -423,6 +425,28 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 96,
                 PreviewCollapse::Head,
             ));
+            return lines;
+        }
+        ToolRenderKind::NotebookEdit => {
+            let path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let mut lines = vec![format!("Edit notebook {}", truncate_inline(path, 80))];
+            if let Some(operations) = arguments.get("operations").and_then(Value::as_array) {
+                lines.extend(render_notebook_edit_operation_preview_lines(operations, 3));
+            }
+            if arguments
+                .get("expected_snapshot")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some()
+            {
+                lines.push("snapshot guard enabled".to_string());
+            }
             return lines;
         }
         ToolRenderKind::NotebookRead => {
@@ -1073,7 +1097,8 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::MonitorStart => {
             ToolCompletionState::Neutral
         }
-        ToolRenderKind::NotebookRead
+        ToolRenderKind::NotebookEdit
+        | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorList
@@ -1129,6 +1154,11 @@ pub fn tool_output_details(
     match ToolRenderKind::classify(tool_name) {
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => {
             return process_output_details(tool_name, output_preview, structured);
+        }
+        ToolRenderKind::NotebookEdit => {
+            if let Some(details) = notebook_edit_output_details(structured) {
+                return details;
+            }
         }
         ToolRenderKind::NotebookRead => {
             if let Some(details) = notebook_read_output_details(structured) {
@@ -1193,7 +1223,8 @@ pub fn tool_review_from_preview(
 }
 
 pub fn tool_review(tool_name: &str, structured: Option<&Value>) -> Option<ToolReview> {
-    if ToolRenderKind::classify(tool_name) != ToolRenderKind::FileMutation {
+    let render_kind = ToolRenderKind::classify(tool_name);
+    if render_kind != ToolRenderKind::FileMutation && render_kind != ToolRenderKind::NotebookEdit {
         return None;
     }
 
@@ -1578,6 +1609,91 @@ fn code_search_output_details(structured: Option<&Value>) -> Option<Vec<ToolDeta
     Some(details)
 }
 
+fn notebook_edit_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let kind = structured
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("success");
+    let mut details = Vec::new();
+
+    if let Some(summary) = structured
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: if kind == "error" {
+                ToolDetailLabel::Result
+            } else {
+                ToolDetailLabel::Effect
+            },
+            value: inline_preview_text(summary, 96),
+        });
+    }
+
+    if let Some(path) = structured
+        .get("requested_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: path.to_string(),
+        });
+    }
+
+    if let Some(snapshot) = render_notebook_snapshot_summary(structured) {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Snapshot,
+            value: snapshot,
+        });
+    }
+
+    let operation_lines = structured
+        .get("operations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(4)
+        .filter_map(render_notebook_applied_edit_summary)
+        .collect::<Vec<_>>();
+    if !operation_lines.is_empty() {
+        details.push(ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Output,
+            lines: operation_lines,
+        });
+    }
+
+    let changed_cells = structured
+        .get("changed_cells")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(3)
+        .flat_map(render_notebook_cell_summary_lines)
+        .collect::<Vec<_>>();
+    if !changed_cells.is_empty() {
+        details.push(ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Files,
+            lines: changed_cells,
+        });
+    }
+
+    if kind == "error"
+        && let Some(operation_count) = structured.get("operation_count").and_then(Value::as_u64)
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::State,
+            value: format!("{operation_count} pending operation(s)"),
+        });
+    }
+
+    Some(details)
+}
+
 fn notebook_read_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
     let structured = structured?;
     let output_cells = structured
@@ -1653,6 +1769,97 @@ fn notebook_read_output_details(structured: Option<&Value>) -> Option<Vec<ToolDe
         });
     }
     Some(details)
+}
+
+fn render_notebook_snapshot_summary(structured: &Value) -> Option<String> {
+    let before = structured
+        .get("snapshot_before")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let after = structured
+        .get("snapshot_after")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (before, after) {
+        (Some(before), Some(after)) => Some(format!(
+            "{} -> {}",
+            truncate_inline(before, 16),
+            truncate_inline(after, 16)
+        )),
+        (Some(before), None) => Some(truncate_inline(before, 16)),
+        _ => None,
+    }
+}
+
+fn render_notebook_applied_edit_summary(operation: &Value) -> Option<String> {
+    let kind = operation
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let cell_index = operation
+        .get("cell_index")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cell_type = operation
+        .get("cell_type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("cell");
+    Some(match kind {
+        "replace_cell" => format!("Replace cell {cell_index} as {cell_type}"),
+        "insert_cell" => format!("Insert {cell_type} cell at {cell_index}"),
+        "delete_cell" => format!("Delete cell {cell_index}"),
+        _ => return None,
+    })
+}
+
+fn render_notebook_edit_operation_preview_lines(
+    operations: &[Value],
+    max_operations: usize,
+) -> Vec<String> {
+    if operations.is_empty() {
+        return Vec::new();
+    }
+
+    let keep = max_operations.max(1);
+    let mut lines = operations
+        .iter()
+        .take(keep)
+        .filter_map(render_notebook_edit_argument_preview)
+        .collect::<Vec<_>>();
+    let hidden = operations.len().saturating_sub(lines.len());
+    if hidden > 0 {
+        lines.push(format!("… +{hidden} operation(s)"));
+    }
+    lines
+}
+
+fn render_notebook_edit_argument_preview(operation: &Value) -> Option<String> {
+    let kind = operation
+        .get("operation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let cell_index = operation
+        .get("cell_index")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let cell_type = operation
+        .get("cell_type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("cell");
+    Some(match kind {
+        "replace_cell" => format!("Replace cell {cell_index} as {cell_type}"),
+        "insert_cell" => format!("Insert {cell_type} cell at {cell_index}"),
+        "delete_cell" => format!("Delete cell {cell_index}"),
+        _ => return None,
+    })
 }
 
 fn render_notebook_cell_summary_lines(cell: &Value) -> Vec<String> {
@@ -2427,6 +2634,29 @@ mod tests {
     #[test]
     fn code_diagnostics_arguments_render_scope_preview() {
         assert_eq!(
+            tool_arguments_preview_lines(
+                "notebook_edit",
+                &json!({
+                    "path": "analysis.ipynb",
+                    "operations": [
+                        {"operation": "replace_cell", "cell_index": 2, "cell_type": "markdown", "source": "# Updated"},
+                        {"operation": "insert_cell", "cell_index": 3, "cell_type": "code", "source": "print('hi')"},
+                        {"operation": "delete_cell", "cell_index": 4},
+                        {"operation": "replace_cell", "cell_index": 5, "cell_type": "raw", "source": "notes"}
+                    ],
+                    "expected_snapshot": "abc123"
+                }),
+            ),
+            vec![
+                "Edit notebook analysis.ipynb",
+                "Replace cell 2 as markdown",
+                "Insert code cell at 3",
+                "Delete cell 4",
+                "… +1 operation(s)",
+                "snapshot guard enabled"
+            ]
+        );
+        assert_eq!(
             tool_arguments_preview_lines("notebook_read", &json!({"path": "analysis.ipynb"})),
             vec!["Read notebook analysis.ipynb"]
         );
@@ -2464,6 +2694,54 @@ mod tests {
 
     #[test]
     fn code_diagnostics_output_renders_typed_summary() {
+        let notebook_edit_rendered = tool_output_detail_lines(
+            "notebook_edit",
+            "",
+            Some(&json!({
+                "kind": "success",
+                "requested_path": "analysis.ipynb",
+                "summary": "Updated analysis.ipynb with 2 notebook operation(s)",
+                "snapshot_before": "before123456",
+                "snapshot_after": "after123456",
+                "operations": [
+                    {"kind": "replace_cell", "cell_index": 2, "cell_type": "markdown"},
+                    {"kind": "insert_cell", "cell_index": 3, "cell_type": "code"}
+                ],
+                "changed_cells": [
+                    {
+                        "index": 2,
+                        "cell_type": "markdown",
+                        "source_line_count": 1,
+                        "source_preview": ["# Updated"],
+                        "output_count": 0
+                    }
+                ],
+                "file_diffs": [
+                    {"path": "analysis.ipynb", "preview": "@@ -1 +1 @@\n-old\n+new"}
+                ]
+            })),
+        );
+
+        assert_eq!(
+            notebook_edit_rendered[0],
+            "  └ Effect Updated analysis.ipynb with 2 notebook operation(s)"
+        );
+        assert!(
+            notebook_edit_rendered
+                .iter()
+                .any(|line| line == "  └ Context analysis.ipynb")
+        );
+        assert!(
+            notebook_edit_rendered
+                .iter()
+                .any(|line| line.contains("Snapshot before123456 -> after123456"))
+        );
+        assert!(
+            notebook_edit_rendered
+                .iter()
+                .any(|line| line == "  └ Output Replace cell 2 as markdown")
+        );
+
         let notebook_rendered = tool_output_detail_lines(
             "notebook_read",
             "",
@@ -2851,5 +3129,28 @@ mod tests {
                 .iter()
                 .any(|line| line == "+new()")
         );
+    }
+
+    #[test]
+    fn notebook_edit_review_extracts_structured_diff_preview() {
+        let review = tool_review(
+            "notebook_edit",
+            Some(&json!({
+                "kind": "success",
+                "summary": "Updated analysis.ipynb with 1 notebook operation(s)",
+                "file_diffs": [{
+                    "path": "analysis.ipynb",
+                    "preview": "@@ -1 +1 @@\n-old\n+new"
+                }]
+            })),
+        )
+        .expect("expected review");
+
+        assert_eq!(
+            review.summary.as_deref(),
+            Some("Updated analysis.ipynb with 1 notebook operation(s)")
+        );
+        assert_eq!(review.files.len(), 1);
+        assert_eq!(review.files[0].path, "analysis.ipynb");
     }
 }
