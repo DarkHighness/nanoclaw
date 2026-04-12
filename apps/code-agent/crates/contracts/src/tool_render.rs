@@ -12,6 +12,9 @@ pub enum ToolDetailBlockKind {
 pub enum ToolRenderKind {
     ExecCommand,
     WriteStdin,
+    MonitorStart,
+    MonitorList,
+    MonitorStop,
     UpdatePlan,
     SendInput,
     SpawnAgent,
@@ -27,6 +30,9 @@ impl ToolRenderKind {
         match tool_name {
             "exec_command" => Self::ExecCommand,
             "write_stdin" => Self::WriteStdin,
+            "monitor_start" => Self::MonitorStart,
+            "monitor_list" => Self::MonitorList,
+            "monitor_stop" => Self::MonitorStop,
             "update_plan" => Self::UpdatePlan,
             "send_input" => Self::SendInput,
             "spawn_agent" => Self::SpawnAgent,
@@ -408,6 +414,51 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 PreviewCollapse::Head,
             ));
             return lines;
+        }
+        ToolRenderKind::MonitorStart => {
+            let command = arguments.get("cmd").and_then(Value::as_str);
+            if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
+                let mut lines = vec![format!("Start monitor {}", truncate_inline(command, 80))];
+                if let Some(workdir) = arguments
+                    .get("workdir")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    lines.push(format!("cwd {}", truncate_inline(workdir, 72)));
+                }
+                return lines;
+            }
+        }
+        ToolRenderKind::MonitorList => {
+            let include_closed = arguments
+                .get("include_closed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            return vec![if include_closed {
+                "List monitors including closed".to_string()
+            } else {
+                "List active monitors".to_string()
+            }];
+        }
+        ToolRenderKind::MonitorStop => {
+            if let Some(monitor_id) = arguments
+                .get("monitor_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                let mut lines = vec![format!("Stop monitor {monitor_id}")];
+                if let Some(reason) = arguments
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    lines.push(format!("reason {}", truncate_inline(reason, 72)));
+                }
+                return lines;
+            }
         }
         ToolRenderKind::UpdatePlan => {
             let mut lines = Vec::new();
@@ -957,8 +1008,12 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
     }
 
     match ToolRenderKind::classify(tool_name) {
-        ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => ToolCompletionState::Neutral,
-        ToolRenderKind::UpdatePlan
+        ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::MonitorStart => {
+            ToolCompletionState::Neutral
+        }
+        ToolRenderKind::MonitorList
+        | ToolRenderKind::MonitorStop
+        | ToolRenderKind::UpdatePlan
         | ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent
@@ -1007,6 +1062,13 @@ pub fn tool_output_details(
     match ToolRenderKind::classify(tool_name) {
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => {
             return process_output_details(tool_name, output_preview, structured);
+        }
+        ToolRenderKind::MonitorStart
+        | ToolRenderKind::MonitorList
+        | ToolRenderKind::MonitorStop => {
+            if let Some(details) = monitor_output_details(tool_name, structured) {
+                return details;
+            }
         }
         ToolRenderKind::FileMutation => {
             if let Some(detail_lines) =
@@ -1267,6 +1329,110 @@ fn process_output_details(
     }
 
     detail_lines
+}
+
+fn monitor_output_details(tool_name: &str, structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::MonitorStart | ToolRenderKind::MonitorStop => {
+            let monitor = structured.get("monitor")?;
+            Some(single_monitor_output_details(monitor))
+        }
+        ToolRenderKind::MonitorList => {
+            let monitors = structured.get("monitors")?.as_array()?;
+            let mut details = vec![ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Result,
+                value: format!("{} monitor(s)", monitors.len()),
+            }];
+            let lines = monitors
+                .iter()
+                .filter_map(render_monitor_summary_line)
+                .collect::<Vec<_>>();
+            if !lines.is_empty() {
+                details.push(ToolDetail::LabeledBlock {
+                    label: ToolDetailLabel::Output,
+                    lines,
+                });
+            }
+            Some(details)
+        }
+        _ => None,
+    }
+}
+
+fn single_monitor_output_details(monitor: &Value) -> Vec<ToolDetail> {
+    let mut details = Vec::new();
+    if let Some(monitor_id) = monitor
+        .get("monitor_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Session,
+            value: monitor_id.to_string(),
+        });
+    }
+    if let Some(status) = monitor
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::State,
+            value: status.to_string(),
+        });
+    }
+    if let Some(cwd) = monitor
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: cwd.to_string(),
+        });
+    }
+    if let Some(command) = monitor
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Output,
+            value: inline_preview_text(command, 96),
+        });
+    }
+    details
+}
+
+fn render_monitor_summary_line(monitor: &Value) -> Option<String> {
+    let monitor_id = monitor
+        .get("monitor_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let status = monitor
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    let command = monitor
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<empty>");
+    Some(format!(
+        "{} {} · {}",
+        monitor_id,
+        status,
+        inline_preview_text(command, 72)
+    ))
 }
 
 fn collapse_command_output(

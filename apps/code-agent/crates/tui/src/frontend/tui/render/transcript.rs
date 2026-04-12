@@ -149,6 +149,24 @@ pub(super) fn build_transcript_lines_for_width(
         }
     }
 
+    if !state.active_monitors.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::raw(""));
+        }
+        for (index, active) in state.active_monitors.iter().enumerate() {
+            let active_entry = TranscriptEntry::ShellSummary(active.entry.clone());
+            lines.extend(format_transcript_cell_with_mode(
+                &active_entry,
+                state.show_tool_details,
+                Some(animation_frame_ms(active.started_at, frame_time)),
+                false,
+            ));
+            if index + 1 < state.active_monitors.len() {
+                lines.push(Line::raw(""));
+            }
+        }
+    }
+
     if !pending_controls_embedded {
         let queued_entry = pending_control_timeline_entry(state)
             .or_else(|| pending_control_picker_bridge_entry(state));

@@ -817,14 +817,7 @@ where
 }
 
 fn resolve_exec_command(input: &ExecCommandToolInput) -> Result<String> {
-    let command = input.cmd.trim();
-    if command.is_empty() {
-        Err(ToolError::invalid(
-            "exec_command requires a non-empty `cmd`",
-        ))
-    } else {
-        Ok(command.to_string())
-    }
+    resolve_shell_command(&input.cmd, "exec_command")
 }
 
 fn resolve_exec_session_id(value: &str) -> Result<ExecSessionId> {
@@ -838,7 +831,10 @@ fn resolve_exec_session_id(value: &str) -> Result<ExecSessionId> {
     }
 }
 
-fn resolve_exec_cwd(workdir: Option<&str>, ctx: &ToolExecutionContext) -> Result<PathBuf> {
+pub(crate) fn resolve_exec_cwd(
+    workdir: Option<&str>,
+    ctx: &ToolExecutionContext,
+) -> Result<PathBuf> {
     let cwd = resolve_tool_path_against_workspace_root(
         workdir.unwrap_or("."),
         ctx.effective_root(),
@@ -848,7 +844,7 @@ fn resolve_exec_cwd(workdir: Option<&str>, ctx: &ToolExecutionContext) -> Result
     Ok(cwd)
 }
 
-fn runtime_scope_from_context(ctx: &ToolExecutionContext) -> RuntimeScope {
+pub(crate) fn runtime_scope_from_context(ctx: &ToolExecutionContext) -> RuntimeScope {
     RuntimeScope {
         session_id: ctx.session_id.clone(),
         agent_session_id: ctx.agent_session_id.clone(),
@@ -858,7 +854,7 @@ fn runtime_scope_from_context(ctx: &ToolExecutionContext) -> RuntimeScope {
     }
 }
 
-fn exec_args(login: bool, command: &str) -> Vec<String> {
+pub(crate) fn exec_args(login: bool, command: &str) -> Vec<String> {
     if login {
         vec!["-lc".to_string(), command.to_string()]
     } else {
@@ -947,11 +943,22 @@ fn render_session_output(
     sections.join("\n\n")
 }
 
-fn unix_timestamp_s() -> u64 {
+pub(crate) fn unix_timestamp_s() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+pub(crate) fn resolve_shell_command(command: &str, tool_name: &str) -> Result<String> {
+    let command = command.trim();
+    if command.is_empty() {
+        Err(ToolError::invalid(format!(
+            "{tool_name} requires a non-empty `cmd`"
+        )))
+    } else {
+        Ok(command.to_string())
+    }
 }
 
 #[cfg(test)]

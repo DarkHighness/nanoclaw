@@ -10,7 +10,7 @@ use crate::backend::boot_runtime::{
 };
 use crate::backend::{
     ApprovalCoordinator, McpServerSummary, PermissionRequestCoordinator, SessionEventStream,
-    StartupDiagnosticsSnapshot, UserInputCoordinator, list_mcp_servers,
+    SessionMonitorManager, StartupDiagnosticsSnapshot, UserInputCoordinator, list_mcp_servers,
 };
 use crate::interaction::{PendingControlKind, PendingControlReason, SessionPermissionMode};
 use crate::statusline::StatusLineConfig;
@@ -677,11 +677,19 @@ fn build_session_with_runtime_state(
         workspace_only: true,
         ..Default::default()
     }));
+    let events = SessionEventStream::default();
+    let monitor_manager: Arc<dyn agent::tools::MonitorManager> =
+        Arc::new(SessionMonitorManager::new(
+            store.clone(),
+            events.clone(),
+            process_executor.clone() as Arc<dyn agent::tools::ProcessExecutor>,
+        ));
     CodeAgentSession::new(
         runtime,
         None,
         session_memory_model_backend,
         subagent_executor,
+        monitor_manager,
         store,
         mcp_servers,
         configured_mcp_servers,
@@ -698,7 +706,7 @@ fn build_session_with_runtime_state(
         ApprovalCoordinator::default(),
         UserInputCoordinator::default(),
         PermissionRequestCoordinator::default(),
-        SessionEventStream::default(),
+        events,
         PermissionGrantStore::default(),
         session_tool_context,
         default_sandbox_policy,

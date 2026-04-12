@@ -1,7 +1,10 @@
 use super::*;
 
 impl CodeAgentTui {
-    pub(crate) async fn apply_live_task_command(&mut self, command: SlashCommand) -> Result<bool> {
+    pub(crate) async fn apply_runtime_activity_command(
+        &mut self,
+        command: SlashCommand,
+    ) -> Result<bool> {
         match command {
             SlashCommand::LiveTasks => {
                 let live_tasks: Vec<LiveTaskSummary> =
@@ -31,6 +34,49 @@ impl CodeAgentTui {
                         )
                     };
                     state.push_activity("listed live child tasks");
+                });
+                Ok(false)
+            }
+            SlashCommand::Monitors { include_closed } => {
+                let monitors: Vec<LiveMonitorSummary> = self
+                    .run_ui(UIAsyncCommand::ListMonitors { include_closed })
+                    .await?;
+                self.ui_state.mutate(move |state| {
+                    let lines = if monitors.is_empty() {
+                        vec![
+                            InspectorEntry::section("Monitors"),
+                            InspectorEntry::Muted(
+                                "no background monitors attached to the active session".to_string(),
+                            ),
+                        ]
+                    } else {
+                        std::iter::once(InspectorEntry::section("Monitors"))
+                            .chain(
+                                monitors
+                                    .iter()
+                                    .map(|monitor| {
+                                        InspectorEntry::transcript(
+                                            format_live_monitor_summary_line(monitor),
+                                        )
+                                    }),
+                            )
+                            .collect()
+                    };
+                    state.show_main_view("Monitors", lines);
+                    state.status = if monitors.is_empty() {
+                        "No background monitors attached".to_string()
+                    } else if include_closed {
+                        format!(
+                            "Listed {} monitor(s), including closed ones. Use /stop_monitor <monitor-ref> to stop an active monitor.",
+                            monitors.len()
+                        )
+                    } else {
+                        format!(
+                            "Listed {} active monitor(s). Use /stop_monitor <monitor-ref> to stop one.",
+                            monitors.len()
+                        )
+                    };
+                    state.push_activity("listed background monitors");
                 });
                 Ok(false)
             }
@@ -136,7 +182,42 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            _ => unreachable!("live-task handler received non-live-task command"),
+            SlashCommand::StopMonitor {
+                monitor_ref,
+                reason,
+            } => {
+                let outcome: LiveMonitorControlOutcome = self
+                    .run_ui(UIAsyncCommand::StopMonitor {
+                        monitor_ref: monitor_ref.clone(),
+                        reason: reason.clone(),
+                    })
+                    .await?;
+                let inspector = format_live_monitor_control_outcome(&outcome);
+                self.ui_state.mutate(move |state| {
+                    state.show_main_view("Monitor Control", inspector);
+                    state.status = match outcome.action {
+                        LiveMonitorControlAction::Stopped => {
+                            format!("Stopped monitor {}", outcome.monitor.monitor_id)
+                        }
+                        LiveMonitorControlAction::AlreadyTerminal => {
+                            format!(
+                                "Monitor {} was already terminal",
+                                outcome.monitor.monitor_id
+                            )
+                        }
+                    };
+                    state.push_activity(match outcome.action {
+                        LiveMonitorControlAction::Stopped => {
+                            format!("stopped monitor {}", outcome.monitor.monitor_id)
+                        }
+                        LiveMonitorControlAction::AlreadyTerminal => {
+                            format!("monitor {} already terminal", outcome.monitor.monitor_id)
+                        }
+                    });
+                });
+                Ok(false)
+            }
+            _ => unreachable!("runtime activity handler received unexpected command"),
         }
     }
 }

@@ -195,6 +195,15 @@ impl CodeAgentUiSession {
                     .cancel_live_task(&task_or_agent_ref, reason)
                     .await?,
             ),
+            UIAsyncCommand::ListMonitors { include_closed } => {
+                UIAsyncResult::LiveMonitors(self.inner.list_live_monitors(include_closed).await?)
+            }
+            UIAsyncCommand::StopMonitor {
+                monitor_ref,
+                reason,
+            } => UIAsyncResult::LiveMonitorControlOutcome(
+                self.inner.stop_live_monitor(&monitor_ref, reason).await?,
+            ),
             UIAsyncCommand::LoadSession { session_ref } => {
                 UIAsyncResult::LoadedSession(self.inner.load_session(&session_ref).await?)
             }

@@ -1620,6 +1620,9 @@ pub(super) fn tool_status_accent(
 pub(super) fn shell_status_accent(status: Option<TranscriptShellStatus>) -> Color {
     match status {
         Some(TranscriptShellStatus::Queued) => palette().warn,
+        Some(TranscriptShellStatus::Running) => palette().user,
+        Some(TranscriptShellStatus::Completed) => palette().assistant,
+        Some(TranscriptShellStatus::Failed | TranscriptShellStatus::Cancelled) => palette().error,
         None => palette().muted,
     }
 }
@@ -1630,6 +1633,10 @@ fn shell_status_phrase(
 ) -> Option<(&'static str, &str, Color)> {
     let (phrase, accent) = match status {
         TranscriptShellStatus::Queued => ("Queued", palette().warn),
+        TranscriptShellStatus::Running => ("Running", palette().user),
+        TranscriptShellStatus::Completed => ("Completed", palette().assistant),
+        TranscriptShellStatus::Failed => ("Failed", palette().error),
+        TranscriptShellStatus::Cancelled => ("Cancelled", palette().error),
     };
     line.strip_prefix(phrase)
         .map(|remainder| (phrase, remainder, accent))

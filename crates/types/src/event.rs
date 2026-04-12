@@ -1,8 +1,8 @@
 use crate::{
     AgentId, AgentSessionId, CallId, ContextWindowUsage, EnvelopeId, EventId, HookEvent,
-    HookResult, Message, MessageId, MessagePart, Reasoning, ResponseId, SessionId, TaskId,
-    TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId, ToolName, ToolSpec,
-    TurnId,
+    HookResult, Message, MessageId, MessagePart, MonitorId, Reasoning, ResponseId, SessionId,
+    TaskId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId, ToolName,
+    ToolSpec, TurnId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -103,6 +103,50 @@ impl From<AgentStatus> for TaskStatus {
 impl From<&AgentStatus> for TaskStatus {
     fn from(value: &AgentStatus) -> Self {
         Self::from(value.clone())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl MonitorStatus {
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+impl fmt::Display for MonitorStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorStream {
+    Stdout,
+    Stderr,
+}
+
+impl fmt::Display for MonitorStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stdout => f.write_str("stdout"),
+            Self::Stderr => f.write_str("stderr"),
+        }
     }
 }
 
@@ -226,6 +270,57 @@ pub struct TaskRecord {
     pub result: Option<AgentResultEnvelope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MonitorSummaryRecord {
+    pub monitor_id: MonitorId,
+    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    pub command: String,
+    pub cwd: String,
+    pub shell: String,
+    pub login: bool,
+    pub status: MonitorStatus,
+    pub started_at_unix_s: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_unix_s: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MonitorEventKind {
+    Line {
+        stream: MonitorStream,
+        text: String,
+    },
+    StateChanged {
+        status: MonitorStatus,
+    },
+    Completed {
+        exit_code: i32,
+    },
+    Failed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    Cancelled {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MonitorEventRecord {
+    pub monitor_id: MonitorId,
+    pub timestamp_unix_s: u64,
+    pub kind: MonitorEventKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -791,6 +886,15 @@ pub enum SessionEventKind {
     Notification {
         source: String,
         message: String,
+    },
+    MonitorStarted {
+        summary: MonitorSummaryRecord,
+    },
+    MonitorEvent {
+        event: MonitorEventRecord,
+    },
+    MonitorUpdated {
+        summary: MonitorSummaryRecord,
     },
     TaskCreated {
         task: AgentTaskSpec,

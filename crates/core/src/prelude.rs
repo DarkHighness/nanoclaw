@@ -22,7 +22,8 @@ pub use tools::{
 };
 pub use tools::{
     EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool, ListTool,
-    ManagedPolicyProcessExecutor, PatchFilesTool, ReadTool, SandboxPolicy, Tool,
+    ManagedPolicyProcessExecutor, MonitorListTool, MonitorManager, MonitorRuntimeContext,
+    MonitorStartTool, MonitorStopTool, PatchFilesTool, ReadTool, SandboxPolicy, Tool,
     ToolExecutionContext, ToolRegistry, WriteStdinTool, WriteTool,
 };
 #[cfg(feature = "web-tools")]

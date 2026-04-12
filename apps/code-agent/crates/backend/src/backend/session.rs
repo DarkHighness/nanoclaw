@@ -31,6 +31,7 @@ mod host_surfaces;
 mod lifecycle;
 mod live_tasks;
 mod memory;
+mod monitors;
 mod permissions;
 mod surface;
 
@@ -38,7 +39,8 @@ use crate::frontend_contract::skill_summary_from_skill;
 use crate::interaction::{ModelReasoningEffortOutcome, SkillSummary};
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::ui::{
-    HistoryRollbackOutcome, HistoryRollbackRound, LiveTaskAttentionAction,
+    HistoryRollbackOutcome, HistoryRollbackRound, LiveMonitorControlAction,
+    LiveMonitorControlOutcome, LiveMonitorSummary, LiveTaskAttentionAction,
     LiveTaskAttentionOutcome, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
     LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
     LoadedAgentSession, LoadedMcpPrompt, LoadedMcpResource, LoadedSession, LoadedTask,
@@ -60,8 +62,8 @@ use agent::runtime::{
     RunTurnOutcome, RuntimeControlPlane, VisibleHistoryRollbackRound,
 };
 use agent::tools::{
-    McpToolAdapter, SandboxPolicy, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
-    SubagentParentContext,
+    McpToolAdapter, MonitorManager, MonitorRuntimeContext, SandboxPolicy, SubagentExecutor,
+    SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
 };
 use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, HookHandler, HookRegistration,
@@ -131,6 +133,7 @@ pub struct CodeAgentSession {
     control_plane: RuntimeControlPlane,
     model_backend: Option<MutableAgentBackend>,
     subagent_executor: Arc<dyn SubagentExecutor>,
+    monitor_manager: Arc<dyn MonitorManager>,
     store: Arc<dyn SessionStore>,
     mcp_servers: Arc<RwLock<Vec<ConnectedMcpServer>>>,
     configured_mcp_servers: Arc<Vec<McpServerConfig>>,
@@ -165,6 +168,7 @@ impl CodeAgentSession {
         model_backend: Option<MutableAgentBackend>,
         session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
         subagent_executor: Arc<dyn SubagentExecutor>,
+        monitor_manager: Arc<dyn MonitorManager>,
         store: Arc<dyn SessionStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
         configured_mcp_servers: Vec<McpServerConfig>,
@@ -210,6 +214,7 @@ impl CodeAgentSession {
             control_plane,
             model_backend,
             subagent_executor,
+            monitor_manager,
             store,
             mcp_servers: Arc::new(RwLock::new(mcp_servers)),
             configured_mcp_servers: Arc::new(configured_mcp_servers),

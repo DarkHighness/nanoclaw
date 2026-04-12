@@ -1,4 +1,6 @@
-use agent::types::{MessageId, TokenLedgerSnapshot, TokenUsagePhase};
+use agent::types::{
+    MessageId, MonitorEventRecord, MonitorSummaryRecord, TokenLedgerSnapshot, TokenUsagePhase,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionToolOrigin {
@@ -130,6 +132,15 @@ pub enum SessionEvent {
     ToolLifecycleCancelled {
         call: SessionToolCall,
         reason: Option<String>,
+    },
+    MonitorStarted {
+        summary: MonitorSummaryRecord,
+    },
+    MonitorEvent {
+        event: MonitorEventRecord,
+    },
+    MonitorUpdated {
+        summary: MonitorSummaryRecord,
     },
     TurnCompleted {
         assistant_text: String,

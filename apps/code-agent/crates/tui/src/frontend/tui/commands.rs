@@ -207,6 +207,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Agents",
+        name: "monitors",
+        usage: "monitors [all]",
+        summary: "list background monitors",
+    },
+    SlashCommandSpec {
+        section: "Agents",
         name: "spawn_task",
         usage: "spawn_task <role> <prompt>",
         summary: "launch child agent",
@@ -228,6 +234,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         name: "cancel_task",
         usage: "cancel_task <task-or-agent-ref> [reason]",
         summary: "stop child agent",
+    },
+    SlashCommandSpec {
+        section: "Agents",
+        name: "stop_monitor",
+        usage: "stop_monitor <monitor-ref> [reason]",
+        summary: "stop background monitor",
     },
     SlashCommandSpec {
         section: "History",
@@ -395,6 +407,9 @@ pub(crate) enum SlashCommand {
         agent_session_ref: String,
     },
     LiveTasks,
+    Monitors {
+        include_closed: bool,
+    },
     SpawnTask {
         role: String,
         prompt: String,
@@ -408,6 +423,10 @@ pub(crate) enum SlashCommand {
     },
     CancelTask {
         task_or_agent_ref: String,
+        reason: Option<String>,
+    },
+    StopMonitor {
+        monitor_ref: String,
         reason: Option<String>,
     },
     Tasks {
@@ -536,6 +555,10 @@ enum SlashSubcommand {
         agent_session_ref: String,
     },
     LiveTasks,
+    Monitors {
+        #[arg(value_name = "ALL")]
+        include_closed: Vec<String>,
+    },
     SpawnTask {
         role: String,
         #[arg(
@@ -560,6 +583,15 @@ enum SlashSubcommand {
     },
     CancelTask {
         task_or_agent_ref: String,
+        #[arg(
+            value_name = "REASON",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        reason: Vec<String>,
+    },
+    StopMonitor {
+        monitor_ref: String,
         #[arg(
             value_name = "REASON",
             trailing_var_arg = true,

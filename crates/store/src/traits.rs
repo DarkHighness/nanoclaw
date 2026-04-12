@@ -609,6 +609,53 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
             values.push(call.tool_name.to_string());
             values.push(error.clone());
         }
+        SessionEventKind::MonitorStarted { summary } => {
+            values.push(summary.monitor_id.to_string());
+            values.push(summary.status.to_string());
+            values.push(summary.cwd.clone());
+            values.push(summary.command.clone());
+            values.push(summary.shell.clone());
+            if let Some(task_id) = summary.task_id.as_ref() {
+                values.push(task_id.to_string());
+            }
+        }
+        SessionEventKind::MonitorEvent { event } => {
+            values.push(event.monitor_id.to_string());
+            match &event.kind {
+                types::MonitorEventKind::Line { stream, text } => {
+                    values.push(stream.to_string());
+                    values.push(text.clone());
+                }
+                types::MonitorEventKind::StateChanged { status } => {
+                    values.push(status.to_string());
+                }
+                types::MonitorEventKind::Completed { exit_code } => {
+                    values.push("completed".to_string());
+                    values.push(exit_code.to_string());
+                }
+                types::MonitorEventKind::Failed { exit_code, error } => {
+                    values.push("failed".to_string());
+                    if let Some(exit_code) = exit_code {
+                        values.push(exit_code.to_string());
+                    }
+                    if let Some(error) = error {
+                        values.push(error.clone());
+                    }
+                }
+                types::MonitorEventKind::Cancelled { reason } => {
+                    values.push("cancelled".to_string());
+                    if let Some(reason) = reason {
+                        values.push(reason.clone());
+                    }
+                }
+            }
+        }
+        SessionEventKind::MonitorUpdated { summary } => {
+            values.push(summary.monitor_id.to_string());
+            values.push(summary.status.to_string());
+            values.push(summary.cwd.clone());
+            values.push(summary.command.clone());
+        }
         SessionEventKind::TaskCreated {
             task,
             parent_agent_id,

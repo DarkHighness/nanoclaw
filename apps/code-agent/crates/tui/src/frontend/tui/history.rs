@@ -7,12 +7,13 @@ use crate::tool_render::{
     ToolDetail, tool_argument_details, tool_arguments_preview_lines, tool_output_details,
 };
 use crate::ui::{
-    LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome,
-    LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession,
-    LoadedSubagentSession, LoadedTask, LoadedTaskMessage, McpPromptSummary, McpResourceSummary,
-    McpServerSummary, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
-    PersistedSessionSummary, PersistedTaskSummary, SessionExportArtifact, SessionExportKind,
-    SessionOperationAction, SessionOperationOutcome, StartupDiagnosticsSnapshot,
+    LiveMonitorControlAction, LiveMonitorControlOutcome, LiveMonitorSummary, LiveTaskControlAction,
+    LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome,
+    LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession, LoadedSubagentSession,
+    LoadedTask, LoadedTaskMessage, McpPromptSummary, McpResourceSummary, McpServerSummary,
+    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
+    PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
+    SessionOperationOutcome, StartupDiagnosticsSnapshot,
 };
 use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
@@ -35,13 +36,15 @@ pub(crate) use inspectors::{
     format_startup_diagnostics, format_task_inspector,
 };
 pub(crate) use outcomes::{
-    format_live_task_control_outcome, format_live_task_message_outcome,
-    format_live_task_wait_outcome, format_session_export_result, format_session_operation_outcome,
+    format_live_monitor_control_outcome, format_live_task_control_outcome,
+    format_live_task_message_outcome, format_live_task_wait_outcome, format_session_export_result,
+    format_session_operation_outcome,
 };
 pub(crate) use summaries::{
-    format_agent_session_summary_collection, format_live_task_spawn_outcome,
-    format_live_task_summary_line, format_session_search_collection,
-    format_session_summary_collection, format_task_summary_collection,
+    format_agent_session_summary_collection, format_live_monitor_summary_line,
+    format_live_task_spawn_outcome, format_live_task_summary_line,
+    format_session_search_collection, format_session_summary_collection,
+    format_task_summary_collection,
 };
 
 #[derive(Clone, Copy)]

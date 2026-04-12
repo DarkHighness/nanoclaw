@@ -1,4 +1,5 @@
 use super::*;
+use crate::frontend::tui::state::TranscriptShellStatus;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersistedTranscriptPrefix {
@@ -440,6 +441,84 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
             format!("Notification from {source}"),
             [format!("message {}", preview_text(message, 72))],
         ),
+        SessionEventKind::MonitorStarted { summary } => {
+            TranscriptEntry::shell_summary_status_details(
+                TranscriptShellStatus::Running,
+                format!("Running monitor {}", summary.monitor_id),
+                monitor_summary_details(summary),
+            )
+        }
+        SessionEventKind::MonitorEvent { event } => match &event.kind {
+            agent::types::MonitorEventKind::Line { stream, text } => info_summary_entry(
+                format!("Monitor {} {}", event.monitor_id, stream),
+                [preview_text(text, 96)],
+            ),
+            agent::types::MonitorEventKind::StateChanged { status } => {
+                TranscriptEntry::shell_summary_status_details(
+                    monitor_shell_status(*status),
+                    format!(
+                        "{} monitor {}",
+                        monitor_status_label(*status),
+                        event.monitor_id
+                    ),
+                    Vec::new(),
+                )
+            }
+            agent::types::MonitorEventKind::Completed { exit_code } => {
+                TranscriptEntry::shell_summary_status_details(
+                    TranscriptShellStatus::Completed,
+                    format!("Completed monitor {}", event.monitor_id),
+                    vec![TranscriptShellDetail::Raw {
+                        text: format!("exit {}", exit_code),
+                        continuation: false,
+                    }],
+                )
+            }
+            agent::types::MonitorEventKind::Failed { exit_code, error } => {
+                let mut details = Vec::new();
+                if let Some(exit_code) = exit_code {
+                    details.push(TranscriptShellDetail::Raw {
+                        text: format!("exit {}", exit_code),
+                        continuation: false,
+                    });
+                }
+                if let Some(error) = error.as_deref() {
+                    details.push(TranscriptShellDetail::Raw {
+                        text: format!("error {}", preview_text(error, 72)),
+                        continuation: false,
+                    });
+                }
+                TranscriptEntry::shell_summary_status_details(
+                    TranscriptShellStatus::Failed,
+                    format!("Failed monitor {}", event.monitor_id),
+                    details,
+                )
+            }
+            agent::types::MonitorEventKind::Cancelled { reason } => {
+                TranscriptEntry::shell_summary_status_details(
+                    TranscriptShellStatus::Cancelled,
+                    format!("Cancelled monitor {}", event.monitor_id),
+                    vec![TranscriptShellDetail::Raw {
+                        text: reason
+                            .as_deref()
+                            .map(|value| format!("reason {}", preview_text(value, 72)))
+                            .unwrap_or_else(|| "reason not recorded".to_string()),
+                        continuation: false,
+                    }],
+                )
+            }
+        },
+        SessionEventKind::MonitorUpdated { summary } => {
+            TranscriptEntry::shell_summary_status_details(
+                monitor_shell_status(summary.status),
+                format!(
+                    "{} monitor {}",
+                    monitor_status_label(summary.status),
+                    summary.monitor_id
+                ),
+                monitor_summary_details(summary),
+            )
+        }
         SessionEventKind::TaskCreated { task, .. } => info_summary_entry(
             format!("Spawned task {}", task.task_id),
             [
@@ -528,4 +607,44 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],
         ),
     }
+}
+
+fn monitor_shell_status(status: agent::types::MonitorStatus) -> TranscriptShellStatus {
+    match status {
+        agent::types::MonitorStatus::Running => TranscriptShellStatus::Running,
+        agent::types::MonitorStatus::Completed => TranscriptShellStatus::Completed,
+        agent::types::MonitorStatus::Failed => TranscriptShellStatus::Failed,
+        agent::types::MonitorStatus::Cancelled => TranscriptShellStatus::Cancelled,
+    }
+}
+
+fn monitor_status_label(status: agent::types::MonitorStatus) -> &'static str {
+    match status {
+        agent::types::MonitorStatus::Running => "Running",
+        agent::types::MonitorStatus::Completed => "Completed",
+        agent::types::MonitorStatus::Failed => "Failed",
+        agent::types::MonitorStatus::Cancelled => "Cancelled",
+    }
+}
+
+fn monitor_summary_details(
+    summary: &agent::types::MonitorSummaryRecord,
+) -> Vec<TranscriptShellDetail> {
+    let mut details = vec![
+        TranscriptShellDetail::Raw {
+            text: format!("cwd {}", summary.cwd),
+            continuation: false,
+        },
+        TranscriptShellDetail::Raw {
+            text: format!("command {}", preview_text(&summary.command, 96)),
+            continuation: false,
+        },
+    ];
+    if let Some(task_id) = summary.task_id.as_ref() {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("task {}", task_id),
+            continuation: false,
+        });
+    }
+    details
 }

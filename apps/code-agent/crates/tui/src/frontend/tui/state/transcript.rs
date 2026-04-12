@@ -146,6 +146,10 @@ pub(crate) struct TranscriptShellEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TranscriptShellStatus {
     Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
 }
 
 impl TranscriptShellEntry {
@@ -435,6 +439,15 @@ fn tool_headline_prefix(
         ToolRenderKind::FileMutation => {
             lifecycle_headline_text(status, "Editing files", "Updated files")
         }
+        ToolRenderKind::MonitorStart => {
+            lifecycle_headline_text(status, "Starting monitor", "Started monitor")
+        }
+        ToolRenderKind::MonitorList => {
+            lifecycle_headline_text(status, "Listing monitors", "Listed monitors")
+        }
+        ToolRenderKind::MonitorStop => {
+            lifecycle_headline_text(status, "Stopping monitor", "Stopped monitor")
+        }
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
             generic_headline_text(status)
         }
@@ -460,6 +473,9 @@ fn tool_headline_subject_kind(
             TranscriptToolHeadlineSubjectKind::ToolName
         }
         ToolRenderKind::UpdatePlan
+        | ToolRenderKind::MonitorStart
+        | ToolRenderKind::MonitorList
+        | ToolRenderKind::MonitorStop
         | ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent

@@ -2,9 +2,9 @@ use super::*;
 
 mod attachments;
 mod history;
-mod live_task_commands;
 mod live_tasks;
 mod mcp;
+mod runtime_activity_commands;
 mod session;
 
 impl CodeAgentTui {
@@ -36,10 +36,14 @@ impl CodeAgentTui {
             | SlashCommand::Prompt { .. }
             | SlashCommand::Resource { .. }) => self.apply_mcp_command(command).await,
             command @ (SlashCommand::LiveTasks
+            | SlashCommand::Monitors { .. }
             | SlashCommand::SpawnTask { .. }
             | SlashCommand::SendTask { .. }
             | SlashCommand::WaitTask { .. }
-            | SlashCommand::CancelTask { .. }) => self.apply_live_task_command(command).await,
+            | SlashCommand::CancelTask { .. }
+            | SlashCommand::StopMonitor { .. }) => {
+                self.apply_runtime_activity_command(command).await
+            }
             command @ (SlashCommand::AgentSessions { .. }
             | SlashCommand::AgentSession { .. }
             | SlashCommand::Tasks { .. }

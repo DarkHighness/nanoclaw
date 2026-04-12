@@ -5,17 +5,17 @@ use agent::runtime::{
 };
 use agent::tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeHover, CodeNavigationTarget,
-    CodeReference, CodeSymbol, FileActivityObserver, ProcessExecutor, SandboxBackendStatus,
-    SandboxError, SubagentExecutor, TaskManager,
+    CodeReference, CodeSymbol, FileActivityObserver, MonitorManager, ProcessExecutor,
+    SandboxBackendStatus, SandboxError, SubagentExecutor, TaskManager,
 };
 use agent::{
     CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool, CodeSymbolSearchTool, EditTool,
     ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool, ManagedCodeIntelBackend,
-    ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchFilesTool, PlanState, ReadTool,
-    RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool,
-    ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry, ToolResult, UpdatePlanTool,
-    WebFetchTool, WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend,
-    WriteStdinTool, WriteTool,
+    ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, MonitorListTool, MonitorStartTool,
+    MonitorStopTool, PatchFilesTool, PlanState, ReadTool, RequestPermissionsTool,
+    RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool, ToolCallId, ToolDiscoverTool,
+    ToolExecutionContext, ToolRegistry, ToolResult, UpdatePlanTool, WebFetchTool,
+    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -516,6 +516,12 @@ pub fn register_subagent_tools(
     ));
     tools.register(agent::tools::AgentListTool::new(subagent_executor.clone()));
     tools.register(agent::tools::AgentCancelTool::new(subagent_executor));
+}
+
+pub fn register_monitor_tools(tools: &mut ToolRegistry, monitor_manager: Arc<dyn MonitorManager>) {
+    tools.register(MonitorStartTool::new(monitor_manager.clone()));
+    tools.register(MonitorListTool::new(monitor_manager.clone()));
+    tools.register(MonitorStopTool::new(monitor_manager));
 }
 
 fn build_builtin_tools(

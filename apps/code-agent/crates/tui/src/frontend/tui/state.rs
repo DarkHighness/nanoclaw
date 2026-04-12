@@ -329,6 +329,13 @@ impl ActiveToolCell {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActiveMonitorCell {
+    pub(crate) monitor_id: String,
+    pub(crate) started_at: Instant,
+    pub(crate) entry: TranscriptShellEntry,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ToolSelectionTarget {
     Transcript(usize),
     LiveCell(String),
@@ -360,6 +367,7 @@ pub(crate) struct TuiState {
     pub(crate) toast: Option<ToastState>,
     pub(crate) transcript: Vec<TranscriptEntry>,
     pub(crate) active_tool_cells: Vec<ActiveToolCell>,
+    pub(crate) active_monitors: Vec<ActiveMonitorCell>,
     pub(crate) tool_selection: Option<ToolSelectionTarget>,
     pub(crate) transcript_scroll: u16,
     pub(crate) follow_transcript: bool,
@@ -529,6 +537,40 @@ impl TuiState {
         {
             self.tool_selection = None;
         }
+    }
+
+    pub(crate) fn upsert_active_monitor(
+        &mut self,
+        monitor_id: impl Into<String>,
+        started_at: Instant,
+        entry: TranscriptShellEntry,
+    ) {
+        let monitor_id = monitor_id.into();
+        if let Some(existing) = self
+            .active_monitors
+            .iter_mut()
+            .find(|monitor| monitor.monitor_id == monitor_id)
+        {
+            existing.started_at = started_at;
+            existing.entry = entry;
+            return;
+        }
+        self.active_monitors.push(ActiveMonitorCell {
+            monitor_id,
+            started_at,
+            entry,
+        });
+    }
+
+    pub(crate) fn remove_active_monitor(
+        &mut self,
+        monitor_id: &str,
+    ) -> Option<TranscriptShellEntry> {
+        let index = self
+            .active_monitors
+            .iter()
+            .position(|monitor| monitor.monitor_id == monitor_id)?;
+        Some(self.active_monitors.remove(index).entry)
     }
 
     pub(crate) fn drain_transcript_ready_tool_cells(&mut self) -> Vec<(String, TranscriptEntry)> {

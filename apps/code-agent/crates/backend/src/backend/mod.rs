@@ -7,6 +7,7 @@ mod boot_runtime;
 mod boot_sandbox;
 mod events;
 mod memory_recall;
+mod monitor_manager;
 mod permission_request;
 mod session;
 mod session_catalog;
@@ -22,7 +23,8 @@ mod tool_approval_policy;
 mod user_input;
 
 pub use crate::ui::{
-    HistoryRollbackOutcome, HistoryRollbackRound, LiveTaskAttentionAction,
+    HistoryRollbackOutcome, HistoryRollbackRound, LiveMonitorControlAction,
+    LiveMonitorControlOutcome, LiveMonitorSummary, LiveTaskAttentionAction,
     LiveTaskAttentionOutcome, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
     LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
     LoadedAgentSession, LoadedMcpPrompt, LoadedMcpResource, LoadedSession, LoadedSubagentSession,
@@ -53,6 +55,7 @@ pub use boot_sandbox::{
     inject_process_env, inspect_sandbox_preflight, log_sandbox_status, tool_context_for_profile,
 };
 pub use events::{SessionEventObserver, SessionEventStream};
+pub(crate) use monitor_manager::SessionMonitorManager;
 pub use permission_request::{
     NonInteractivePermissionRequestHandler, PermissionRequestCoordinator,
     SessionPermissionRequestHandler,

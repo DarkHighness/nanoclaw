@@ -80,6 +80,16 @@ pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> Transc
     )
 }
 
+pub(crate) fn format_live_monitor_summary_line(summary: &LiveMonitorSummary) -> TranscriptEntry {
+    info_summary_entry(
+        format!("{}  {}", summary.monitor_id, summary.status),
+        [
+            format!("cwd {} · shell {}", summary.cwd, summary.shell),
+            format!("command {}", preview_text(&summary.command, 96)),
+        ],
+    )
+}
+
 pub(crate) fn format_live_task_spawn_outcome(
     outcome: &LiveTaskSpawnOutcome,
 ) -> Vec<InspectorEntry> {

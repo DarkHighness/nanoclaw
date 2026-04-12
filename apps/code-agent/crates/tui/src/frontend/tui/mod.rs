@@ -28,7 +28,8 @@ use crate::interaction::{
 use crate::statusline::status_line_fields;
 use crate::theme::{ThemeCatalog, active_theme_id, install_theme_catalog, set_active_theme};
 use crate::ui::{
-    HistoryRollbackRound, LiveTaskAttentionAction, LiveTaskAttentionOutcome, LiveTaskControlAction,
+    HistoryRollbackRound, LiveMonitorControlAction, LiveMonitorControlOutcome, LiveMonitorSummary,
+    LiveTaskAttentionAction, LiveTaskAttentionOutcome, LiveTaskControlAction,
     LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome,
     LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedMcpPrompt, LoadedMcpResource,
     LoadedSession, LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
@@ -45,6 +46,7 @@ use commands::{
 };
 use history::{
     format_agent_session_inspector, format_agent_session_summary_collection,
+    format_live_monitor_control_outcome, format_live_monitor_summary_line,
     format_live_task_control_outcome, format_live_task_message_outcome,
     format_live_task_spawn_outcome, format_live_task_summary_line, format_live_task_wait_outcome,
     format_mcp_prompt_summary_line, format_mcp_resource_summary_line,

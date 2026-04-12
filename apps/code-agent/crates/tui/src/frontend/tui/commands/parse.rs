@@ -65,6 +65,11 @@ impl From<SlashSubcommand> for SlashCommand {
                 Self::AgentSession { agent_session_ref }
             }
             SlashSubcommand::LiveTasks => Self::LiveTasks,
+            SlashSubcommand::Monitors { include_closed } => Self::Monitors {
+                include_closed: include_closed
+                    .into_iter()
+                    .any(|value| value.eq_ignore_ascii_case("all")),
+            },
             SlashSubcommand::SpawnTask { role, prompt } => Self::SpawnTask {
                 role,
                 prompt: join_required_tail(prompt),
@@ -82,6 +87,13 @@ impl From<SlashSubcommand> for SlashCommand {
                 reason,
             } => Self::CancelTask {
                 task_or_agent_ref,
+                reason: join_optional_tail(reason),
+            },
+            SlashSubcommand::StopMonitor {
+                monitor_ref,
+                reason,
+            } => Self::StopMonitor {
+                monitor_ref,
                 reason: join_optional_tail(reason),
             },
             SlashSubcommand::Tasks { session_ref } => Self::Tasks { session_ref },

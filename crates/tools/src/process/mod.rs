@@ -1,7 +1,9 @@
 mod js_repl;
+mod monitor;
 mod unified_exec;
 
 pub use js_repl::*;
+pub use monitor::*;
 pub use unified_exec::*;
 // Process-oriented tools still live in `tools`, but the sandbox model and
 // platform backends now belong to the dedicated `sandbox` crate. Re-export

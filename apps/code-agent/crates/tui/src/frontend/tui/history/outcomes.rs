@@ -39,6 +39,42 @@ pub(crate) fn format_session_operation_outcome(
     })]
 }
 
+pub(crate) fn format_live_monitor_control_outcome(
+    outcome: &LiveMonitorControlOutcome,
+) -> Vec<InspectorEntry> {
+    let headline = match outcome.action {
+        LiveMonitorControlAction::Stopped => {
+            format!("Stopped monitor {}", outcome.monitor.monitor_id)
+        }
+        LiveMonitorControlAction::AlreadyTerminal => {
+            format!(
+                "Monitor {} was already terminal",
+                outcome.monitor.monitor_id
+            )
+        }
+    };
+    vec![InspectorEntry::transcript(match outcome.action {
+        LiveMonitorControlAction::Stopped => success_summary_entry(
+            headline,
+            [
+                format!("requested {}", outcome.requested_ref),
+                format!("status {}", outcome.monitor.status),
+                format!("cwd {}", outcome.monitor.cwd),
+                format!("command {}", preview_text(&outcome.monitor.command, 96)),
+            ],
+        ),
+        LiveMonitorControlAction::AlreadyTerminal => info_summary_entry(
+            headline,
+            [
+                format!("requested {}", outcome.requested_ref),
+                format!("status {}", outcome.monitor.status),
+                format!("cwd {}", outcome.monitor.cwd),
+                format!("command {}", preview_text(&outcome.monitor.command, 96)),
+            ],
+        ),
+    })]
+}
+
 pub(crate) fn format_live_task_control_outcome(
     outcome: &LiveTaskControlOutcome,
 ) -> Vec<InspectorEntry> {

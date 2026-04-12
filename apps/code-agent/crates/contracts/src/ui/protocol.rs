@@ -4,6 +4,7 @@ use super::{
         LoadedMcpPrompt, LoadedMcpResource, McpPromptSummary, McpResourceSummary, McpServerSummary,
         StartupDiagnosticsSnapshot,
     },
+    monitors::{LiveMonitorControlOutcome, LiveMonitorSummary},
     session::{
         HistoryRollbackOutcome, HistoryRollbackRound, LoadedAgentSession, LoadedSession,
         PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
@@ -161,6 +162,13 @@ pub enum UIAsyncCommand {
         task_or_agent_ref: String,
         reason: Option<String>,
     },
+    ListMonitors {
+        include_closed: bool,
+    },
+    StopMonitor {
+        monitor_ref: String,
+        reason: Option<String>,
+    },
     LoadSession {
         session_ref: String,
     },
@@ -213,6 +221,8 @@ pub enum UIAsyncResult {
     LiveTaskMessageOutcome(LiveTaskMessageOutcome),
     LiveTaskWaitOutcome(LiveTaskWaitOutcome),
     LiveTaskControlOutcome(LiveTaskControlOutcome),
+    LiveMonitors(Vec<LiveMonitorSummary>),
+    LiveMonitorControlOutcome(LiveMonitorControlOutcome),
     LoadedSession(LoadedSession),
     LoadedAgentSession(LoadedAgentSession),
     LoadedTask(LoadedTask),
@@ -323,6 +333,8 @@ impl_ui_async_value!(LiveTaskSpawnOutcome, LiveTaskSpawnOutcome);
 impl_ui_async_value!(LiveTaskMessageOutcome, LiveTaskMessageOutcome);
 impl_ui_async_value!(LiveTaskWaitOutcome, LiveTaskWaitOutcome);
 impl_ui_async_value!(LiveTaskControlOutcome, LiveTaskControlOutcome);
+impl_ui_async_value!(Vec<LiveMonitorSummary>, LiveMonitors);
+impl_ui_async_value!(LiveMonitorControlOutcome, LiveMonitorControlOutcome);
 impl_ui_async_value!(LoadedSession, LoadedSession);
 impl_ui_async_value!(LoadedAgentSession, LoadedAgentSession);
 impl_ui_async_value!(LoadedTask, LoadedTask);

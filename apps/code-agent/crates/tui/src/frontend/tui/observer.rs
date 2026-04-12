@@ -1,6 +1,6 @@
 use super::state::{
     ActiveToolCell, SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail,
-    TranscriptToolEntry, TranscriptToolStatus, TurnPhase, preview_text,
+    TranscriptShellEntry, TranscriptToolEntry, TranscriptToolStatus, TurnPhase, preview_text,
 };
 use super::tool_state::{
     focus_state_from_tool_output, plan_items_from_tool_output, plan_update_entry_from_tool_output,
@@ -10,6 +10,8 @@ use crate::tool_render::{
     tool_completion_state_from_preview, tool_output_details_from_preview, tool_review_from_preview,
 };
 use crate::ui::{SessionEvent, SessionNotificationSource, SessionToastVariant, SessionToolCall};
+use agent::types::{MonitorEventKind, MonitorStatus, MonitorStream, MonitorSummaryRecord};
+use std::time::Instant;
 
 pub(crate) struct SharedRenderObserver {
     ui_state: SharedUiState,
@@ -307,6 +309,91 @@ impl SharedRenderObserver {
                         .map(|value| format!(": {}", preview_text(value, 44)))
                         .unwrap_or_default()
                 ));
+            }
+            SessionEvent::MonitorStarted { summary } => {
+                state.upsert_active_monitor(
+                    summary.monitor_id.to_string(),
+                    Instant::now(),
+                    running_monitor_entry(&summary),
+                );
+                state.push_activity(format!(
+                    "started monitor {}: {}",
+                    summary.monitor_id,
+                    preview_text(&summary.command, 48)
+                ));
+            }
+            SessionEvent::MonitorEvent { event } => {
+                if let Some(active) = state
+                    .active_monitors
+                    .iter_mut()
+                    .find(|monitor| monitor.monitor_id == event.monitor_id.as_str())
+                {
+                    apply_monitor_event(active, &event.kind);
+                }
+                state.push_activity(match &event.kind {
+                    MonitorEventKind::Line { stream, text } => format!(
+                        "monitor {} {}: {}",
+                        event.monitor_id,
+                        stream,
+                        preview_text(text, 44)
+                    ),
+                    MonitorEventKind::StateChanged { status } => {
+                        format!("monitor {} state {}", event.monitor_id, status)
+                    }
+                    MonitorEventKind::Completed { exit_code } => {
+                        format!("monitor {} completed ({exit_code})", event.monitor_id)
+                    }
+                    MonitorEventKind::Failed { exit_code, error } => format!(
+                        "monitor {} failed{}{}",
+                        event.monitor_id,
+                        exit_code
+                            .map(|code| format!(" ({code})"))
+                            .unwrap_or_default(),
+                        error
+                            .as_deref()
+                            .map(|value| format!(": {}", preview_text(value, 32)))
+                            .unwrap_or_default()
+                    ),
+                    MonitorEventKind::Cancelled { reason } => format!(
+                        "monitor {} cancelled{}",
+                        event.monitor_id,
+                        reason
+                            .as_deref()
+                            .map(|value| format!(": {}", preview_text(value, 32)))
+                            .unwrap_or_default()
+                    ),
+                });
+            }
+            SessionEvent::MonitorUpdated { summary } => {
+                let completed = state
+                    .remove_active_monitor(summary.monitor_id.as_str())
+                    .map(|mut entry| {
+                        entry.status = Some(match summary.status {
+                            MonitorStatus::Running => super::state::TranscriptShellStatus::Running,
+                            MonitorStatus::Completed => {
+                                super::state::TranscriptShellStatus::Completed
+                            }
+                            MonitorStatus::Failed => super::state::TranscriptShellStatus::Failed,
+                            MonitorStatus::Cancelled => {
+                                super::state::TranscriptShellStatus::Cancelled
+                            }
+                        });
+                        entry.headline = format!(
+                            "{} monitor {}",
+                            match summary.status {
+                                MonitorStatus::Running => "Running",
+                                MonitorStatus::Completed => "Completed",
+                                MonitorStatus::Failed => "Failed",
+                                MonitorStatus::Cancelled => "Cancelled",
+                            },
+                            summary.monitor_id
+                        );
+                        TranscriptEntry::ShellSummary(entry)
+                    })
+                    .unwrap_or_else(|| monitor_terminal_entry(&summary));
+                state.push_transcript(completed);
+                state.status = format!("Monitor {} {}", summary.monitor_id, summary.status);
+                state.push_activity(format!("monitor {} {}", summary.monitor_id, summary.status));
             }
             SessionEvent::TurnCompleted { .. } => {
                 self.active_assistant_line = None;
@@ -620,12 +707,141 @@ fn flush_transcript_ready_tool_cells(state: &mut super::state::TuiState) {
     }
 }
 
+fn running_monitor_entry(summary: &MonitorSummaryRecord) -> TranscriptShellEntry {
+    TranscriptShellEntry::new_with_status(
+        format!("Running monitor {}", summary.monitor_id),
+        Some(super::state::TranscriptShellStatus::Running),
+        monitor_summary_details(summary),
+    )
+}
+
+fn monitor_terminal_entry(summary: &MonitorSummaryRecord) -> TranscriptEntry {
+    TranscriptEntry::shell_summary_status_details(
+        match summary.status {
+            MonitorStatus::Running => super::state::TranscriptShellStatus::Running,
+            MonitorStatus::Completed => super::state::TranscriptShellStatus::Completed,
+            MonitorStatus::Failed => super::state::TranscriptShellStatus::Failed,
+            MonitorStatus::Cancelled => super::state::TranscriptShellStatus::Cancelled,
+        },
+        format!(
+            "{} monitor {}",
+            match summary.status {
+                MonitorStatus::Running => "Running",
+                MonitorStatus::Completed => "Completed",
+                MonitorStatus::Failed => "Failed",
+                MonitorStatus::Cancelled => "Cancelled",
+            },
+            summary.monitor_id
+        ),
+        monitor_summary_details(summary),
+    )
+}
+
+fn monitor_summary_details(summary: &MonitorSummaryRecord) -> Vec<TranscriptShellDetail> {
+    let mut details = vec![
+        TranscriptShellDetail::Raw {
+            text: format!("cwd {}", summary.cwd),
+            continuation: false,
+        },
+        TranscriptShellDetail::Raw {
+            text: format!("command {}", summary.command),
+            continuation: false,
+        },
+    ];
+    if let Some(task_id) = summary.task_id.as_ref() {
+        details.push(TranscriptShellDetail::Raw {
+            text: format!("task {}", task_id),
+            continuation: false,
+        });
+    }
+    details
+}
+
+fn apply_monitor_event(active: &mut super::state::ActiveMonitorCell, event: &MonitorEventKind) {
+    match event {
+        MonitorEventKind::Line { stream, text } => {
+            push_monitor_output_line(&mut active.entry, *stream, text);
+        }
+        MonitorEventKind::StateChanged { status } => {
+            active.entry.status = Some(match status {
+                MonitorStatus::Running => super::state::TranscriptShellStatus::Running,
+                MonitorStatus::Completed => super::state::TranscriptShellStatus::Completed,
+                MonitorStatus::Failed => super::state::TranscriptShellStatus::Failed,
+                MonitorStatus::Cancelled => super::state::TranscriptShellStatus::Cancelled,
+            });
+        }
+        MonitorEventKind::Completed { exit_code } => {
+            active.entry.status = Some(super::state::TranscriptShellStatus::Completed);
+            active.entry.detail_lines.push(TranscriptShellDetail::Raw {
+                text: format!("exit {}", exit_code),
+                continuation: false,
+            });
+        }
+        MonitorEventKind::Failed { exit_code, error } => {
+            active.entry.status = Some(super::state::TranscriptShellStatus::Failed);
+            if let Some(exit_code) = exit_code {
+                active.entry.detail_lines.push(TranscriptShellDetail::Raw {
+                    text: format!("exit {}", exit_code),
+                    continuation: false,
+                });
+            }
+            if let Some(error) = error.as_deref().filter(|value| !value.trim().is_empty()) {
+                active.entry.detail_lines.push(TranscriptShellDetail::Raw {
+                    text: format!("error {}", error),
+                    continuation: false,
+                });
+            }
+        }
+        MonitorEventKind::Cancelled { reason } => {
+            active.entry.status = Some(super::state::TranscriptShellStatus::Cancelled);
+            if let Some(reason) = reason.as_deref().filter(|value| !value.trim().is_empty()) {
+                active.entry.detail_lines.push(TranscriptShellDetail::Raw {
+                    text: format!("reason {}", reason),
+                    continuation: false,
+                });
+            }
+        }
+    }
+}
+
+fn push_monitor_output_line(entry: &mut TranscriptShellEntry, stream: MonitorStream, text: &str) {
+    let label = match stream {
+        MonitorStream::Stdout => "Stdout",
+        MonitorStream::Stderr => "Stderr",
+    };
+    let kind = match stream {
+        MonitorStream::Stdout => super::state::TranscriptShellBlockKind::Stdout,
+        MonitorStream::Stderr => super::state::TranscriptShellBlockKind::Stderr,
+    };
+    if let Some(TranscriptShellDetail::NamedBlock { lines, .. }) = entry
+        .detail_lines
+        .iter_mut()
+        .find(|detail| matches!(detail, TranscriptShellDetail::NamedBlock { label: existing, .. } if existing == label))
+    {
+        lines.push(text.to_string());
+        let overflow = lines.len().saturating_sub(6);
+        if overflow > 0 {
+            lines.drain(0..overflow);
+        }
+        return;
+    }
+    entry.detail_lines.push(TranscriptShellDetail::NamedBlock {
+        label: label.to_string(),
+        kind,
+        lines: vec![text.to_string()],
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
     use crate::frontend::tui::state::{SharedUiState, ToolSelectionTarget, TranscriptEntry};
     use crate::ui::{SessionEvent, SessionNotificationSource, SessionToolCall, SessionToolOrigin};
-    use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase};
+    use agent::types::{
+        AgentSessionId, ContextWindowUsage, MonitorEventKind, MonitorEventRecord, MonitorId,
+        MonitorStatus, MonitorStream, MonitorSummaryRecord, SessionId, TokenLedgerSnapshot,
+        TokenUsage, TokenUsagePhase,
+    };
     use serde_json::json;
 
     #[test]
@@ -1238,6 +1454,63 @@ mod tests {
                 .tool_entry()
                 .and_then(|entry| entry.review.as_ref())
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn monitor_events_stream_into_live_tail_and_finish_as_terminal_summary() {
+        let ui_state = SharedUiState::new();
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+        let summary = MonitorSummaryRecord {
+            monitor_id: MonitorId::from("mon_123"),
+            session_id: SessionId::from("session_1"),
+            agent_session_id: AgentSessionId::from("agent_session_1"),
+            parent_agent_id: None,
+            task_id: None,
+            command: "npm run dev".to_string(),
+            cwd: "/workspace/web".to_string(),
+            shell: "/bin/zsh".to_string(),
+            login: true,
+            status: MonitorStatus::Running,
+            started_at_unix_s: 1_700_000_000,
+            finished_at_unix_s: None,
+        };
+
+        observer.apply_event(SessionEvent::MonitorStarted {
+            summary: summary.clone(),
+        });
+        observer.apply_event(SessionEvent::MonitorEvent {
+            event: MonitorEventRecord {
+                monitor_id: summary.monitor_id.clone(),
+                timestamp_unix_s: 1_700_000_001,
+                kind: MonitorEventKind::Line {
+                    stream: MonitorStream::Stdout,
+                    text: "ready on http://localhost:3000".to_string(),
+                },
+            },
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.active_monitors.len(), 1);
+        assert_eq!(
+            transcript_text(&TranscriptEntry::ShellSummary(
+                snapshot.active_monitors[0].entry.clone()
+            )),
+            "• Running monitor mon_123\n  └ cwd /workspace/web\n  └ command npm run dev\n  └ Stdout\n    ready on http://localhost:3000"
+        );
+
+        let mut completed_summary = summary.clone();
+        completed_summary.status = MonitorStatus::Completed;
+        completed_summary.finished_at_unix_s = Some(1_700_000_010);
+        observer.apply_event(SessionEvent::MonitorUpdated {
+            summary: completed_summary,
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert!(snapshot.active_monitors.is_empty());
+        assert_eq!(
+            transcript_text(&snapshot.transcript[0]),
+            "• Completed monitor mon_123\n  └ cwd /workspace/web\n  └ command npm run dev\n  └ Stdout\n    ready on http://localhost:3000"
         );
     }
 

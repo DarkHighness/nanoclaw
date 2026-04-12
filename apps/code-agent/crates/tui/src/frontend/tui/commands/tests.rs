@@ -101,6 +101,36 @@ fn parses_live_task_listing() {
 }
 
 #[test]
+fn parses_monitor_listing_with_optional_closed_flag() {
+    assert!(matches!(
+        parse_slash_command("/monitors"),
+        SlashCommand::Monitors {
+            include_closed: false
+        }
+    ));
+    assert!(matches!(
+        parse_slash_command("/monitors all"),
+        SlashCommand::Monitors {
+            include_closed: true
+        }
+    ));
+}
+
+#[test]
+fn parses_stop_monitor_with_optional_reason_tail() {
+    match parse_slash_command("/stop_monitor mon_123 process hung on warm reload") {
+        SlashCommand::StopMonitor {
+            monitor_ref,
+            reason,
+        } => {
+            assert_eq!(monitor_ref, "mon_123");
+            assert_eq!(reason.as_deref(), Some("process hung on warm reload"));
+        }
+        _ => panic!("unexpected command"),
+    }
+}
+
+#[test]
 fn parses_permissions_mode_switch() {
     match parse_slash_command("/permissions danger-full-access") {
         SlashCommand::Permissions { mode } => {

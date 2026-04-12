@@ -3,7 +3,7 @@ use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
 use crate::backend::boot_runtime::{
     COMMAND_HOOK_DISABLED_WARNING_PREFIX, SwitchableCodeIntelBackend,
     SwitchableCommandHookExecutor, SwitchableHostProcessExecutor, build_runtime_tooling,
-    host_process_surfaces_allowed, register_subagent_tools,
+    host_process_surfaces_allowed, register_monitor_tools, register_subagent_tools,
 };
 use crate::backend::memory_recall::WorkspaceMemoryRecallAugmentor;
 use crate::backend::session_memory_compaction::{
@@ -13,11 +13,11 @@ use crate::backend::store::build_store;
 use crate::backend::{
     ApprovalCoordinator, NonInteractivePermissionRequestHandler, NonInteractiveToolApprovalHandler,
     NonInteractiveUserInputHandler, PermissionRequestCoordinator, SessionEventStream,
-    SessionPermissionRequestHandler, SessionTaskManager, SessionToolApprovalHandler,
-    SessionUserInputHandler, UserInputCoordinator, build_code_agent_tool_approval_policy,
-    build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
-    dedup_mcp_servers, log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers,
-    resolve_skill_roots, tool_context_for_profile,
+    SessionMonitorManager, SessionPermissionRequestHandler, SessionTaskManager,
+    SessionToolApprovalHandler, SessionUserInputHandler, UserInputCoordinator,
+    build_code_agent_tool_approval_policy, build_plugin_activation_plan, build_sandbox_policy,
+    build_system_preamble, build_tool_context, dedup_mcp_servers, log_sandbox_status,
+    merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots, tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -57,6 +57,7 @@ struct RuntimeBuildResult {
     memory_backend: Option<Arc<dyn agent::memory::MemoryBackend>>,
     session_memory_refresh_state: SharedSessionMemoryRefreshState,
     subagent_executor: Arc<dyn SubagentExecutor>,
+    monitor_manager: Arc<dyn agent::tools::MonitorManager>,
     store: Arc<dyn store::SessionStore>,
     skill_catalog: SkillCatalog,
     skills: Vec<Skill>,
@@ -352,6 +353,7 @@ where
         memory_backend,
         session_memory_refresh_state,
         subagent_executor,
+        monitor_manager,
         store,
         skill_catalog,
         skills,
@@ -377,6 +379,7 @@ where
         session_tool_context.clone(),
         sandbox_policy.clone(),
         sandbox_status,
+        events.clone(),
         permission_grants.clone(),
         &mut progress,
     )
@@ -411,6 +414,7 @@ where
         Some(model_backend),
         Some(session_memory_model_backend),
         subagent_executor,
+        monitor_manager,
         store,
         mcp_servers,
         mcp_server_configs,
@@ -479,6 +483,7 @@ async fn build_runtime<F>(
     session_tool_context: Arc<RwLock<ToolExecutionContext>>,
     sandbox_policy: SandboxPolicy,
     sandbox_status: agent::tools::SandboxBackendStatus,
+    events: SessionEventStream,
     permission_grants: PermissionGrantStore,
     progress: &mut F,
 ) -> Result<RuntimeBuildResult>
@@ -817,6 +822,13 @@ where
         store.clone(),
         subagent_executor.clone(),
     ));
+    let monitor_manager: Arc<dyn agent::tools::MonitorManager> =
+        Arc::new(SessionMonitorManager::new(
+            store.clone(),
+            events.clone(),
+            runtime_tooling.process_executor.clone(),
+        ));
+    register_monitor_tools(&mut tools, monitor_manager.clone());
     register_subagent_tools(&mut tools, subagent_executor.clone(), task_manager);
     let tool_specs = tools
         .specs()
@@ -866,6 +878,7 @@ where
         memory_backend,
         session_memory_refresh_state,
         subagent_executor,
+        monitor_manager,
         store,
         skills,
         skill_catalog,
