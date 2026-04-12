@@ -23,6 +23,7 @@ pub enum ToolRenderKind {
     BrowserSnapshot,
     BrowserClick,
     BrowserType,
+    BrowserEval,
     MonitorStart,
     MonitorList,
     MonitorStop,
@@ -54,6 +55,7 @@ impl ToolRenderKind {
             "browser_snapshot" => Self::BrowserSnapshot,
             "browser_click" => Self::BrowserClick,
             "browser_type" => Self::BrowserType,
+            "browser_eval" => Self::BrowserEval,
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
             "monitor_stop" => Self::MonitorStop,
@@ -694,6 +696,32 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
             }
             return lines;
         }
+        ToolRenderKind::BrowserEval => {
+            let script = arguments
+                .get("script")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<empty>");
+            let mut lines = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("Evaluate browser {browser_id}"))
+                    .unwrap_or_else(|| "Evaluate current browser".to_string()),
+                truncate_inline(script.lines().next().unwrap_or(script), 88),
+            ];
+            if arguments
+                .get("await_promise")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                lines.push("await promise".to_string());
+            }
+            return lines;
+        }
         ToolRenderKind::MonitorStart => {
             let command = arguments.get("cmd").and_then(Value::as_str);
             if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
@@ -1289,6 +1317,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         | ToolRenderKind::BrowserSnapshot
         | ToolRenderKind::BrowserClick
         | ToolRenderKind::BrowserType
+        | ToolRenderKind::BrowserEval
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
         | ToolRenderKind::WorktreeEnter
@@ -1385,6 +1414,11 @@ pub fn tool_output_details(
         }
         ToolRenderKind::BrowserType => {
             if let Some(details) = browser_type_output_details(structured) {
+                return details;
+            }
+        }
+        ToolRenderKind::BrowserEval => {
+            if let Some(details) = browser_eval_output_details(structured) {
                 return details;
             }
         }
@@ -2024,6 +2058,42 @@ fn browser_type_output_details(structured: Option<&Value>) -> Option<Vec<ToolDet
             label: ToolDetailLabel::Note,
             lines: notes,
         });
+    }
+    Some(details)
+}
+
+fn browser_eval_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let _browser = structured.get("browser")?;
+    let mut details = browser_open_output_details(Some(structured))?;
+    if structured
+        .get("await_promise")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Note,
+            value: "awaited promise resolution".to_string(),
+        });
+    }
+    if let Some(result) = structured.get("result") {
+        if let Some(value) = scalar_json_preview(result) {
+            details.push(ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Result,
+                value,
+            });
+        } else if let Some(mut output) = generic_structured_output_details(result) {
+            details.append(&mut output);
+        }
+    }
+    if let Some(state_detail) = details.iter_mut().find_map(|detail| match detail {
+        ToolDetail::LabeledValue { label, value } if *label == ToolDetailLabel::State => {
+            Some(value)
+        }
+        _ => None,
+    }) && !state_detail.contains("updated")
+    {
+        *state_detail = format!("{state_detail} · updated");
     }
     Some(details)
 }
@@ -3451,6 +3521,21 @@ mod tests {
                 "wait for navigation"
             ]
         );
+        assert_eq!(
+            tool_arguments_preview_lines(
+                "browser_eval",
+                &json!({
+                    "browser_id": "browser_123",
+                    "script": "document.title\nwindow.location.href",
+                    "await_promise": true
+                })
+            ),
+            vec![
+                "Evaluate browser browser_123",
+                "document.title",
+                "await promise"
+            ]
+        );
     }
 
     #[test]
@@ -3654,6 +3739,52 @@ mod tests {
             browser_type_rendered
                 .iter()
                 .any(|line| line == "    submit with Enter")
+        );
+
+        let browser_eval_rendered = tool_output_detail_lines(
+            "browser_eval",
+            "",
+            Some(&json!({
+                "browser": {
+                    "browser_id": "browser_123",
+                    "status": "open",
+                    "current_url": "https://example.com/eval?await=true",
+                    "headless": true,
+                    "title": "Evaluated Example App",
+                    "viewport": {"width": 1280, "height": 720}
+                },
+                "result": {
+                    "script_length": 14,
+                    "await_promise": true
+                },
+                "await_promise": true
+            })),
+        );
+        assert_eq!(browser_eval_rendered[0], "  └ Session browser_123");
+        assert!(
+            browser_eval_rendered
+                .iter()
+                .any(|line| line == "  └ Context https://example.com/eval?await=true")
+        );
+        assert!(
+            browser_eval_rendered
+                .iter()
+                .any(|line| line == "  └ State open · headless · 1280x720 · updated")
+        );
+        assert!(
+            browser_eval_rendered
+                .iter()
+                .any(|line| line == "  └ Note awaited promise resolution")
+        );
+        assert!(
+            browser_eval_rendered
+                .iter()
+                .any(|line| line == "  └ Output Await Promise true")
+        );
+        assert!(
+            browser_eval_rendered
+                .iter()
+                .any(|line| line == "    Script Length 14")
         );
 
         let cron_list_rendered = tool_output_detail_lines(

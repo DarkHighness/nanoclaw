@@ -458,6 +458,40 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::BrowserEval => {
+            let script = arguments
+                .get("script")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<empty>");
+            let mut preview = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("evaluate browser {browser_id}"))
+                    .unwrap_or_else(|| "evaluate current browser".to_string()),
+            ];
+            preview.extend(collapse_preview_text(
+                script,
+                4,
+                96,
+                PreviewCollapse::HeadTail,
+            ));
+            if arguments
+                .get("await_promise")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                preview.push("await promise".to_string());
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::MonitorStart => {
             let command = arguments.get("cmd").and_then(Value::as_str);
             if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
@@ -891,6 +925,44 @@ mod tests {
                 "mode replace".to_string(),
                 "submit enter".to_string(),
                 "wait for navigation".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn approval_prompt_extracts_browser_eval_context() {
+        let prompt = approval_prompt_from_request(&ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-browser-eval".into(),
+                tool_name: "browser_eval".into(),
+                arguments: json!({
+                    "browser_id": "browser_123",
+                    "script": "document.title\nwindow.location.href",
+                    "await_promise": true
+                }),
+                origin: ToolOrigin::Local,
+            },
+            spec: ToolSpec::function(
+                "browser_eval",
+                "evaluate browser script",
+                json!({"type":"object"}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            ),
+            reasons: vec!["browser automation requires review".to_string()],
+        });
+
+        assert_eq!(prompt.tool_name, "browser_eval");
+        assert_eq!(prompt.content.kind, ApprovalContentKind::Arguments);
+        assert_eq!(
+            prompt.content.preview,
+            vec![
+                "evaluate browser browser_123".to_string(),
+                "document.title".to_string(),
+                "window.location.href".to_string(),
+                "await promise".to_string(),
             ]
         );
     }

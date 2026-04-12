@@ -451,6 +451,9 @@ fn tool_headline_prefix(
         ToolRenderKind::BrowserType => {
             lifecycle_headline_text(status, "Typing into browser", "Typed into browser")
         }
+        ToolRenderKind::BrowserEval => {
+            lifecycle_headline_text(status, "Evaluating browser", "Evaluated browser")
+        }
         ToolRenderKind::SendInput => {
             lifecycle_headline_text(status, "Sending follow-up", "Sent follow-up")
         }
@@ -522,6 +525,7 @@ fn tool_headline_subject_kind(
         | ToolRenderKind::BrowserSnapshot
         | ToolRenderKind::BrowserClick
         | ToolRenderKind::BrowserType
+        | ToolRenderKind::BrowserEval
         | ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop

@@ -1,9 +1,10 @@
 use crate::backend::SessionEventStream;
 use crate::ui::SessionEvent;
 use agent::tools::{
-    BrowserClickRequest, BrowserManager, BrowserOpenRequest, BrowserRuntimeContext,
-    BrowserSnapshotElement, BrowserSnapshotElementKind, BrowserSnapshotRecord,
-    BrowserSnapshotRequest, BrowserTypeRequest, Result as ToolResult, ToolError,
+    BrowserClickRequest, BrowserEvalRequest, BrowserManager, BrowserOpenRequest,
+    BrowserRuntimeContext, BrowserSnapshotElement, BrowserSnapshotElementKind,
+    BrowserSnapshotRecord, BrowserSnapshotRequest, BrowserTypeRequest, Result as ToolResult,
+    ToolError,
 };
 use agent::types::{
     BrowserId, BrowserStatus, BrowserSummaryRecord, SessionEventEnvelope, SessionEventKind,
@@ -11,6 +12,7 @@ use agent::types::{
 };
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use store::SessionStore;
@@ -23,6 +25,7 @@ trait BrowserHandle: Send + Sync {
         wait_for_navigation: bool,
     ) -> ToolResult<BrowserInteractionOutcome>;
     fn type_text(&self, request: &BrowserTypeRequest) -> ToolResult<BrowserInteractionOutcome>;
+    fn eval(&self, request: &BrowserEvalRequest) -> ToolResult<BrowserEvalOutcome>;
 }
 
 struct BrowserLaunch {
@@ -34,6 +37,11 @@ struct BrowserLaunch {
 struct BrowserInteractionOutcome {
     current_url: String,
     title: Option<String>,
+}
+
+struct BrowserEvalOutcome {
+    browser: BrowserInteractionOutcome,
+    result: Value,
 }
 
 trait BrowserBackend: Send + Sync {
@@ -306,6 +314,24 @@ impl BrowserManager for SessionBrowserManager {
             })??;
         self.apply_interaction_outcome(&runtime, state, typed).await
     }
+
+    async fn eval_browser(
+        &self,
+        runtime: BrowserRuntimeContext,
+        request: BrowserEvalRequest,
+    ) -> ToolResult<(BrowserSummaryRecord, Value)> {
+        let state = self.resolve_browser_state(&runtime, request.browser_id.as_ref())?;
+        let handle = state._handle.clone();
+        let evaluated = tokio::task::spawn_blocking(move || handle.eval(&request))
+            .await
+            .map_err(|error| {
+                ToolError::invalid_state(format!("failed to join browser task: {error}"))
+            })??;
+        let summary = self
+            .apply_interaction_outcome(&runtime, state, evaluated.browser)
+            .await?;
+        Ok((summary, evaluated.result))
+    }
 }
 
 fn unix_timestamp_s() -> u64 {
@@ -484,6 +510,29 @@ impl BrowserHandle for HeadlessChromeBrowserHandle {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
+        })
+    }
+
+    fn eval(&self, request: &BrowserEvalRequest) -> ToolResult<BrowserEvalOutcome> {
+        let result = self
+            ._tab
+            .evaluate(&request.script, request.await_promise)
+            .map_err(|error| {
+                ToolError::invalid_state(format!("failed to evaluate browser script: {error}"))
+            })?;
+        Ok(BrowserEvalOutcome {
+            browser: BrowserInteractionOutcome {
+                current_url: self._tab.get_url(),
+                title: self
+                    ._tab
+                    .get_title()
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            },
+            result: result
+                .value
+                .unwrap_or_else(|| json!("<non-serializable browser eval result>")),
         })
     }
 }
@@ -711,6 +760,22 @@ mod tests {
                     request.selector
                 ),
                 title: Some("Typed Example App".to_string()),
+            })
+        }
+
+        fn eval(&self, request: &BrowserEvalRequest) -> ToolResult<BrowserEvalOutcome> {
+            Ok(BrowserEvalOutcome {
+                browser: BrowserInteractionOutcome {
+                    current_url: format!(
+                        "https://example.com/eval?await={}",
+                        request.await_promise
+                    ),
+                    title: Some("Evaluated Example App".to_string()),
+                },
+                result: json!({
+                    "script_length": request.script.chars().count(),
+                    "await_promise": request.await_promise,
+                }),
             })
         }
     }
@@ -1000,6 +1065,74 @@ mod tests {
                 if persisted_summary.browser_id == summary.browser_id
                 && persisted_summary.current_url
                     == "https://example.com/typed?selector=#search&mode=replace&submit=1"
+        )));
+    }
+
+    #[tokio::test]
+    async fn eval_browser_updates_summary_and_returns_typed_result() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let events = SessionEventStream::default();
+        let backend = Arc::new(FakeBrowserBackend::default());
+        let manager = SessionBrowserManager::with_backend(store.clone(), events.clone(), backend);
+        let runtime = BrowserRuntimeContext {
+            session_id: Some(agent::types::SessionId::from("session-1")),
+            agent_session_id: Some(agent::types::AgentSessionId::from("agent-session-1")),
+            turn_id: Some(agent::types::TurnId::from("turn-1")),
+            parent_agent_id: Some(agent::types::AgentId::from("agent-1")),
+            task_id: Some(agent::types::TaskId::from("task-1")),
+        };
+        let summary = manager
+            .open_browser(
+                runtime.clone(),
+                BrowserOpenRequest {
+                    url: "https://example.com".to_string(),
+                    headless: true,
+                    viewport: None,
+                },
+            )
+            .await
+            .expect("browser should open");
+        let _ = events.drain();
+
+        let (evaluated, result) = manager
+            .eval_browser(
+                runtime.clone(),
+                BrowserEvalRequest {
+                    browser_id: Some(summary.browser_id.clone()),
+                    script: "document.title".to_string(),
+                    await_promise: true,
+                },
+            )
+            .await
+            .expect("browser eval should update the typed summary");
+
+        assert_eq!(evaluated.current_url, "https://example.com/eval?await=true");
+        assert_eq!(evaluated.title.as_deref(), Some("Evaluated Example App"));
+        assert_eq!(
+            result,
+            json!({
+                "script_length": 14,
+                "await_promise": true,
+            })
+        );
+
+        let published = events.drain();
+        assert!(matches!(
+            published.as_slice(),
+            [SessionEvent::BrowserUpdated { summary: published_summary }]
+                if published_summary.browser_id == summary.browser_id
+                && published_summary.current_url == "https://example.com/eval?await=true"
+        ));
+
+        let persisted = store
+            .events(&agent::types::SessionId::from("session-1"))
+            .await
+            .expect("session events should load");
+        assert!(persisted.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::BrowserUpdated { summary: persisted_summary }
+                if persisted_summary.browser_id == summary.browser_id
+                && persisted_summary.current_url == "https://example.com/eval?await=true"
         )));
     }
 }

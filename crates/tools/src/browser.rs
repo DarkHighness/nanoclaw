@@ -16,6 +16,7 @@ const BROWSER_OPEN_TOOL_NAME: &str = "browser_open";
 const BROWSER_SNAPSHOT_TOOL_NAME: &str = "browser_snapshot";
 const BROWSER_CLICK_TOOL_NAME: &str = "browser_click";
 const BROWSER_TYPE_TOOL_NAME: &str = "browser_type";
+const BROWSER_EVAL_TOOL_NAME: &str = "browser_eval";
 const DEFAULT_BROWSER_TEXT_LINES: usize = 12;
 const DEFAULT_BROWSER_ELEMENT_COUNT: usize = 8;
 const DEFAULT_BROWSER_HTML_CHARS: usize = 2048;
@@ -93,6 +94,13 @@ pub struct BrowserTypeRequest {
     pub wait_for_navigation: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserEvalRequest {
+    pub browser_id: Option<BrowserId>,
+    pub script: String,
+    pub await_promise: bool,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserSnapshotElementKind {
@@ -154,6 +162,12 @@ pub trait BrowserManager: Send + Sync {
         runtime: BrowserRuntimeContext,
         request: BrowserTypeRequest,
     ) -> Result<BrowserSummaryRecord>;
+
+    async fn eval_browser(
+        &self,
+        runtime: BrowserRuntimeContext,
+        request: BrowserEvalRequest,
+    ) -> Result<(BrowserSummaryRecord, Value)>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -202,6 +216,15 @@ pub struct BrowserTypeToolInput {
     pub wait_for_navigation: Option<bool>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct BrowserEvalToolInput {
+    #[serde(default)]
+    pub browser_id: Option<BrowserId>,
+    pub script: String,
+    #[serde(default)]
+    pub await_promise: Option<bool>,
+}
+
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 struct BrowserOpenToolOutput {
     browser: BrowserSummaryRecord,
@@ -225,6 +248,13 @@ struct BrowserTypeToolOutput {
     text: String,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct BrowserEvalToolOutput {
+    browser: BrowserSummaryRecord,
+    result: Value,
+    await_promise: bool,
+}
+
 #[derive(Clone)]
 pub struct BrowserOpenTool {
     manager: Arc<dyn BrowserManager>,
@@ -242,6 +272,11 @@ pub struct BrowserClickTool {
 
 #[derive(Clone)]
 pub struct BrowserTypeTool {
+    manager: Arc<dyn BrowserManager>,
+}
+
+#[derive(Clone)]
+pub struct BrowserEvalTool {
     manager: Arc<dyn BrowserManager>,
 }
 
@@ -267,6 +302,13 @@ impl BrowserClickTool {
 }
 
 impl BrowserTypeTool {
+    #[must_use]
+    pub fn new(manager: Arc<dyn BrowserManager>) -> Self {
+        Self { manager }
+    }
+}
+
+impl BrowserEvalTool {
     #[must_use]
     pub fn new(manager: Arc<dyn BrowserManager>) -> Self {
         Self { manager }
@@ -513,6 +555,65 @@ impl Tool for BrowserTypeTool {
     }
 }
 
+#[async_trait]
+impl Tool for BrowserEvalTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            BROWSER_EVAL_TOOL_NAME,
+            "Evaluate JavaScript inside an open browser session with explicit promise handling, then persist the resulting browser summary as a typed runtime object update.",
+            serde_json::to_value(schema_for!(BrowserEvalToolInput)).expect("browser_eval schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, false, true).with_network(true),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(BrowserEvalToolOutput))
+                .expect("browser_eval output schema"),
+        )
+        .with_availability(ToolAvailability {
+            feature_flags: vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()],
+            provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
+            ..ToolAvailability::default()
+        })
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: BrowserEvalToolInput = serde_json::from_value(arguments)?;
+        let script = input.script.trim();
+        if script.is_empty() {
+            return Err(ToolError::invalid(
+                "browser_eval requires a non-empty script",
+            ));
+        }
+        let request = BrowserEvalRequest {
+            browser_id: input.browser_id,
+            script: script.to_string(),
+            await_promise: input.await_promise.unwrap_or(false),
+        };
+        let (browser, result) = self
+            .manager
+            .eval_browser(BrowserRuntimeContext::from(ctx), request.clone())
+            .await?;
+        Ok(ToolResult::text(
+            call_id,
+            BROWSER_EVAL_TOOL_NAME,
+            render_browser_eval(&browser, &result),
+        )
+        .with_structured_content(json!(BrowserEvalToolOutput {
+            browser,
+            result,
+            await_promise: request.await_promise,
+        }))
+        .with_call_id(external_call_id))
+    }
+}
+
 fn render_browser_summary(browser: &BrowserSummaryRecord) -> String {
     let mut lines = vec![format!("opened browser {}", browser.browser_id)];
     lines.push(format!("url {}", browser.current_url));
@@ -594,14 +695,43 @@ fn render_browser_type(browser: &BrowserSummaryRecord, request: &BrowserTypeRequ
     lines.join("\n")
 }
 
+fn render_browser_eval(browser: &BrowserSummaryRecord, result: &Value) -> String {
+    let mut lines = vec![format!("evaluated browser {}", browser.browser_id)];
+    lines.push(format!("url {}", browser.current_url));
+    lines.push(format!("status {}", browser.status));
+    lines.push(format!(
+        "result {}",
+        match result {
+            Value::Null => "null".to_string(),
+            Value::Bool(value) => value.to_string(),
+            Value::Number(value) => value.to_string(),
+            Value::String(value) => value.clone(),
+            Value::Array(values) => format!("array {}", values.len()),
+            Value::Object(values) => format!("object {}", values.len()),
+        }
+    ));
+    if let Some(title) = browser
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("title {title}"));
+    }
+    lines.join("\n")
+}
+
 fn clamp_snapshot_limit(candidate: Option<usize>, default: usize, max: usize) -> usize {
     candidate.unwrap_or(default).clamp(1, max)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BrowserClickTool, BrowserOpenTool, BrowserSnapshotTool, BrowserTypeTool};
+    use super::{
+        BrowserClickTool, BrowserEvalTool, BrowserOpenTool, BrowserSnapshotTool, BrowserTypeTool,
+    };
     use crate::registry::Tool;
+    use serde_json::Value;
 
     #[test]
     fn browser_open_spec_exposes_feature_and_model_constraints() {
@@ -675,6 +805,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn browser_eval_spec_exposes_feature_and_model_constraints() {
+        let spec = BrowserEvalTool::new(std::sync::Arc::new(FailingManager)).spec();
+        assert_eq!(spec.name.as_str(), "browser_eval");
+        assert_eq!(
+            spec.availability.feature_flags,
+            vec![crate::HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()]
+        );
+        assert_eq!(
+            spec.availability.provider_allowlist,
+            vec!["openai".to_string()]
+        );
+        assert_eq!(
+            spec.availability.model_allowlist,
+            vec!["gpt-5*".to_string()]
+        );
+    }
+
     struct FailingManager;
 
     #[async_trait::async_trait]
@@ -708,6 +856,14 @@ mod tests {
             _runtime: super::BrowserRuntimeContext,
             _request: super::BrowserTypeRequest,
         ) -> crate::Result<BrowserSummaryRecord> {
+            unreachable!("spec test does not execute the tool")
+        }
+
+        async fn eval_browser(
+            &self,
+            _runtime: super::BrowserRuntimeContext,
+            _request: super::BrowserEvalRequest,
+        ) -> crate::Result<(BrowserSummaryRecord, Value)> {
             unreachable!("spec test does not execute the tool")
         }
     }
