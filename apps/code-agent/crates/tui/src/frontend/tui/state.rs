@@ -2,8 +2,8 @@ use crate::interaction::{PendingControlKind, PendingControlSummary, SessionPermi
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
-    ToolCommandIntent, ToolCompletionState, ToolDetail, ToolDetailBlockKind, ToolRenderKind,
-    ToolReview, preview_tool_details, serialize_tool_details,
+    ToolCommand, ToolCommandIntent, ToolCompletionState, ToolDetail, ToolDetailBlockKind,
+    ToolRenderKind, ToolReview, preview_tool_details, serialize_tool_details,
 };
 use crate::ui::StartupDiagnosticsSnapshot;
 use agent::types::{AgentStatus, SubmittedPromptSnapshot, TokenLedgerSnapshot};
@@ -216,15 +216,121 @@ pub(crate) struct ToastState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ActiveToolEntry {
+pub(crate) struct ActiveToolCall {
     pub(crate) call_id: String,
     pub(crate) entry: TranscriptToolEntry,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActiveToolCellKind {
+    Single,
+    ExplorationGroup,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActiveToolCell {
+    pub(crate) cell_id: String,
+    pub(crate) kind: ActiveToolCellKind,
+    pub(crate) calls: Vec<ActiveToolCall>,
+    pub(crate) entry: TranscriptToolEntry,
+}
+
+impl ActiveToolCell {
+    pub(crate) fn new(call_id: impl Into<String>, entry: TranscriptToolEntry) -> Self {
+        let call_id = call_id.into();
+        Self::new_with_cell_id(call_id.clone(), call_id, entry)
+    }
+
+    pub(crate) fn new_with_cell_id(
+        cell_id: impl Into<String>,
+        call_id: impl Into<String>,
+        entry: TranscriptToolEntry,
+    ) -> Self {
+        let cell_id = cell_id.into();
+        let call_id = call_id.into();
+        let kind = active_tool_cell_kind(&entry);
+        let calls = vec![ActiveToolCall { call_id, entry }];
+        let entry = active_tool_cell_entry(kind, &calls);
+        Self {
+            cell_id,
+            kind,
+            calls,
+            entry,
+        }
+    }
+
+    pub(crate) fn contains_call(&self, call_id: &str) -> bool {
+        self.calls.iter().any(|call| call.call_id == call_id)
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        self.calls
+            .iter()
+            .any(|call| is_live_tool_status(call.entry.status))
+    }
+
+    pub(crate) fn holds_completed_entry(&self) -> bool {
+        self.kind == ActiveToolCellKind::ExplorationGroup && !self.is_running()
+    }
+
+    pub(crate) fn update_call(
+        &mut self,
+        call_id: &str,
+        entry: TranscriptToolEntry,
+    ) -> Option<TranscriptToolEntry> {
+        let call = self.calls.iter_mut().find(|call| call.call_id == call_id)?;
+        let previous = std::mem::replace(&mut call.entry, entry);
+        self.kind = active_tool_cell_kind(&call.entry);
+        self.entry = active_tool_cell_entry(self.kind, &self.calls);
+        Some(previous)
+    }
+
+    pub(crate) fn remove_call(&mut self, call_id: &str) -> Option<TranscriptToolEntry> {
+        let index = self.calls.iter().position(|call| call.call_id == call_id)?;
+        let removed = self.calls.remove(index);
+        if let Some(first) = self.calls.first() {
+            self.kind = active_tool_cell_kind(&first.entry);
+            self.entry = active_tool_cell_entry(self.kind, &self.calls);
+        }
+        Some(removed.entry)
+    }
+
+    pub(crate) fn can_absorb_running_call(&self, entry: &TranscriptToolEntry) -> bool {
+        entry.status == TranscriptToolStatus::Running && self.can_absorb_exploration_call(entry)
+    }
+
+    pub(crate) fn can_absorb_exploration_call(&self, entry: &TranscriptToolEntry) -> bool {
+        self.kind == ActiveToolCellKind::ExplorationGroup
+            && self
+                .calls
+                .first()
+                .is_some_and(|call| call.entry.tool_name == entry.tool_name)
+            && is_exploration_tool_entry(&self.entry)
+            && is_exploration_tool_entry(entry)
+    }
+
+    pub(crate) fn absorb_exploration_call(
+        &mut self,
+        call_id: impl Into<String>,
+        entry: TranscriptToolEntry,
+    ) -> bool {
+        if !self.can_absorb_exploration_call(&entry) {
+            return false;
+        }
+
+        self.calls.push(ActiveToolCall {
+            call_id: call_id.into(),
+            entry,
+        });
+        self.entry = active_tool_cell_entry(self.kind, &self.calls);
+        true
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ToolSelectionTarget {
     Transcript(usize),
-    Live(String),
+    LiveCell(String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -249,7 +355,7 @@ pub(crate) struct TuiState {
     pub(crate) composer_context_hint: Option<ComposerContextHint>,
     pub(crate) toast: Option<ToastState>,
     pub(crate) transcript: Vec<TranscriptEntry>,
-    pub(crate) active_tools: Vec<ActiveToolEntry>,
+    pub(crate) active_tool_cells: Vec<ActiveToolCell>,
     pub(crate) tool_selection: Option<ToolSelectionTarget>,
     pub(crate) transcript_scroll: u16,
     pub(crate) follow_transcript: bool,
@@ -340,7 +446,7 @@ impl TuiState {
     }
 
     pub(crate) fn move_tool_selection(&mut self, backwards: bool) -> bool {
-        let selectable = selectable_tool_targets(&self.transcript, &self.active_tools);
+        let selectable = selectable_tool_targets(&self.transcript, &self.active_tool_cells);
         if selectable.is_empty() {
             return false;
         }
@@ -361,7 +467,7 @@ impl TuiState {
     }
 
     pub(crate) fn jump_tool_selection(&mut self, oldest: bool) -> bool {
-        let selectable = selectable_tool_targets(&self.transcript, &self.active_tools);
+        let selectable = selectable_tool_targets(&self.transcript, &self.active_tool_cells);
         if selectable.is_empty() {
             return false;
         }
@@ -384,32 +490,55 @@ impl TuiState {
                 .transcript
                 .get(*index)
                 .and_then(TranscriptEntry::tool_entry),
-            ToolSelectionTarget::Live(call_id) => self
-                .active_tools
+            ToolSelectionTarget::LiveCell(cell_id) => self
+                .active_tool_cells
                 .iter()
-                .find(|active| active.call_id == *call_id)
+                .find(|active| active.cell_id == *cell_id)
                 .map(|active| &active.entry),
         }
     }
 
-    pub(crate) fn promote_live_tool_selection(&mut self, call_id: &str, transcript_index: usize) {
+    pub(crate) fn promote_live_tool_selection(&mut self, cell_id: &str, transcript_index: usize) {
         if matches!(
             self.tool_selection.as_ref(),
-            Some(ToolSelectionTarget::Live(selected)) if selected == call_id
+            Some(ToolSelectionTarget::LiveCell(selected)) if selected == cell_id
         ) {
             self.tool_selection = Some(ToolSelectionTarget::Transcript(transcript_index));
         }
     }
 
+    pub(crate) fn redirect_live_tool_selection(&mut self, from: &str, to: &str) {
+        if matches!(
+            self.tool_selection.as_ref(),
+            Some(ToolSelectionTarget::LiveCell(selected)) if selected == from
+        ) {
+            self.tool_selection = Some(ToolSelectionTarget::LiveCell(to.to_string()));
+        }
+    }
+
     pub(crate) fn clear_missing_live_tool_selection(&mut self) {
-        if let Some(ToolSelectionTarget::Live(call_id)) = self.tool_selection.as_ref()
+        if let Some(ToolSelectionTarget::LiveCell(cell_id)) = self.tool_selection.as_ref()
             && !self
-                .active_tools
+                .active_tool_cells
                 .iter()
-                .any(|active| active.call_id == *call_id)
+                .any(|active| active.cell_id == *cell_id)
         {
             self.tool_selection = None;
         }
+    }
+
+    pub(crate) fn drain_transcript_ready_tool_cells(&mut self) -> Vec<(String, TranscriptEntry)> {
+        let mut drained = Vec::new();
+        let mut remaining = Vec::with_capacity(self.active_tool_cells.len());
+        for cell in self.active_tool_cells.drain(..) {
+            if cell.holds_completed_entry() {
+                drained.push((cell.cell_id.clone(), TranscriptEntry::Tool(cell.entry)));
+            } else {
+                remaining.push(cell);
+            }
+        }
+        self.active_tool_cells = remaining;
+        drained
     }
 
     pub(crate) fn scroll_focused(&mut self, delta: i16) {
@@ -458,7 +587,7 @@ impl TuiState {
 
 fn selectable_tool_targets(
     transcript: &[TranscriptEntry],
-    active_tools: &[ActiveToolEntry],
+    active_tool_cells: &[ActiveToolCell],
 ) -> Vec<ToolSelectionTarget> {
     let mut selectable = transcript
         .iter()
@@ -470,11 +599,143 @@ fn selectable_tool_targets(
         })
         .collect::<Vec<_>>();
     selectable.extend(
-        active_tools
+        active_tool_cells
             .iter()
-            .map(|active| ToolSelectionTarget::Live(active.call_id.clone())),
+            .map(|active| ToolSelectionTarget::LiveCell(active.cell_id.clone())),
     );
     selectable
+}
+
+fn active_tool_cell_kind(entry: &TranscriptToolEntry) -> ActiveToolCellKind {
+    if is_exploration_tool_entry(entry) {
+        ActiveToolCellKind::ExplorationGroup
+    } else {
+        ActiveToolCellKind::Single
+    }
+}
+
+fn active_tool_cell_entry(
+    kind: ActiveToolCellKind,
+    calls: &[ActiveToolCall],
+) -> TranscriptToolEntry {
+    match kind {
+        ActiveToolCellKind::Single => calls
+            .first()
+            .map(|call| call.entry.clone())
+            .expect("single tool cell requires one call"),
+        // Keep grouped exploration state derived from the member calls so status
+        // transitions do not depend on stringly observer branches. This mirrors
+        // Codex's active exec cell contract: add calls in place, then flush the
+        // coalesced cell only when the turn boundary makes it durable history.
+        ActiveToolCellKind::ExplorationGroup => build_grouped_exploration_entry(calls),
+    }
+}
+
+fn build_grouped_exploration_entry(calls: &[ActiveToolCall]) -> TranscriptToolEntry {
+    let first = calls
+        .first()
+        .expect("grouped exploration cell requires at least one call");
+    let mut command = first
+        .entry
+        .detail_lines
+        .iter()
+        .find_map(|detail| match detail {
+            ToolDetail::Command(command) => Some(command.clone()),
+            _ => None,
+        })
+        .expect("grouped exploration call requires command detail");
+    for call in calls.iter().skip(1) {
+        if let Some(other) = call
+            .entry
+            .detail_lines
+            .iter()
+            .find_map(|detail| match detail {
+                ToolDetail::Command(command) => Some(command),
+                _ => None,
+            })
+        {
+            let _ = command.merge_exploration(other);
+        }
+    }
+    let status = grouped_tool_status(calls);
+    let completion = grouped_tool_completion(calls, status);
+    TranscriptToolEntry::new_with_review_and_completion(
+        status,
+        first.entry.tool_name.clone(),
+        vec![ToolDetail::Command(command)],
+        None,
+        completion,
+    )
+}
+
+fn grouped_tool_status(calls: &[ActiveToolCall]) -> TranscriptToolStatus {
+    if calls
+        .iter()
+        .any(|call| is_live_tool_status(call.entry.status))
+    {
+        TranscriptToolStatus::Running
+    } else if calls
+        .iter()
+        .any(|call| call.entry.status == TranscriptToolStatus::Failed)
+    {
+        TranscriptToolStatus::Failed
+    } else if calls
+        .iter()
+        .any(|call| call.entry.status == TranscriptToolStatus::Cancelled)
+    {
+        TranscriptToolStatus::Cancelled
+    } else if calls
+        .iter()
+        .any(|call| call.entry.status == TranscriptToolStatus::Denied)
+    {
+        TranscriptToolStatus::Denied
+    } else {
+        TranscriptToolStatus::Finished
+    }
+}
+
+fn grouped_tool_completion(
+    calls: &[ActiveToolCall],
+    status: TranscriptToolStatus,
+) -> ToolCompletionState {
+    if is_live_tool_status(status) {
+        return ToolCompletionState::Neutral;
+    }
+    if calls.iter().any(|call| {
+        call.entry.completion == ToolCompletionState::Failure
+            || matches!(
+                call.entry.status,
+                TranscriptToolStatus::Denied
+                    | TranscriptToolStatus::Failed
+                    | TranscriptToolStatus::Cancelled
+            )
+    }) {
+        ToolCompletionState::Failure
+    } else {
+        ToolCompletionState::Success
+    }
+}
+
+fn is_live_tool_status(status: TranscriptToolStatus) -> bool {
+    matches!(
+        status,
+        TranscriptToolStatus::Requested
+            | TranscriptToolStatus::WaitingApproval
+            | TranscriptToolStatus::Approved
+            | TranscriptToolStatus::Running
+    )
+}
+
+fn is_exploration_tool_entry(entry: &TranscriptToolEntry) -> bool {
+    entry.detail_lines.iter().any(|detail| {
+        matches!(
+            detail,
+            ToolDetail::Command(ToolCommand {
+                intent: ToolCommandIntent::Explore,
+                ..
+            })
+        )
+    })
 }
 
 fn bump_scroll(value: &mut u16, delta: i16) {

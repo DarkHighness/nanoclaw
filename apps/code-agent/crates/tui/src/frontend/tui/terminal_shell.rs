@@ -304,7 +304,7 @@ impl CodeAgentTui {
                 .transcript
                 .iter()
                 .all(|entry| entry.tool_entry().is_none())
-            && snapshot.active_tools.is_empty()
+            && snapshot.active_tool_cells.is_empty()
         {
             return false;
         }
@@ -329,7 +329,7 @@ impl CodeAgentTui {
             .transcript
             .iter()
             .all(|entry| entry.tool_entry().is_none())
-            && snapshot.active_tools.is_empty()
+            && snapshot.active_tool_cells.is_empty()
         {
             return false;
         }

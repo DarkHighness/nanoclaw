@@ -1,5 +1,5 @@
 use super::{
-    ActiveToolEntry, ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
+    ActiveToolCell, ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
     ComposerKillBufferState, ComposerRowAttachmentPreview, GitPorcelainEntry, GitPorcelainState,
     HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode, SharedUiState,
     ToastState, ToastTone, ToolSelectionTarget, TranscriptEntry, TranscriptToolEntry,
@@ -314,14 +314,14 @@ fn tool_selection_cycles_across_committed_and_live_tools() {
             value: "Updated src/lib.rs".to_string(),
         }],
     )];
-    state.active_tools = vec![ActiveToolEntry {
-        call_id: "call-1".to_string(),
-        entry: TranscriptToolEntry::new(
+    state.active_tool_cells = vec![ActiveToolCell::new(
+        "call-1",
+        TranscriptToolEntry::new(
             TranscriptToolStatus::Running,
             "exec_command",
             vec![command_tool_detail("cargo test")],
         ),
-    }];
+    )];
 
     assert!(state.move_tool_selection(false));
     assert_eq!(
@@ -332,7 +332,7 @@ fn tool_selection_cycles_across_committed_and_live_tools() {
     assert!(state.move_tool_selection(false));
     assert_eq!(
         state.tool_selection,
-        Some(ToolSelectionTarget::Live("call-1".to_string()))
+        Some(ToolSelectionTarget::LiveCell("call-1".to_string()))
     );
 }
 
@@ -343,12 +343,12 @@ fn command_tool_detail(command: &str) -> ToolDetail {
 #[test]
 fn selected_tool_review_overlay_can_open_from_live_tool_selection() {
     let mut state = TuiState {
-        tool_selection: Some(ToolSelectionTarget::Live("call-1".to_string())),
+        tool_selection: Some(ToolSelectionTarget::LiveCell("call-1".to_string())),
         ..TuiState::default()
     };
-    state.active_tools = vec![ActiveToolEntry {
-        call_id: "call-1".to_string(),
-        entry: TranscriptToolEntry::new_with_review(
+    state.active_tool_cells = vec![ActiveToolCell::new(
+        "call-1",
+        TranscriptToolEntry::new_with_review(
             TranscriptToolStatus::Running,
             "write",
             vec![ToolDetail::LabeledValue {
@@ -363,7 +363,7 @@ fn selected_tool_review_overlay_can_open_from_live_tool_selection() {
                 }],
             }),
         ),
-    }];
+    )];
 
     assert!(state.open_selected_tool_review_overlay());
     assert_eq!(

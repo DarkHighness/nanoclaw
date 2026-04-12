@@ -1,5 +1,8 @@
 use crate::tool_render::tool_arguments_preview_lines;
-use crate::ui::{SessionEvent, SessionToolCall};
+use crate::ui::{
+    SessionEvent, SessionNotificationSource, SessionToastVariant, SessionToolCall,
+    SessionToolOrigin,
+};
 use agent::runtime::{Result as RuntimeResult, RuntimeObserver, RuntimeProgressEvent};
 use agent::types::{MessageId, ToolLifecycleEventKind};
 use std::collections::VecDeque;
@@ -105,9 +108,10 @@ impl RuntimeObserver for SessionEventObserver {
             RuntimeProgressEvent::TokenUsageUpdated { phase, ledger } => {
                 SessionEvent::TokenUsageUpdated { phase, ledger }
             }
-            RuntimeProgressEvent::Notification { source, message } => {
-                SessionEvent::Notification { source, message }
-            }
+            RuntimeProgressEvent::Notification { source, message } => SessionEvent::Notification {
+                source: SessionNotificationSource::from_runtime(source),
+                message,
+            },
             RuntimeProgressEvent::TuiToastShow { variant, message } => SessionEvent::TuiToastShow {
                 variant: session_toast_variant(&variant),
                 message,
@@ -186,26 +190,31 @@ fn session_tool_call(call: &agent::types::ToolCall) -> SessionToolCall {
         call_id: call.call_id.to_string(),
         tool_name: call.tool_name.to_string(),
         origin: match &call.origin {
-            agent::ToolOrigin::Local => "local".to_string(),
-            agent::ToolOrigin::Mcp { server_name } => format!("mcp:{server_name}"),
-            agent::ToolOrigin::Provider { provider } => format!("provider:{provider}"),
+            agent::ToolOrigin::Local => SessionToolOrigin::Local,
+            agent::ToolOrigin::Mcp { server_name } => SessionToolOrigin::Mcp {
+                server_name: server_name.to_string(),
+            },
+            agent::ToolOrigin::Provider { provider } => SessionToolOrigin::Provider {
+                provider: provider.clone(),
+            },
         },
         arguments_preview: tool_arguments_preview_lines(call.tool_name.as_str(), &call.arguments),
     }
 }
 
-fn session_toast_variant(variant: &str) -> &'static str {
+fn session_toast_variant(variant: &str) -> SessionToastVariant {
     match variant {
-        "success" => "success",
-        "warning" => "warning",
-        "error" => "error",
-        _ => "info",
+        "success" => SessionToastVariant::Success,
+        "warning" => SessionToastVariant::Warning,
+        "error" => SessionToastVariant::Error,
+        _ => SessionToastVariant::Info,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{SessionEvent, SessionEventObserver, SessionEventStream, session_tool_call};
+    use crate::ui::{SessionNotificationSource, SessionToolOrigin};
     use agent::runtime::{RuntimeObserver, RuntimeProgressEvent};
     use agent::types::{ToolCall, ToolCallId, ToolOrigin};
     use serde_json::json;
@@ -244,7 +253,7 @@ mod tests {
         assert_eq!(
             stream.drain(),
             vec![SessionEvent::Notification {
-                source: "loop_detector".to_string(),
+                source: SessionNotificationSource::LoopDetector,
                 message: "loop detector warning".to_string(),
             }]
         );
@@ -309,5 +318,6 @@ mod tests {
             projected.arguments_preview,
             vec!["$ cargo test -p code-agent"]
         );
+        assert_eq!(projected.origin, SessionToolOrigin::Local);
     }
 }

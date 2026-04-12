@@ -1,5 +1,5 @@
 use super::state::{
-    ActiveToolEntry, SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail,
+    ActiveToolCell, SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail,
     TranscriptToolEntry, TranscriptToolStatus, TurnPhase, preview_text,
 };
 use super::tool_state::{
@@ -10,7 +10,7 @@ use crate::tool_render::{
     ToolDetail, ToolDetailLabel, compact_successful_exploration_details, tool_argument_details,
     tool_completion_state_from_preview, tool_output_details_from_preview, tool_review_from_preview,
 };
-use crate::ui::{SessionEvent, SessionToolCall};
+use crate::ui::{SessionEvent, SessionNotificationSource, SessionToastVariant, SessionToolCall};
 
 pub(crate) struct SharedRenderObserver {
     ui_state: SharedUiState,
@@ -54,7 +54,8 @@ impl SharedRenderObserver {
             }
             SessionEvent::UserPromptAdded { prompt } => {
                 self.active_assistant_line = None;
-                state.active_tools.clear();
+                flush_transcript_ready_tool_cells(state);
+                state.active_tool_cells.clear();
                 state.clear_tool_selection();
                 state.push_transcript(TranscriptEntry::UserPrompt(prompt.clone()));
                 state.status = "Working".to_string();
@@ -159,13 +160,13 @@ impl SharedRenderObserver {
             SessionEvent::ToolCallRequested { call } => {
                 state.status = "Working".to_string();
                 state.turn_phase = TurnPhase::Working;
-                upsert_active_tool(state, &call.call_id, requested_tool_card(&call));
+                upsert_active_tool_cell(state, &call.call_id, requested_tool_card(&call));
                 state.push_activity(format!("requested {}", call.tool_name));
             }
             SessionEvent::ToolApprovalRequested { call, reasons } => {
                 state.status = "Waiting for approval".to_string();
                 state.turn_phase = TurnPhase::WaitingApproval;
-                upsert_active_tool(state, &call.call_id, waiting_tool_card(&call, &reasons));
+                upsert_active_tool_cell(state, &call.call_id, waiting_tool_card(&call, &reasons));
                 state.push_activity(format!(
                     "approval needed for {} ({})",
                     call.tool_name,
@@ -180,7 +181,7 @@ impl SharedRenderObserver {
                 if approved {
                     state.status = "Working".to_string();
                     state.turn_phase = TurnPhase::Working;
-                    upsert_active_tool(
+                    upsert_active_tool_cell(
                         state,
                         &call.call_id,
                         approved_tool_card(&call, reason.as_deref()),
@@ -190,9 +191,12 @@ impl SharedRenderObserver {
                     let reason = reason.unwrap_or_else(|| "permission denied".to_string());
                     state.status = format!("Denied {}: {}", call.tool_name, reason);
                     state.turn_phase = TurnPhase::Failed;
-                    remove_active_tool(state, &call.call_id);
-                    let transcript_index = state.push_transcript(denied_tool_entry(&call, &reason));
-                    state.promote_live_tool_selection(&call.call_id, transcript_index);
+                    let denied_entry = denied_tool_entry(&call, &reason);
+                    let selection_id = remove_active_tool_call(state, &call.call_id)
+                        .map(|(cell_id, _)| cell_id)
+                        .unwrap_or_else(|| call.call_id.clone());
+                    let transcript_index = state.push_transcript(denied_entry);
+                    state.promote_live_tool_selection(&selection_id, transcript_index);
                     state.push_activity(format!(
                         "denied {}: {}",
                         call.tool_name,
@@ -203,7 +207,7 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleStarted { call } => {
                 state.status = "Working".to_string();
                 state.turn_phase = TurnPhase::Working;
-                upsert_active_tool(state, &call.call_id, running_tool_card(&call));
+                start_active_tool_cell(state, &call.call_id, running_tool_card(&call));
                 state.push_activity(format!("running {}", call.tool_name));
             }
             SessionEvent::ToolLifecycleCompleted {
@@ -225,13 +229,28 @@ impl SharedRenderObserver {
                 ) {
                     state.execution = execution;
                 }
-                remove_active_tool(state, &call.call_id);
-                let transcript_index = state.push_transcript(completed_tool_entry(
+                let completed_entry = completed_tool_entry(
                     &call,
                     &output_preview,
                     structured_output_preview.as_deref(),
-                ));
-                state.promote_live_tool_selection(&call.call_id, transcript_index);
+                );
+                match completed_entry {
+                    TranscriptEntry::Tool(entry) => {
+                        if let Some((cell_id, entry)) =
+                            complete_active_tool_call(state, &call.call_id, entry)
+                        {
+                            let transcript_index = state.push_transcript(entry);
+                            state.promote_live_tool_selection(&cell_id, transcript_index);
+                        }
+                    }
+                    other => {
+                        let selection_id = remove_active_tool_call(state, &call.call_id)
+                            .map(|(cell_id, _)| cell_id)
+                            .unwrap_or_else(|| call.call_id.clone());
+                        let transcript_index = state.push_transcript(other);
+                        state.promote_live_tool_selection(&selection_id, transcript_index);
+                    }
+                }
                 state.push_activity(format!(
                     "{} -> {}",
                     call.tool_name,
@@ -259,9 +278,12 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleFailed { call, error } => {
                 state.status = format!("{} failed", call.tool_name);
                 state.turn_phase = TurnPhase::Failed;
-                remove_active_tool(state, &call.call_id);
-                let transcript_index = state.push_transcript(failed_tool_entry(&call, &error));
-                state.promote_live_tool_selection(&call.call_id, transcript_index);
+                let failed_entry = failed_tool_entry(&call, &error);
+                let selection_id = remove_active_tool_call(state, &call.call_id)
+                    .map(|(cell_id, _)| cell_id)
+                    .unwrap_or_else(|| call.call_id.clone());
+                let transcript_index = state.push_transcript(failed_entry);
+                state.promote_live_tool_selection(&selection_id, transcript_index);
                 state.push_activity(format!(
                     "{} failed: {}",
                     call.tool_name,
@@ -271,10 +293,12 @@ impl SharedRenderObserver {
             SessionEvent::ToolLifecycleCancelled { call, reason } => {
                 state.status = format!("{} cancelled", call.tool_name);
                 state.turn_phase = TurnPhase::Failed;
-                remove_active_tool(state, &call.call_id);
-                let transcript_index =
-                    state.push_transcript(cancelled_tool_entry(&call, reason.as_deref()));
-                state.promote_live_tool_selection(&call.call_id, transcript_index);
+                let cancelled_entry = cancelled_tool_entry(&call, reason.as_deref());
+                let selection_id = remove_active_tool_call(state, &call.call_id)
+                    .map(|(cell_id, _)| cell_id)
+                    .unwrap_or_else(|| call.call_id.clone());
+                let transcript_index = state.push_transcript(cancelled_entry);
+                state.promote_live_tool_selection(&selection_id, transcript_index);
                 state.push_activity(format!(
                     "{} cancelled{}",
                     call.tool_name,
@@ -286,7 +310,8 @@ impl SharedRenderObserver {
             }
             SessionEvent::TurnCompleted { .. } => {
                 self.active_assistant_line = None;
-                state.active_tools.clear();
+                flush_transcript_ready_tool_cells(state);
+                state.active_tool_cells.clear();
                 state.clear_missing_live_tool_selection();
                 state.status = "Ready".to_string();
                 state.turn_phase = TurnPhase::Idle;
@@ -319,7 +344,11 @@ fn approved_tool_card(call: &SessionToolCall, reason: Option<&str>) -> Transcrip
     )
 }
 
-fn notification_entry(source: &str, message: &str, tone: ToastTone) -> TranscriptEntry {
+fn notification_entry(
+    source: &SessionNotificationSource,
+    message: &str,
+    tone: ToastTone,
+) -> TranscriptEntry {
     let detail_lines = vec![TranscriptShellDetail::Raw {
         text: message.to_string(),
         continuation: false,
@@ -344,26 +373,26 @@ fn notification_entry(source: &str, message: &str, tone: ToastTone) -> Transcrip
     }
 }
 
-fn notification_toast_tone(source: &str, message: &str) -> ToastTone {
-    if source == "loop_detector" {
-        if message.contains("[critical]") || message.contains("blocked") {
-            ToastTone::Error
-        } else {
-            ToastTone::Warning
+fn notification_toast_tone(source: &SessionNotificationSource, message: &str) -> ToastTone {
+    match source {
+        SessionNotificationSource::LoopDetector => {
+            if message.contains("[critical]") || message.contains("blocked") {
+                ToastTone::Error
+            } else {
+                ToastTone::Warning
+            }
         }
-    } else if source == "provider_state" {
-        ToastTone::Warning
-    } else {
-        ToastTone::Info
+        SessionNotificationSource::ProviderState => ToastTone::Warning,
+        SessionNotificationSource::Other(_) => ToastTone::Info,
     }
 }
 
-fn map_ui_toast_tone(variant: &str) -> ToastTone {
+fn map_ui_toast_tone(variant: SessionToastVariant) -> ToastTone {
     match variant {
-        "success" => ToastTone::Success,
-        "warning" => ToastTone::Warning,
-        "error" => ToastTone::Error,
-        _ => ToastTone::Info,
+        SessionToastVariant::Info => ToastTone::Info,
+        SessionToastVariant::Success => ToastTone::Success,
+        SessionToastVariant::Warning => ToastTone::Warning,
+        SessionToastVariant::Error => ToastTone::Error,
     }
 }
 
@@ -468,41 +497,139 @@ fn tool_argument_detail_lines(call: &SessionToolCall) -> Vec<ToolDetail> {
     tool_argument_details(&call.arguments_preview)
 }
 
-fn upsert_active_tool(
+fn upsert_active_tool_cell(
     state: &mut super::state::TuiState,
     call_id: &str,
     entry: TranscriptToolEntry,
 ) {
     if let Some(existing) = state
-        .active_tools
+        .active_tool_cells
         .iter_mut()
-        .find(|active| active.call_id == call_id)
+        .find(|active| active.contains_call(call_id))
     {
-        existing.entry = entry;
+        let _ = existing.update_call(call_id, entry);
         return;
     }
 
-    state.active_tools.push(ActiveToolEntry {
-        call_id: call_id.to_string(),
-        entry,
-    });
+    state
+        .active_tool_cells
+        .push(ActiveToolCell::new(call_id.to_string(), entry));
 }
 
-fn remove_active_tool(state: &mut super::state::TuiState, call_id: &str) {
+fn start_active_tool_cell(
+    state: &mut super::state::TuiState,
+    call_id: &str,
+    entry: TranscriptToolEntry,
+) {
     if let Some(index) = state
-        .active_tools
+        .active_tool_cells
         .iter()
-        .position(|active| active.call_id == call_id)
+        .position(|active| active.contains_call(call_id))
     {
-        state.active_tools.remove(index);
+        if state.active_tool_cells[index].calls.len() > 1 {
+            let _ = state.active_tool_cells[index].update_call(call_id, entry);
+            return;
+        }
+
+        let previous_cell_id = state.active_tool_cells[index].cell_id.clone();
+        state.active_tool_cells.remove(index);
+        if let Some(target) = state
+            .active_tool_cells
+            .iter_mut()
+            .find(|active| active.can_absorb_running_call(&entry))
+        {
+            let target_id = target.cell_id.clone();
+            let _ = target.absorb_exploration_call(call_id.to_string(), entry);
+            state.redirect_live_tool_selection(&previous_cell_id, &target_id);
+            return;
+        }
+
+        state
+            .active_tool_cells
+            .push(ActiveToolCell::new_with_cell_id(
+                previous_cell_id,
+                call_id.to_string(),
+                entry,
+            ));
+        return;
+    }
+
+    if let Some(target) = state
+        .active_tool_cells
+        .iter_mut()
+        .find(|active| active.can_absorb_running_call(&entry))
+    {
+        let _ = target.absorb_exploration_call(call_id.to_string(), entry);
+    } else {
+        state
+            .active_tool_cells
+            .push(ActiveToolCell::new(call_id.to_string(), entry));
+    }
+}
+
+fn complete_active_tool_call(
+    state: &mut super::state::TuiState,
+    call_id: &str,
+    entry: TranscriptToolEntry,
+) -> Option<(String, TranscriptEntry)> {
+    let Some(index) = state
+        .active_tool_cells
+        .iter()
+        .position(|active| active.contains_call(call_id))
+    else {
+        if let Some(target) = state
+            .active_tool_cells
+            .iter_mut()
+            .find(|active| active.can_absorb_exploration_call(&entry))
+        {
+            let _ = target.absorb_exploration_call(call_id.to_string(), entry);
+            return None;
+        }
+        let cell = ActiveToolCell::new(call_id.to_string(), entry.clone());
+        if cell.holds_completed_entry() {
+            state.active_tool_cells.push(cell);
+            return None;
+        }
+        return Some((call_id.to_string(), TranscriptEntry::Tool(entry)));
+    };
+    if state.active_tool_cells[index].kind == super::state::ActiveToolCellKind::ExplorationGroup {
+        let _ = state.active_tool_cells[index].update_call(call_id, entry);
+        return None;
+    }
+
+    let cell_id = state.active_tool_cells[index].cell_id.clone();
+    state.active_tool_cells.remove(index);
+    Some((cell_id, TranscriptEntry::Tool(entry)))
+}
+
+fn remove_active_tool_call(
+    state: &mut super::state::TuiState,
+    call_id: &str,
+) -> Option<(String, TranscriptToolEntry)> {
+    let index = state
+        .active_tool_cells
+        .iter()
+        .position(|active| active.contains_call(call_id))?;
+    let cell_id = state.active_tool_cells[index].cell_id.clone();
+    let removed = state.active_tool_cells[index].remove_call(call_id)?;
+    if state.active_tool_cells[index].calls.is_empty() {
+        state.active_tool_cells.remove(index);
+    }
+    Some((cell_id, removed))
+}
+
+fn flush_transcript_ready_tool_cells(state: &mut super::state::TuiState) {
+    for (cell_id, entry) in state.drain_transcript_ready_tool_cells() {
+        let transcript_index = state.push_transcript(entry);
+        state.promote_live_tool_selection(&cell_id, transcript_index);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
-    use crate::frontend::tui::state::{SharedUiState, ToolSelectionTarget};
-    use crate::ui::{SessionEvent, SessionToolCall};
+    use crate::frontend::tui::state::{SharedUiState, ToolSelectionTarget, TranscriptEntry};
+    use crate::ui::{SessionEvent, SessionNotificationSource, SessionToolCall, SessionToolOrigin};
     use agent::types::{ContextWindowUsage, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase};
     use serde_json::json;
 
@@ -542,7 +669,7 @@ mod tests {
         let mut observer = SharedRenderObserver::new(ui_state.clone());
 
         observer.apply_event(SessionEvent::Notification {
-            source: "loop_detector".to_string(),
+            source: SessionNotificationSource::LoopDetector,
             message: "loop_detector [warning] repeated tool calls".to_string(),
         });
 
@@ -618,7 +745,9 @@ mod tests {
         let call = SessionToolCall {
             tool_name: "exec_command".to_string(),
             call_id: "call_123".to_string(),
-            origin: "shell".to_string(),
+            origin: SessionToolOrigin::Provider {
+                provider: "shell".to_string(),
+            },
             arguments_preview: vec!["$ ls".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
@@ -641,27 +770,35 @@ mod tests {
         });
 
         let snapshot = ui_state.snapshot();
-        assert!(
-            snapshot
-                .transcript
-                .iter()
-                .all(|line| !transcript_text(line).contains('>'))
+        assert_eq!(snapshot.active_tool_cells.len(), 1);
+        assert_eq!(
+            transcript_text(&TranscriptEntry::Tool(
+                snapshot.active_tool_cells[0].entry.clone()
+            )),
+            "• Explored\n  └ List ."
         );
-        assert!(
-            snapshot
-                .transcript
-                .iter()
-                .any(|line| transcript_text(line) == "• Explored\n  └ List .")
+
+        observer.apply_event(SessionEvent::TurnCompleted {
+            assistant_text: String::new(),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.transcript.len(), 1);
+        assert_eq!(
+            transcript_text(&snapshot.transcript[0]),
+            "• Explored\n  └ List ."
         );
     }
 
     #[test]
-    fn tool_request_and_completion_share_one_timeline_cell() {
+    fn tool_request_and_completion_hold_exploration_until_turn_boundary() {
         let ui_state = SharedUiState::new();
         let call = SessionToolCall {
             tool_name: "exec_command".to_string(),
             call_id: "call_123".to_string(),
-            origin: "shell".to_string(),
+            origin: SessionToolOrigin::Provider {
+                provider: "shell".to_string(),
+            },
             arguments_preview: vec!["$ ls".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
@@ -681,6 +818,20 @@ mod tests {
                 })
                 .to_string(),
             ),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert!(snapshot.transcript.is_empty());
+        assert_eq!(snapshot.active_tool_cells.len(), 1);
+        assert_eq!(
+            transcript_text(&TranscriptEntry::Tool(
+                snapshot.active_tool_cells[0].entry.clone()
+            )),
+            "• Explored\n  └ List ."
+        );
+
+        observer.apply_event(SessionEvent::TurnCompleted {
+            assistant_text: String::new(),
         });
 
         let snapshot = ui_state.snapshot();
@@ -705,7 +856,9 @@ mod tests {
                 call: SessionToolCall {
                     tool_name: "exec_command".to_string(),
                     call_id: call_id.to_string(),
-                    origin: "shell".to_string(),
+                    origin: SessionToolOrigin::Provider {
+                        provider: "shell".to_string(),
+                    },
                     arguments_preview: vec![command.to_string()],
                 },
                 output_preview: String::new(),
@@ -723,6 +876,20 @@ mod tests {
         }
 
         let snapshot = ui_state.snapshot();
+        assert!(snapshot.transcript.is_empty());
+        assert_eq!(snapshot.active_tool_cells.len(), 1);
+        assert_eq!(
+            transcript_text(&TranscriptEntry::Tool(
+                snapshot.active_tool_cells[0].entry.clone()
+            )),
+            "• Explored\n  └ Search shimmer_spans\n    Read shimmer.rs, status_indicator_widget.rs"
+        );
+
+        observer.apply_event(SessionEvent::TurnCompleted {
+            assistant_text: String::new(),
+        });
+
+        let snapshot = ui_state.snapshot();
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
@@ -731,19 +898,21 @@ mod tests {
     }
 
     #[test]
-    fn completed_live_tool_keeps_selection_on_the_committed_result() {
+    fn completed_exploration_keeps_selection_on_live_cell_until_turn_end() {
         let ui_state = SharedUiState::new();
         let call = SessionToolCall {
             tool_name: "exec_command".to_string(),
             call_id: "call_123".to_string(),
-            origin: "shell".to_string(),
+            origin: SessionToolOrigin::Provider {
+                provider: "shell".to_string(),
+            },
             arguments_preview: vec!["$ ls".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
 
         observer.apply_event(SessionEvent::ToolLifecycleStarted { call: call.clone() });
         ui_state.mutate(|state| {
-            state.tool_selection = Some(ToolSelectionTarget::Live("call_123".to_string()));
+            state.tool_selection = Some(ToolSelectionTarget::LiveCell("call_123".to_string()));
         });
         observer.apply_event(SessionEvent::ToolLifecycleCompleted {
             call,
@@ -763,12 +932,22 @@ mod tests {
         let snapshot = ui_state.snapshot();
         assert_eq!(
             snapshot.tool_selection,
+            Some(ToolSelectionTarget::LiveCell("call_123".to_string()))
+        );
+
+        observer.apply_event(SessionEvent::TurnCompleted {
+            assistant_text: String::new(),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(
+            snapshot.tool_selection,
             Some(ToolSelectionTarget::Transcript(0))
         );
     }
 
     #[test]
-    fn merged_exploration_completion_keeps_selection_on_aggregate_cell() {
+    fn merged_exploration_completion_keeps_selection_on_aggregate_live_cell() {
         let ui_state = SharedUiState::new();
         let mut observer = SharedRenderObserver::new(ui_state.clone());
 
@@ -776,7 +955,9 @@ mod tests {
             call: SessionToolCall {
                 tool_name: "exec_command".to_string(),
                 call_id: "call_search".to_string(),
-                origin: "shell".to_string(),
+                origin: SessionToolOrigin::Provider {
+                    provider: "shell".to_string(),
+                },
                 arguments_preview: vec!["$ rg shimmer_spans".to_string()],
             },
             output_preview: String::new(),
@@ -795,14 +976,19 @@ mod tests {
         let read_call = SessionToolCall {
             tool_name: "exec_command".to_string(),
             call_id: "call_read".to_string(),
-            origin: "shell".to_string(),
+            origin: SessionToolOrigin::Provider {
+                provider: "shell".to_string(),
+            },
             arguments_preview: vec!["$ cat shimmer.rs".to_string()],
         };
-        observer.apply_event(SessionEvent::ToolLifecycleStarted {
+        observer.apply_event(SessionEvent::ToolCallRequested {
             call: read_call.clone(),
         });
         ui_state.mutate(|state| {
-            state.tool_selection = Some(ToolSelectionTarget::Live("call_read".to_string()));
+            state.tool_selection = Some(ToolSelectionTarget::LiveCell("call_read".to_string()));
+        });
+        observer.apply_event(SessionEvent::ToolLifecycleStarted {
+            call: read_call.clone(),
         });
         observer.apply_event(SessionEvent::ToolLifecycleCompleted {
             call: read_call,
@@ -820,6 +1006,18 @@ mod tests {
         });
 
         let snapshot = ui_state.snapshot();
+        assert!(snapshot.transcript.is_empty());
+        assert_eq!(snapshot.active_tool_cells.len(), 1);
+        assert_eq!(
+            snapshot.tool_selection,
+            Some(ToolSelectionTarget::LiveCell("call_search".to_string()))
+        );
+
+        observer.apply_event(SessionEvent::TurnCompleted {
+            assistant_text: String::new(),
+        });
+
+        let snapshot = ui_state.snapshot();
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             snapshot.tool_selection,
@@ -833,7 +1031,7 @@ mod tests {
         let call = SessionToolCall {
             tool_name: "update_plan".to_string(),
             call_id: "call_123".to_string(),
-            origin: "local".to_string(),
+            origin: SessionToolOrigin::Local,
             arguments_preview: vec!["set 2 plan step(s)".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
@@ -874,7 +1072,7 @@ mod tests {
         let call = SessionToolCall {
             tool_name: "update_execution".to_string(),
             call_id: "call_exec".to_string(),
-            origin: "local".to_string(),
+            origin: SessionToolOrigin::Local,
             arguments_preview: vec!["set execution snapshot".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
@@ -923,7 +1121,7 @@ mod tests {
         let call = SessionToolCall {
             tool_name: "exec_command".to_string(),
             call_id: "call_123".to_string(),
-            origin: "local".to_string(),
+            origin: SessionToolOrigin::Local,
             arguments_preview: vec!["$ cargo test".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
@@ -967,7 +1165,7 @@ mod tests {
         let call = SessionToolCall {
             tool_name: "exec_command".to_string(),
             call_id: "call_999".to_string(),
-            origin: "local".to_string(),
+            origin: SessionToolOrigin::Local,
             arguments_preview: vec!["$ cargo test".to_string()],
         };
         let stderr = (1..=20)
@@ -1005,7 +1203,7 @@ mod tests {
         let call = SessionToolCall {
             tool_name: "write".to_string(),
             call_id: "call_456".to_string(),
-            origin: "local".to_string(),
+            origin: SessionToolOrigin::Local,
             arguments_preview: vec!["src/lib.rs".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());

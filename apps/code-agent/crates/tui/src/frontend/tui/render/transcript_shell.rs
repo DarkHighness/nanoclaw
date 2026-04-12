@@ -1206,9 +1206,9 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
         if state.session.queued_commands > 0 && state.pending_control_picker.is_none() {
             spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
             spans.push(Span::styled(
-                if state.active_tools.is_empty() {
+                if state.active_tool_cells.is_empty() {
                     format!("{} queued", state.session.queued_commands)
-                } else if state.active_tools.len() == 1 {
+                } else if state.active_tool_cells.len() == 1 {
                     format!(
                         "{} queued behind current tool",
                         state.session.queued_commands
@@ -1568,17 +1568,22 @@ fn live_progress_summary(state: &TuiState) -> String {
 }
 
 fn live_tool_progress_label(state: &TuiState) -> Option<String> {
-    match state.active_tools.as_slice() {
+    let running_cells = state
+        .active_tool_cells
+        .iter()
+        .filter(|cell| cell.is_running())
+        .collect::<Vec<_>>();
+    match running_cells.as_slice() {
         [] => None,
         [active] => Some(tool_progress_label(&active.entry)),
-        active_tools => {
-            let names = active_tools
+        running_cells => {
+            let names = running_cells
                 .iter()
                 .map(|active| tool_progress_label(&active.entry))
                 .collect::<Vec<_>>()
                 .join(", ");
             Some(preview_text(
-                &format!("{} live tools: {}", active_tools.len(), names),
+                &format!("{} running tools: {}", running_cells.len(), names),
                 40,
             ))
         }

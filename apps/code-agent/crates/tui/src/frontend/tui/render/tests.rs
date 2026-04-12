@@ -28,11 +28,11 @@ use crate::frontend::tui::commands::{
     SlashCommandHint, SlashCommandSpec,
 };
 use crate::frontend::tui::state::{
-    ActiveToolEntry, ComposerContextHint, ComposerDraftAttachmentKind,
-    ComposerDraftAttachmentState, ComposerDraftState, ExecutionEntry, ExecutionStatus,
-    HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode, PlanEntry,
-    PlanEntryStatus, StatusLinePickerState, ThemePickerState, ToastTone, ToolSelectionTarget,
-    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    ActiveToolCell, ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
+    ComposerDraftState, ExecutionEntry, ExecutionStatus, HistoryRollbackCandidate, InspectorAction,
+    InspectorEntry, MainPaneMode, PlanEntry, PlanEntryStatus, StatusLinePickerState,
+    ThemePickerState, ToastTone, ToolSelectionTarget, TranscriptEntry, TranscriptShellDetail,
+    TranscriptToolStatus, TuiState,
 };
 use crate::interaction::{
     ApprovalContent, ApprovalContentKind, ApprovalOrigin, PendingControlKind, PendingControlReason,
@@ -1154,7 +1154,7 @@ fn live_progress_hides_queue_count_while_pending_picker_is_open() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tools: vec![active_tool_entry(
+        active_tool_cells: vec![active_tool_entry(
             "call-1",
             "exec_command",
             TranscriptToolStatus::Running,
@@ -1183,7 +1183,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tools: vec![active_tool_entry(
+        active_tool_cells: vec![active_tool_entry(
             "call-1",
             "exec_command",
             TranscriptToolStatus::Running,
@@ -1216,7 +1216,7 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tools: vec![active_tool_entry(
+        active_tool_cells: vec![active_tool_entry(
             "call-1",
             "exec_command",
             TranscriptToolStatus::Running,
@@ -1273,7 +1273,7 @@ fn transcript_bridges_pending_picker_into_the_active_tool_timeline() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
-        active_tools: vec![active_tool_entry(
+        active_tool_cells: vec![active_tool_entry(
             "call-1",
             "exec_command",
             TranscriptToolStatus::Running,
@@ -1675,15 +1675,15 @@ fn active_tool_entry(
     call_id: &str,
     tool_name: &str,
     status: TranscriptToolStatus,
-) -> ActiveToolEntry {
-    ActiveToolEntry {
-        call_id: call_id.to_string(),
-        entry: crate::frontend::tui::state::TranscriptToolEntry::new(
+) -> ActiveToolCell {
+    ActiveToolCell::new(
+        call_id,
+        crate::frontend::tui::state::TranscriptToolEntry::new(
             status,
             tool_name,
             vec![command_tool_detail("cargo test")],
         ),
-    }
+    )
 }
 
 fn finished_tool_transcript_entry() -> TranscriptEntry {

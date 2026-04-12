@@ -106,20 +106,15 @@ pub(super) fn build_transcript_lines_for_width(
         }
     }
 
-    if !state.active_tools.is_empty() {
+    if !state.active_tool_cells.is_empty() {
         if !lines.is_empty() {
             lines.push(Line::raw(""));
         }
-        lines.push(Line::from(vec![Span::styled(
-            format!("Live Tools · {}", state.active_tools.len()),
-            Style::default().fg(palette().muted),
-        )]));
-        lines.push(Line::raw(""));
-        for (index, active) in state.active_tools.iter().enumerate() {
+        for (index, active) in state.active_tool_cells.iter().enumerate() {
             let active_entry = TranscriptEntry::Tool(active.entry.clone());
             let selected = matches!(
                 state.tool_selection.as_ref(),
-                Some(ToolSelectionTarget::Live(selected)) if selected == &active.call_id
+                Some(ToolSelectionTarget::LiveCell(selected)) if selected == &active.cell_id
             );
             lines.extend(format_transcript_cell_with_mode(
                 &active_entry,
@@ -130,7 +125,7 @@ pub(super) fn build_transcript_lines_for_width(
                     .flatten(),
                 selected,
             ));
-            if index + 1 < state.active_tools.len() {
+            if index + 1 < state.active_tool_cells.len() {
                 lines.push(Line::raw(""));
             }
         }
