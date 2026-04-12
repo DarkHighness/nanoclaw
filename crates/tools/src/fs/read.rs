@@ -2,7 +2,8 @@ use crate::ToolExecutionContext;
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::file_activity::FileActivityObserver;
 use crate::fs::{
-    TextBuffer, format_numbered_lines, resolve_tool_path_against_workspace_root, stable_text_hash,
+    TextBuffer, format_numbered_lines, resolve_tool_path_against_workspace_root, sniff_image_mime,
+    stable_text_hash,
 };
 use crate::registry::Tool;
 use crate::{Result, ToolError};
@@ -497,28 +498,6 @@ pub fn resolve_adaptive_read_max_bytes(context_window_tokens: Option<usize>) -> 
     let from_context =
         (tokens as f64 * CHARS_PER_TOKEN_ESTIMATE as f64 * ADAPTIVE_READ_CONTEXT_SHARE) as usize;
     from_context.clamp(DEFAULT_READ_PAGE_MAX_BYTES, MAX_ADAPTIVE_READ_MAX_BYTES)
-}
-
-fn sniff_image_mime(bytes: &[u8], path: &std::path::Path) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Some("image/png");
-    }
-    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return Some("image/jpeg");
-    }
-    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        return Some("image/gif");
-    }
-    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        return Some("image/webp");
-    }
-    match path.extension().and_then(|value| value.to_str()) {
-        Some("png") => Some("image/png"),
-        Some("jpg") | Some("jpeg") => Some("image/jpeg"),
-        Some("gif") => Some("image/gif"),
-        Some("webp") => Some("image/webp"),
-        _ => None,
-    }
 }
 
 fn format_bytes(bytes: usize) -> String {

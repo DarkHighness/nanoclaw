@@ -15,7 +15,7 @@ pub use tools::{
 pub use tools::{
     ApplyPatchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool,
     ListTool, ManagedPolicyProcessExecutor, PatchTool, ReadTool, SandboxPolicy, Tool,
-    ToolExecutionContext, ToolRegistry, ViewImageTool, WriteStdinTool, WriteTool,
+    ToolExecutionContext, ToolRegistry, WriteStdinTool, WriteTool,
 };
 #[cfg(feature = "code-intel")]
 pub use tools::{

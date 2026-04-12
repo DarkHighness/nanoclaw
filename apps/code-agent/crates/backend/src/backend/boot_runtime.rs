@@ -15,7 +15,7 @@ use agent::{
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
     PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog,
     SkillTool, TaskTool, ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry,
-    ToolResult, UpdatePlanTool, ViewImageTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
+    ToolResult, UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
     WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
@@ -531,9 +531,6 @@ fn build_builtin_tools(
     tools.register(ReadTool::with_file_activity_observer(
         file_activity_observer.clone(),
     ));
-    tools.register(ViewImageTool::with_file_activity_observer(
-        file_activity_observer.clone(),
-    ));
     tools.register(WriteTool::with_file_activity_observer(
         file_activity_observer.clone(),
     ));
@@ -709,7 +706,6 @@ mod tests {
         );
 
         let tool_names = tooling.tools.names();
-        assert!(tool_names.iter().any(|name| name.as_str() == "view_image"));
         assert!(
             tool_names
                 .iter()

@@ -5,7 +5,7 @@ compact `ratatui` terminal UI that still feels like a real product surface.
 
 It intentionally keeps the host layer thin:
 
-- model-visible coding tools: `read`, `view_image`, `write`, `edit`, provider/model-aware patch surfaces (`apply_patch` for GPT-5-family OpenAI models, `patch` for Anthropic), `glob`, `grep`, `list`, `exec_command`, `write_stdin`
+- model-visible coding tools: `read`, `write`, `edit`, provider/model-aware patch surfaces (`apply_patch` for GPT-5-family OpenAI models, `patch` for Anthropic), `glob`, `grep`, `list`, `exec_command`, `write_stdin`
 - discovery tools: `tool_discover` (`tool_search` / `tool_suggest` remain compatibility aliases)
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`, `code_hover`, `code_implementations`, `code_call_hierarchy`
 - agentic tools: `update_plan`, `skill`, `request_user_input`, `request_permissions`, `task`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
