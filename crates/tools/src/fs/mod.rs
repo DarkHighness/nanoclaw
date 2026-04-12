@@ -3,6 +3,8 @@ mod glob;
 mod grep;
 mod list;
 mod mutation;
+#[cfg(feature = "notebook-tools")]
+mod notebook;
 mod patch;
 mod patch_freeform;
 mod path_policy;
@@ -16,6 +18,8 @@ pub use glob::*;
 pub use grep::*;
 pub use list::*;
 pub use mutation::*;
+#[cfg(feature = "notebook-tools")]
+pub use notebook::*;
 pub use patch::*;
 pub use path_policy::*;
 pub use read::*;

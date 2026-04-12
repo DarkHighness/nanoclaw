@@ -12,6 +12,7 @@ pub enum ToolDetailBlockKind {
 pub enum ToolRenderKind {
     ExecCommand,
     WriteStdin,
+    NotebookRead,
     CodeSearch,
     CodeDiagnostics,
     MonitorStart,
@@ -34,6 +35,7 @@ impl ToolRenderKind {
         match tool_name {
             "exec_command" => Self::ExecCommand,
             "write_stdin" => Self::WriteStdin,
+            "notebook_read" => Self::NotebookRead,
             "code_search" => Self::CodeSearch,
             "code_diagnostics" => Self::CodeDiagnostics,
             "monitor_start" => Self::MonitorStart,
@@ -421,6 +423,35 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 96,
                 PreviewCollapse::Head,
             ));
+            return lines;
+        }
+        ToolRenderKind::NotebookRead => {
+            let path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let mut lines = vec![format!("Read notebook {}", truncate_inline(path, 80))];
+            let start_cell = arguments.get("start_cell").and_then(Value::as_u64);
+            let end_cell = arguments.get("end_cell").and_then(Value::as_u64);
+            let cell_count = arguments.get("cell_count").and_then(Value::as_u64);
+            match (start_cell, end_cell, cell_count) {
+                (Some(start), Some(end), _) => lines.push(format!("cells {start}-{end}")),
+                (Some(start), None, Some(count)) => {
+                    lines.push(format!("start cell {start}, count {count}"))
+                }
+                (Some(start), None, None) => lines.push(format!("start cell {start}")),
+                (None, None, Some(count)) => lines.push(format!("count {count}")),
+                _ => {}
+            }
+            if arguments
+                .get("include_outputs")
+                .and_then(Value::as_bool)
+                .is_some_and(|include_outputs| !include_outputs)
+            {
+                lines.push("outputs hidden".to_string());
+            }
             return lines;
         }
         ToolRenderKind::CodeSearch => {
@@ -1042,7 +1073,8 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::MonitorStart => {
             ToolCompletionState::Neutral
         }
-        ToolRenderKind::CodeSearch
+        ToolRenderKind::NotebookRead
+        | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
@@ -1097,6 +1129,11 @@ pub fn tool_output_details(
     match ToolRenderKind::classify(tool_name) {
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => {
             return process_output_details(tool_name, output_preview, structured);
+        }
+        ToolRenderKind::NotebookRead => {
+            if let Some(details) = notebook_read_output_details(structured) {
+                return details;
+            }
         }
         ToolRenderKind::CodeSearch => {
             if let Some(details) = code_search_output_details(structured) {
@@ -1539,6 +1576,138 @@ fn code_search_output_details(structured: Option<&Value>) -> Option<Vec<ToolDeta
     }
 
     Some(details)
+}
+
+fn notebook_read_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let output_cells = structured
+        .get("output_cells")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            structured
+                .get("cells")
+                .and_then(Value::as_array)
+                .map(|cells| cells.len() as u64)
+        })
+        .unwrap_or(0);
+    let mut details = vec![ToolDetail::LabeledValue {
+        label: ToolDetailLabel::Result,
+        value: format!("{output_cells} cell(s)"),
+    }];
+
+    if let Some(path) = structured
+        .get("requested_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: path.to_string(),
+        });
+    }
+
+    let mut state_parts = Vec::new();
+    if let Some(language_name) = structured
+        .get("language_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        state_parts.push(language_name.to_string());
+    }
+    if let Some(kernelspec_name) = structured
+        .get("kernelspec_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        state_parts.push(format!("kernel {kernelspec_name}"));
+    }
+    if let Some(nbformat) = structured.get("nbformat").and_then(Value::as_u64) {
+        let minor = structured
+            .get("nbformat_minor")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        state_parts.push(format!("nbformat {nbformat}.{minor}"));
+    }
+    if !state_parts.is_empty() {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::State,
+            value: state_parts.join(" · "),
+        });
+    }
+
+    let lines = structured
+        .get("cells")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(4)
+        .flat_map(render_notebook_cell_summary_lines)
+        .collect::<Vec<_>>();
+    if !lines.is_empty() {
+        details.push(ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Output,
+            lines,
+        });
+    }
+    Some(details)
+}
+
+fn render_notebook_cell_summary_lines(cell: &Value) -> Vec<String> {
+    let index = cell.get("index").and_then(Value::as_u64).unwrap_or(0);
+    let cell_type = cell
+        .get("cell_type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    let source_line_count = cell
+        .get("source_line_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_count = cell
+        .get("output_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut header = format!("[{cell_type} #{index}] {source_line_count} line(s)");
+    if let Some(execution_count) = cell.get("execution_count").and_then(Value::as_i64) {
+        header.push_str(&format!(" exec={execution_count}"));
+    }
+    if output_count > 0 {
+        header.push_str(&format!(", {output_count} output(s)"));
+    }
+
+    let mut lines = vec![header];
+    if let Some(source_preview) = cell.get("source_preview").and_then(Value::as_array) {
+        let preview = source_preview
+            .iter()
+            .filter_map(Value::as_str)
+            .take(2)
+            .map(|line| truncate_inline(line, 88))
+            .collect::<Vec<_>>();
+        if !preview.is_empty() {
+            lines.push(format!("source {}", preview.join(" | ")));
+        }
+    }
+    if let Some(outputs) = cell.get("outputs").and_then(Value::as_array) {
+        for output in outputs.iter().take(2) {
+            let kind = output
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("output");
+            let summary = output
+                .get("summary")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| truncate_inline(value, 88))
+                .unwrap_or_else(|| "<output>".to_string());
+            lines.push(format!("{kind} {summary}"));
+        }
+    }
+    lines
 }
 
 fn render_code_search_match_summary(entry: &Value) -> Option<String> {
@@ -2253,6 +2422,21 @@ mod tests {
     #[test]
     fn code_diagnostics_arguments_render_scope_preview() {
         assert_eq!(
+            tool_arguments_preview_lines("notebook_read", &json!({"path": "analysis.ipynb"})),
+            vec!["Read notebook analysis.ipynb"]
+        );
+        assert_eq!(
+            tool_arguments_preview_lines(
+                "notebook_read",
+                &json!({"path": "analysis.ipynb", "start_cell": 3, "cell_count": 2, "include_outputs": false})
+            ),
+            vec![
+                "Read notebook analysis.ipynb",
+                "start cell 3, count 2",
+                "outputs hidden"
+            ]
+        );
+        assert_eq!(
             tool_arguments_preview_lines("code_search", &json!({"query": "Engine"})),
             vec!["Search code for Engine"]
         );
@@ -2275,6 +2459,66 @@ mod tests {
 
     #[test]
     fn code_diagnostics_output_renders_typed_summary() {
+        let notebook_rendered = tool_output_detail_lines(
+            "notebook_read",
+            "",
+            Some(&json!({
+                "requested_path": "analysis.ipynb",
+                "nbformat": 4,
+                "nbformat_minor": 5,
+                "language_name": "python",
+                "kernelspec_name": "python3",
+                "output_cells": 2,
+                "cells": [
+                    {
+                        "index": 1,
+                        "cell_type": "markdown",
+                        "source_line_count": 2,
+                        "source_preview": ["# Title", "Intro paragraph."],
+                        "output_count": 0
+                    },
+                    {
+                        "index": 2,
+                        "cell_type": "code",
+                        "execution_count": 3,
+                        "source_line_count": 1,
+                        "source_preview": ["print('hi')"],
+                        "output_count": 1,
+                        "outputs": [
+                            {"kind": "stream", "summary": "stdout"}
+                        ]
+                    }
+                ]
+            })),
+        );
+
+        assert_eq!(notebook_rendered[0], "  └ Result 2 cell(s)");
+        assert!(
+            notebook_rendered
+                .iter()
+                .any(|line| line == "  └ Context analysis.ipynb")
+        );
+        assert!(
+            notebook_rendered
+                .iter()
+                .any(|line| line == "  └ State python · kernel python3 · nbformat 4.5")
+        );
+        assert!(
+            notebook_rendered
+                .iter()
+                .any(|line| line.contains("[markdown #1] 2 line(s)"))
+        );
+        assert!(
+            notebook_rendered
+                .iter()
+                .any(|line| line.contains("source # Title | Intro paragraph."))
+        );
+        assert!(
+            notebook_rendered
+                .iter()
+                .any(|line| line.contains("stream stdout"))
+        );
+
         let search_rendered = tool_output_detail_lines(
             "code_search",
             "",

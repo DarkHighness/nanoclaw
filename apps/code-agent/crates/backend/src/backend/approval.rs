@@ -182,6 +182,24 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::NotebookRead => {
+            let path = arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let mut preview = vec![format!("read notebook {path}")];
+            let start_cell = arguments.get("start_cell").and_then(Value::as_u64);
+            let end_cell = arguments.get("end_cell").and_then(Value::as_u64);
+            if let (Some(start_cell), Some(end_cell)) = (start_cell, end_cell) {
+                preview.push(format!("cells {start_cell}-{end_cell}"));
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::CodeSearch => {
             let query = arguments
                 .get("query")

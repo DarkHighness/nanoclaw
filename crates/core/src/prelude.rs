@@ -7,6 +7,8 @@ pub use skills::{
     load_skill_roots,
 };
 pub use store::{FileSessionStore, InMemorySessionStore, SessionStore};
+#[cfg(feature = "notebook-tools")]
+pub use tools::NotebookReadTool;
 #[cfg(feature = "agentic-tools")]
 pub use tools::{
     AgentResumeTool, PRIMARY_WORKTREE_ID, PermissionGrantScope, RequestPermissionProfile,

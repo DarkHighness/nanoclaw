@@ -418,6 +418,9 @@ fn tool_headline_prefix(
     }
 
     match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::NotebookRead => {
+            lifecycle_headline_text(status, "Reading notebook", "Read notebook")
+        }
         ToolRenderKind::CodeSearch => {
             lifecycle_headline_text(status, "Searching code", "Searched code")
         }
@@ -484,7 +487,8 @@ fn tool_headline_subject_kind(
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
             TranscriptToolHeadlineSubjectKind::ToolName
         }
-        ToolRenderKind::CodeSearch
+        ToolRenderKind::NotebookRead
+        | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList

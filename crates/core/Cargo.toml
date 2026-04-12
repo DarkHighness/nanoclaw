@@ -12,6 +12,7 @@ agentic-tools = [
 ]
 code-intel = ["tools/code-intel"]
 memory-embed = ["memory/memory-embed"]
+notebook-tools = ["tools/notebook-tools"]
 web-tools = ["tools/web-tools"]
 
 [dependencies]

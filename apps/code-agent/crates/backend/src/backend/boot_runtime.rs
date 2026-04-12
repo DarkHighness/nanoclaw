@@ -1,4 +1,6 @@
 use crate::options::AppOptions;
+#[cfg(feature = "notebook-tools")]
+use agent::NotebookReadTool;
 use agent::runtime::RuntimeError;
 use agent::runtime::{
     CommandHookExecutor, DefaultCommandHookExecutor, HookRunner, LoopDetectionConfig,
@@ -575,6 +577,10 @@ fn build_builtin_tools(
     let discovery_registry = tools.clone();
 
     let file_activity_observer: Arc<dyn FileActivityObserver> = file_activity_backend;
+    #[cfg(feature = "notebook-tools")]
+    tools.register(NotebookReadTool::with_file_activity_observer(
+        file_activity_observer.clone(),
+    ));
     tools.register(ReadTool::with_file_activity_observer(
         file_activity_observer.clone(),
     ));
@@ -763,10 +769,39 @@ mod tests {
         assert!(tool_names.iter().any(|name| name.as_str() == "web_fetch"));
         assert!(tool_names.iter().any(|name| name.as_str() == "web_search"));
         assert!(tool_names.iter().any(|name| name.as_str() == "patch_files"));
+        #[cfg(feature = "notebook-tools")]
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "notebook_read")
+        );
         assert!(
             tool_names
                 .iter()
                 .any(|name| name.as_str() == "web_search_backends")
+        );
+    }
+
+    #[cfg(feature = "notebook-tools")]
+    #[test]
+    fn runtime_tooling_registers_notebook_surface_when_feature_enabled() {
+        let options = load_options();
+        let workspace = tempdir().unwrap();
+        let tooling = build_runtime_tooling(
+            &options,
+            workspace.path(),
+            &SandboxPolicy::permissive(),
+            &SandboxBackendStatus::Unavailable {
+                reason: "not needed".to_string(),
+            },
+            SkillCatalog::default(),
+        );
+
+        let tool_names = tooling.tools.names();
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "notebook_read")
         );
     }
 
