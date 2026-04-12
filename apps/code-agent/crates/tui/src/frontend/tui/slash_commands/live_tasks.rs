@@ -1,7 +1,7 @@
 use super::*;
 
 impl CodeAgentTui {
-    pub(super) fn start_wait_task(&mut self, task_or_agent_ref: String) {
+    pub(crate) fn start_wait_task(&mut self, task_or_agent_ref: String) {
         let wait_ref = task_or_agent_ref.clone();
         self.ui_state.mutate(|state| {
             state.clear_composer_context_hint();

@@ -1110,6 +1110,20 @@ impl From<String> for TranscriptEntry {
 pub(crate) enum InspectorAction {
     RunCommand(String),
     FillInput(String),
+    LoadMcpPrompt {
+        server_name: String,
+        prompt_name: String,
+    },
+    LoadMcpResource {
+        server_name: String,
+        uri: String,
+    },
+    WaitLiveTask {
+        task_or_agent_ref: String,
+    },
+    CancelLiveTask {
+        task_or_agent_ref: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

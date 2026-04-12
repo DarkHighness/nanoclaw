@@ -1,6 +1,5 @@
 use super::*;
-use agent::tools::{CodeDiagnostic, CodeDiagnosticSeverity};
-
+use crate::frontend::tui::state::InspectorAction;
 pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<InspectorEntry> {
     let mut lines = vec![
         InspectorEntry::section("Session"),
@@ -333,68 +332,6 @@ pub(crate) fn format_startup_diagnostics(
     lines
 }
 
-pub(crate) fn format_code_diagnostics_inspector(
-    diagnostics: &[CodeDiagnostic],
-) -> Vec<InspectorEntry> {
-    let error_count = diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == CodeDiagnosticSeverity::Error)
-        .count();
-    let warning_count = diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == CodeDiagnosticSeverity::Warning)
-        .count();
-    let info_count = diagnostics
-        .iter()
-        .filter(|diagnostic| {
-            matches!(
-                diagnostic.severity,
-                CodeDiagnosticSeverity::Information | CodeDiagnosticSeverity::Hint
-            )
-        })
-        .count();
-
-    let mut lines = vec![
-        InspectorEntry::section("Summary"),
-        InspectorEntry::field("diagnostics", diagnostics.len().to_string()),
-        InspectorEntry::field("errors", error_count.to_string()),
-        InspectorEntry::field("warnings", warning_count.to_string()),
-        InspectorEntry::field("info/hints", info_count.to_string()),
-    ];
-    lines.push(InspectorEntry::section("Diagnostics"));
-    if diagnostics.is_empty() {
-        lines.push(InspectorEntry::Muted(
-            "No live diagnostics are cached for the requested scope.".to_string(),
-        ));
-        return lines;
-    }
-
-    lines.extend(diagnostics.iter().take(64).map(|diagnostic| {
-        let mut line = format!(
-            "[{}] {}:{}:{} {}",
-            diagnostic.severity,
-            diagnostic.location.path,
-            diagnostic.location.line,
-            diagnostic.location.column,
-            preview_text(&diagnostic.message, 96)
-        );
-        if let Some(provider) = diagnostic.provider.as_deref() {
-            line.push_str(&format!(" · {} / {}", diagnostic.source, provider));
-        } else {
-            line.push_str(&format!(" · {}", diagnostic.source));
-        }
-        InspectorEntry::transcript(line)
-    }));
-
-    if diagnostics.len() > 64 {
-        lines.push(InspectorEntry::Muted(format!(
-            "Showing 64 of {} diagnostics",
-            diagnostics.len()
-        )));
-    }
-    lines
-}
-
 pub(crate) fn format_mcp_server_summary_line(summary: &McpServerSummary) -> InspectorEntry {
     InspectorEntry::collection(
         summary.server_name.clone(),
@@ -411,14 +348,18 @@ pub(crate) fn format_mcp_prompt_summary_line(summary: &McpPromptSummary) -> Insp
     } else {
         format!(" ({})", summary.argument_names.join(", "))
     };
-    InspectorEntry::collection(
+    InspectorEntry::actionable_collection(
         format!("{}:{}{}", summary.server_name, summary.prompt_name, suffix),
         (!summary.description.is_empty()).then_some(summary.description.clone()),
+        InspectorAction::LoadMcpPrompt {
+            server_name: summary.server_name.clone(),
+            prompt_name: summary.prompt_name.clone(),
+        },
     )
 }
 
 pub(crate) fn format_mcp_resource_summary_line(summary: &McpResourceSummary) -> InspectorEntry {
-    InspectorEntry::collection(
+    InspectorEntry::actionable_collection(
         format!(
             "{}:{}{}",
             summary.server_name,
@@ -430,6 +371,10 @@ pub(crate) fn format_mcp_resource_summary_line(summary: &McpResourceSummary) -> 
                 .unwrap_or_default(),
         ),
         (!summary.description.is_empty()).then_some(summary.description.clone()),
+        InspectorAction::LoadMcpResource {
+            server_name: summary.server_name.clone(),
+            uri: summary.uri.clone(),
+        },
     )
 }
 

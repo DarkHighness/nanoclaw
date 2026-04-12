@@ -744,11 +744,19 @@ fn collection_action_label(title: &str, action: &InspectorAction) -> &'static st
         match action {
             InspectorAction::RunCommand(_) => "run",
             InspectorAction::FillInput(_) => "insert",
+            InspectorAction::LoadMcpPrompt { .. } => "load",
+            InspectorAction::LoadMcpResource { .. } => "load",
+            InspectorAction::WaitLiveTask { .. } => "wait",
+            InspectorAction::CancelLiveTask { .. } => "cancel",
         }
     } else {
         match action {
             InspectorAction::RunCommand(_) => "open",
             InspectorAction::FillInput(_) => "insert",
+            InspectorAction::LoadMcpPrompt { .. } => "load",
+            InspectorAction::LoadMcpResource { .. } => "load",
+            InspectorAction::WaitLiveTask { .. } => "wait",
+            InspectorAction::CancelLiveTask { .. } => "cancel",
         }
     }
 }

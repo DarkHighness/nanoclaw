@@ -69,80 +69,12 @@ impl CodeAgentTui {
                 });
                 Ok(false)
             }
-            SlashCommand::Tools => {
-                let tool_names = self.startup_snapshot().tool_names;
-                self.ui_state.mutate(move |state| {
-                    let lines = if tool_names.is_empty() {
-                        vec![
-                            InspectorEntry::section("Tools"),
-                            InspectorEntry::Muted("No tools registered.".to_string()),
-                        ]
-                    } else {
-                        std::iter::once(InspectorEntry::section("Tools"))
-                            .chain(tool_names.iter().map(|tool| {
-                                InspectorEntry::collection(tool.clone(), None::<String>)
-                            }))
-                            .collect()
-                    };
-                    state.show_main_view("Tool Catalog", lines);
-                    state.status = "Listed core tools".to_string();
-                    state.push_activity("inspected tool catalog");
-                });
-                Ok(false)
-            }
-            SlashCommand::Skills => {
-                let skills = self.skills();
-                self.ui_state.mutate(move |state| {
-                    let lines = if skills.is_empty() {
-                        vec![
-                            InspectorEntry::section("Skills"),
-                            InspectorEntry::Muted(
-                                "No skills are available in the configured roots.".to_string(),
-                            ),
-                        ]
-                    } else {
-                        std::iter::once(InspectorEntry::section("Skills"))
-                            .chain(skills.iter().map(|skill| {
-                                InspectorEntry::collection(
-                                    skill.name.clone(),
-                                    Some(state::preview_text(&skill.description, 72)),
-                                )
-                            }))
-                            .collect()
-                    };
-                    state.show_main_view("Skill Catalog", lines);
-                    state.status = "Listed available skills".to_string();
-                    state.push_activity("inspected skill catalog");
-                });
-                Ok(false)
-            }
             SlashCommand::Diagnostics => {
                 let diagnostics = self.startup_diagnostics();
                 self.ui_state.mutate(move |state| {
                     state.show_main_view("Diagnostics", format_startup_diagnostics(&diagnostics));
                     state.status = "Opened startup diagnostics".to_string();
                     state.push_activity("inspected startup diagnostics");
-                });
-                Ok(false)
-            }
-            SlashCommand::CodeDiagnostics { path } => {
-                let diagnostics: Vec<agent::tools::CodeDiagnostic> = self
-                    .run_ui(UIAsyncCommand::CodeDiagnostics { path: path.clone() })
-                    .await?;
-                let title = path
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                    .map(|value| format!("Code Diagnostics · {}", value.trim()))
-                    .unwrap_or_else(|| "Code Diagnostics".to_string());
-                let inspector = format_code_diagnostics_inspector(&diagnostics);
-                self.ui_state.mutate(move |state| {
-                    state.show_main_view(title, inspector);
-                    state.status = if diagnostics.is_empty() {
-                        "No live code diagnostics".to_string()
-                    } else {
-                        format!("Listed {} code diagnostic(s)", diagnostics.len())
-                    };
-                    state.push_activity("inspected live code diagnostics");
                 });
                 Ok(false)
             }

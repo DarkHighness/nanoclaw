@@ -11,6 +11,7 @@ impl CodeAgentTui {
     ) -> TuiState {
         let workspace_root = snapshot.workspace_root.clone();
         let input_history = input_history::load_input_history(&workspace_root);
+        let skills = self.skills();
         let mut state = TuiState {
             session: state::SessionSummary {
                 workspace_name: snapshot.workspace_name.clone(),
@@ -26,6 +27,7 @@ impl CodeAgentTui {
                 workspace_root: workspace_root.clone(),
                 git: state::git_snapshot(&workspace_root, snapshot.host_process_surfaces_allowed),
                 tool_names: snapshot.tool_names.clone(),
+                skills,
                 store_label: snapshot.store_label.clone(),
                 store_warning: snapshot.store_warning.clone(),
                 stored_session_count: snapshot.stored_session_count,
@@ -58,6 +60,7 @@ impl CodeAgentTui {
             &snapshot.workspace_root,
             snapshot.host_process_surfaces_allowed,
         );
+        let skills = self.skills();
         self.ui_state.mutate(|state| {
             state.session.workspace_name = snapshot.workspace_name.clone();
             state.session.active_session_ref = snapshot.active_session_ref.clone();
@@ -71,6 +74,7 @@ impl CodeAgentTui {
             state.session.workspace_root = snapshot.workspace_root.clone();
             state.session.git = git;
             state.session.tool_names = snapshot.tool_names.clone();
+            state.session.skills = skills;
             state.session.store_label = snapshot.store_label.clone();
             state.session.store_warning = snapshot.store_warning.clone();
             state.session.stored_session_count = snapshot.stored_session_count;

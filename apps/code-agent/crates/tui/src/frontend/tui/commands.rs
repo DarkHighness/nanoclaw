@@ -1,5 +1,5 @@
 use super::state::{InspectorAction, InspectorEntry};
-use crate::interaction::SessionPermissionMode;
+use crate::interaction::{SessionPermissionMode, SkillSummary};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 mod completion;
@@ -8,8 +8,9 @@ mod parse;
 #[cfg(test)]
 pub(crate) use completion::command_palette_lines;
 pub(crate) use completion::{
-    command_palette_lines_for, cycle_slash_command, inspector_action_for_slash_name,
-    move_slash_command_selection, resolve_slash_enter_action, slash_command_hint,
+    command_palette_lines_for, composer_completion_hint, cycle_composer_completion,
+    inspector_action_for_slash_name, move_composer_completion_selection,
+    resolve_composer_enter_action,
 };
 pub(crate) use parse::parse_slash_command;
 
@@ -88,6 +89,68 @@ pub(crate) struct SlashCommandArgumentSpec {
 pub(crate) enum SlashCommandEnterAction {
     Complete { input: String, index: usize },
     Execute(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SkillInvocationSpec {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) aliases: Vec<String>,
+    pub(crate) tags: Vec<String>,
+}
+
+impl SkillInvocationSpec {
+    pub(crate) fn from_summary(summary: &SkillSummary) -> Self {
+        Self {
+            name: summary.name.clone(),
+            description: summary.description.clone(),
+            aliases: summary.aliases.clone(),
+            tags: summary.tags.clone(),
+        }
+    }
+
+    pub(crate) fn invocation(&self) -> String {
+        format!("${}", self.name)
+    }
+
+    pub(crate) fn matches_prefix(&self, prefix: &str) -> bool {
+        let prefix = prefix.to_ascii_lowercase();
+        prefix.is_empty()
+            || self.name.to_ascii_lowercase().starts_with(&prefix)
+            || self
+                .aliases
+                .iter()
+                .any(|alias| alias.to_ascii_lowercase().starts_with(&prefix))
+    }
+
+    pub(crate) fn matches_token(&self, token: &str) -> bool {
+        let token = token.to_ascii_lowercase();
+        self.name.eq_ignore_ascii_case(&token)
+            || self
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(&token))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SkillInvocationHint {
+    pub(crate) selected: SkillInvocationSpec,
+    pub(crate) matches: Vec<SkillInvocationSpec>,
+    pub(crate) selected_match_index: usize,
+    pub(crate) exact: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerCompletionHint {
+    Slash(SlashCommandHint),
+    Skill(SkillInvocationHint),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerCompletionEnterAction {
+    Complete { input: String, index: usize },
+    ExecuteSlash(String),
 }
 
 const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
@@ -213,30 +276,6 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Agents",
-        name: "spawn_task",
-        usage: "spawn_task <role> <prompt>",
-        summary: "launch child agent",
-    },
-    SlashCommandSpec {
-        section: "Agents",
-        name: "send_task",
-        usage: "send_task <task-or-agent-ref> <message>",
-        summary: "steer child agent",
-    },
-    SlashCommandSpec {
-        section: "Agents",
-        name: "wait_task",
-        usage: "wait_task <task-or-agent-ref>",
-        summary: "wait for child agent",
-    },
-    SlashCommandSpec {
-        section: "Agents",
-        name: "cancel_task",
-        usage: "cancel_task <task-or-agent-ref> [reason]",
-        summary: "stop child agent",
-    },
-    SlashCommandSpec {
-        section: "Agents",
         name: "stop_monitor",
         usage: "stop_monitor <monitor-ref> [reason]",
         summary: "stop background monitor",
@@ -285,27 +324,9 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Catalog",
-        name: "tools",
-        usage: "tools",
-        summary: "list tools",
-    },
-    SlashCommandSpec {
-        section: "Catalog",
-        name: "skills",
-        usage: "skills",
-        summary: "list discovered skills",
-    },
-    SlashCommandSpec {
-        section: "Catalog",
         name: "diagnostics",
         usage: "diagnostics",
         summary: "startup diagnostics",
-    },
-    SlashCommandSpec {
-        section: "Catalog",
-        name: "code_diagnostics",
-        usage: "code_diagnostics [path]",
-        summary: "inspect live code diagnostics",
     },
     SlashCommandSpec {
         section: "Catalog",
@@ -324,18 +345,6 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         name: "resources",
         usage: "resources",
         summary: "list MCP resources",
-    },
-    SlashCommandSpec {
-        section: "Catalog",
-        name: "prompt",
-        usage: "prompt <server> <name>",
-        summary: "load MCP prompt",
-    },
-    SlashCommandSpec {
-        section: "Catalog",
-        name: "resource",
-        usage: "resource <server> <uri>",
-        summary: "load MCP resource",
     },
     SlashCommandSpec {
         section: "Export",
@@ -378,23 +387,10 @@ pub(crate) enum SlashCommand {
     Help {
         query: Option<String>,
     },
-    Tools,
-    Skills,
     Diagnostics,
-    CodeDiagnostics {
-        path: Option<String>,
-    },
     Mcp,
     Prompts,
     Resources,
-    Prompt {
-        server_name: String,
-        prompt_name: String,
-    },
-    Resource {
-        server_name: String,
-        uri: String,
-    },
     Steer {
         message: Option<String>,
     },
@@ -418,21 +414,6 @@ pub(crate) enum SlashCommand {
     LiveTasks,
     Monitors {
         include_closed: bool,
-    },
-    SpawnTask {
-        role: String,
-        prompt: String,
-    },
-    SendTask {
-        task_or_agent_ref: String,
-        message: Option<String>,
-    },
-    WaitTask {
-        task_or_agent_ref: String,
-    },
-    CancelTask {
-        task_or_agent_ref: String,
-        reason: Option<String>,
     },
     StopMonitor {
         monitor_ref: String,
@@ -512,24 +493,10 @@ enum SlashSubcommand {
         )]
         query: Vec<String>,
     },
-    Tools,
-    Skills,
     Diagnostics,
-    CodeDiagnostics {
-        #[arg(value_name = "PATH", trailing_var_arg = true)]
-        path: Vec<String>,
-    },
     Mcp,
     Prompts,
     Resources,
-    Prompt {
-        server_name: String,
-        prompt_name: String,
-    },
-    Resource {
-        server_name: String,
-        uri: String,
-    },
     Steer {
         #[arg(
             value_name = "NOTES",
@@ -571,37 +538,6 @@ enum SlashSubcommand {
     Monitors {
         #[arg(value_name = "ALL")]
         include_closed: Vec<String>,
-    },
-    SpawnTask {
-        role: String,
-        #[arg(
-            value_name = "PROMPT",
-            required = true,
-            trailing_var_arg = true,
-            allow_hyphen_values = true
-        )]
-        prompt: Vec<String>,
-    },
-    SendTask {
-        task_or_agent_ref: String,
-        #[arg(
-            value_name = "MESSAGE",
-            trailing_var_arg = true,
-            allow_hyphen_values = true
-        )]
-        message: Vec<String>,
-    },
-    WaitTask {
-        task_or_agent_ref: String,
-    },
-    CancelTask {
-        task_or_agent_ref: String,
-        #[arg(
-            value_name = "REASON",
-            trailing_var_arg = true,
-            allow_hyphen_values = true
-        )]
-        reason: Vec<String>,
     },
     StopMonitor {
         monitor_ref: String,

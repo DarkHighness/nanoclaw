@@ -1,5 +1,7 @@
 use super::*;
-use crate::frontend::tui::commands::slash_command_hint;
+use crate::frontend::tui::commands::{
+    ComposerCompletionEnterAction, composer_completion_hint, resolve_composer_enter_action,
+};
 
 pub(crate) enum TerminalLoopControl {
     Continue,
@@ -183,7 +185,7 @@ impl CodeAgentTui {
             }
             KeyCode::Tab => self.handle_tab_key().await?,
             KeyCode::BackTab => {
-                let _ = self.apply_command_completion(true);
+                let _ = self.apply_composer_completion(true);
             }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let _ = self.handle_tool_selection_navigation(true);
@@ -286,10 +288,12 @@ impl CodeAgentTui {
     }
 
     fn handle_vertical_navigation(&mut self, backwards: bool) {
-        if self.move_selected_row_attachment(backwards) || self.move_command_selection(backwards) {
+        if self.move_selected_row_attachment(backwards)
+            || self.move_composer_completion_selection(backwards)
+        {
             return;
         }
-        if self.slash_command_modal_active() {
+        if self.composer_completion_modal_active() {
             return;
         }
         if self.navigate_input_history(backwards)
@@ -303,10 +307,14 @@ impl CodeAgentTui {
         });
     }
 
-    fn slash_command_modal_active(&self) -> bool {
+    fn composer_completion_modal_active(&self) -> bool {
         let snapshot = self.ui_state.snapshot();
-        snapshot.input.starts_with('/')
-            && slash_command_hint(&snapshot.input, snapshot.command_completion_index).is_some()
+        composer_completion_hint(
+            &snapshot.input,
+            snapshot.composer_completion_index,
+            &snapshot.session.skills,
+        )
+        .is_some()
     }
 
     fn handle_tool_selection_navigation(&mut self, backwards: bool) -> bool {
@@ -395,6 +403,16 @@ impl CodeAgentTui {
         if self.try_apply_pending_control_edit(&snapshot.input).await {
             return Ok(());
         }
+        if composer_completion_hint(
+            &snapshot.input,
+            snapshot.composer_completion_index,
+            &snapshot.session.skills,
+        )
+        .is_some()
+            && self.apply_composer_completion(false)
+        {
+            return Ok(());
+        }
         if let Some(action) = plain_input_submit_action(
             &snapshot.input,
             composer_has_prompt_content(&snapshot),
@@ -409,7 +427,6 @@ impl CodeAgentTui {
             self.apply_plain_input_submit(action, submission).await;
             return Ok(());
         }
-        let _ = self.apply_command_completion(false);
         Ok(())
     }
 
@@ -418,28 +435,28 @@ impl CodeAgentTui {
         if self.try_apply_pending_control_edit(&snapshot.input).await {
             return Ok(TerminalLoopControl::Continue);
         }
-        if snapshot.input.starts_with('/') {
-            if let Some(action) =
-                resolve_slash_enter_action(&snapshot.input, snapshot.command_completion_index)
-            {
-                match action {
-                    SlashCommandEnterAction::Complete { input, index } => {
-                        self.ui_state.mutate(|state| {
-                            state.replace_input(input);
-                            state.command_completion_index = index;
-                        });
-                        return Ok(TerminalLoopControl::Continue);
+        if let Some(action) = resolve_composer_enter_action(
+            &snapshot.input,
+            snapshot.composer_completion_index,
+            &snapshot.session.skills,
+        ) {
+            match action {
+                ComposerCompletionEnterAction::Complete { input, index } => {
+                    self.ui_state.mutate(|state| {
+                        state.replace_input(input);
+                        state.composer_completion_index = index;
+                    });
+                    return Ok(TerminalLoopControl::Continue);
+                }
+                ComposerCompletionEnterAction::ExecuteSlash(input) => {
+                    self.record_submitted_input(&input);
+                    self.ui_state.mutate(|state| {
+                        state.clear_input();
+                    });
+                    if self.apply_command(&input).await? {
+                        return Ok(TerminalLoopControl::Exit);
                     }
-                    SlashCommandEnterAction::Execute(input) => {
-                        self.record_submitted_input(&input);
-                        self.ui_state.mutate(|state| {
-                            state.clear_input();
-                        });
-                        if self.apply_command(&input).await? {
-                            return Ok(TerminalLoopControl::Exit);
-                        }
-                        return Ok(TerminalLoopControl::Continue);
-                    }
+                    return Ok(TerminalLoopControl::Continue);
                 }
             }
         }

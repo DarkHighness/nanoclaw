@@ -55,11 +55,7 @@ pub(crate) fn build_startup_inspector(session: &state::SessionSummary) -> Vec<In
             "/agent_sessions",
             "inspect or resume agents",
         ),
-        command_entry(
-            "spawn_task",
-            "/spawn_task <role> <prompt>",
-            "launch child agent",
-        ),
+        command_entry("live_tasks", "/live_tasks", "inspect active child agents"),
         command_entry("new", "/new", "start fresh without deleting history"),
         InspectorEntry::section("Environment"),
         InspectorEntry::field(

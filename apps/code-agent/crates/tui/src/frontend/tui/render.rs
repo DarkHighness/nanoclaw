@@ -16,7 +16,7 @@ mod welcome;
 
 use super::UserInputView;
 use super::approval::ApprovalPrompt;
-use super::commands::slash_command_hint;
+use super::commands::composer_completion_hint;
 use super::state::TuiState;
 use crate::interaction::PermissionRequestPrompt;
 use chrome::{
@@ -24,7 +24,7 @@ use chrome::{
     render_permission_request_modal, render_user_input_band, user_input_band_height,
 };
 use history_rollback_overlay::render_history_rollback_overlay;
-use picker::{pending_control_height, render_command_hint_modal, render_pending_control_band};
+use picker::{pending_control_height, render_composer_hint_modal, render_pending_control_band};
 use ratatui::layout::{Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Block;
@@ -58,8 +58,12 @@ pub(crate) fn render(
     } else {
         None
     };
-    let command_hint = if !approval_active && !permission_request_active && user_input.is_none() {
-        slash_command_hint(&state.input, state.command_completion_index)
+    let composer_hint = if !approval_active && !permission_request_active && user_input.is_none() {
+        composer_completion_hint(
+            &state.input,
+            state.composer_completion_index,
+            &state.session.skills,
+        )
     } else {
         None
     };
@@ -102,8 +106,8 @@ pub(crate) fn render(
     if pending_height.is_some() {
         render_pending_control_band(frame, pending_area.expect("pending area"), state);
     }
-    if let Some(command_hint) = command_hint.as_ref() {
-        render_command_hint_modal(frame, area, command_hint);
+    if let Some(composer_hint) = composer_hint.as_ref() {
+        render_composer_hint_modal(frame, area, composer_hint);
     }
     if toast_height.is_some() {
         render_toast_band(frame, toast_area.expect("toast area"), state);

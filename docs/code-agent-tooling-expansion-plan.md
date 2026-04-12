@@ -131,6 +131,12 @@ The current TUI operator surfaces relevant to this plan are defined in:
    If the operator can inspect, resume, stop, or restore something, the
    capability must exist as a typed backend/runtime contract first.
 
+6. Keep model tools and operator commands as separate surfaces.
+   Model-visible tools do not automatically get slash commands. Slash commands
+   exist for session control, review, history, export, attachments, and
+   runtime supervision. Explicit skill invocation belongs to composer-native
+   `$skill_name` directives, not to tool-mirroring slash commands.
+
 ## Phase 1: Task Model
 
 ### Objective
@@ -369,7 +375,8 @@ post-edit diagnostics back into the loop.
 
 - After file edits, the runtime can surface type errors and warnings without
   requiring the model to remember to run a build or a manual code-nav query.
-- The operator can inspect diagnostics for a file or workspace.
+- The operator can review diagnostics through normal transcript and review
+  surfaces without a dedicated tool-mirroring slash command.
 
 ### New canonical tools
 
@@ -403,7 +410,8 @@ post-edit diagnostics back into the loop.
 - `code_diagnostics` returns typed warnings/errors for a path or workspace.
 - Post-edit diagnostics can appear as typed follow-up cells or explicit
   structured tool results.
-- Diagnostics rendering does not reuse startup diagnostics UI components.
+- Diagnostics rendering does not reuse startup diagnostics UI components or a
+  bespoke `/code_diagnostics` operator command.
 
 ### Exit criteria
 
@@ -622,6 +630,10 @@ Every phase must ship with:
 
 - Do not reintroduce legacy alias trees to ease model transition.
 - Do not add UI-only slash commands as substitutes for missing typed tools.
+- Do not mirror model tools into slash commands unless the operator needs a
+  distinct host control surface that the model tool cannot provide.
+- Do not force skills through slash commands when `$skill_name` in the
+  composer is the correct explicit invocation path.
 - Do not encode new state machines as transcript strings.
 - Do not let `update_plan` absorb task, checkpoint, or monitor semantics.
 

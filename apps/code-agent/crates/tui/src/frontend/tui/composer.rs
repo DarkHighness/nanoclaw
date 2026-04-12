@@ -1,18 +1,19 @@
 use super::*;
 
 impl CodeAgentTui {
-    pub(super) fn apply_command_completion(&mut self, backwards: bool) -> bool {
+    pub(super) fn apply_composer_completion(&mut self, backwards: bool) -> bool {
         let snapshot = self.ui_state.snapshot();
-        let Some((input, index)) = cycle_slash_command(
+        let Some((input, index)) = cycle_composer_completion(
             &snapshot.input,
-            snapshot.command_completion_index,
+            snapshot.composer_completion_index,
             backwards,
+            &snapshot.session.skills,
         ) else {
             return false;
         };
         self.ui_state.mutate(|state| {
             state.replace_input(input);
-            state.command_completion_index = index;
+            state.composer_completion_index = index;
         });
         true
     }
@@ -25,17 +26,18 @@ impl CodeAgentTui {
         navigated
     }
 
-    pub(super) fn move_command_selection(&mut self, backwards: bool) -> bool {
+    pub(super) fn move_composer_completion_selection(&mut self, backwards: bool) -> bool {
         let snapshot = self.ui_state.snapshot();
-        let Some(index) = move_slash_command_selection(
+        let Some(index) = move_composer_completion_selection(
             &snapshot.input,
-            snapshot.command_completion_index,
+            snapshot.composer_completion_index,
             backwards,
+            &snapshot.session.skills,
         ) else {
             return false;
         };
         self.ui_state
-            .mutate(|state| state.command_completion_index = index);
+            .mutate(|state| state.composer_completion_index = index);
         true
     }
 

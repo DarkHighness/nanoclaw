@@ -702,7 +702,7 @@ impl TuiState {
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.input_vertical_column = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
     }
 
     pub(crate) fn push_input_str(&mut self, text: &str) {
@@ -711,7 +711,7 @@ impl TuiState {
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.input_vertical_column = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
     }
 
     pub(crate) fn append_input_text(&mut self, text: &str) {
@@ -723,7 +723,7 @@ impl TuiState {
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.input_vertical_column = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
     }
 
     pub(crate) fn push_large_paste(&mut self, payload: &str) -> String {
@@ -753,7 +753,7 @@ impl TuiState {
         self.renormalize_draft_attachment_placeholders();
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
         true
     }
 
@@ -799,7 +799,7 @@ impl TuiState {
         self.renormalize_draft_attachment_placeholders();
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
         Some(removed)
     }
 
@@ -834,7 +834,7 @@ impl TuiState {
         self.renormalize_draft_attachment_placeholders();
         self.selected_row_attachment = Some(to - 1);
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
         true
     }
 
@@ -887,7 +887,7 @@ impl TuiState {
         });
         self.input_vertical_column = None;
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
         true
     }
 
@@ -903,7 +903,7 @@ impl TuiState {
         }
         self.input_vertical_column = None;
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
         true
     }
 
@@ -927,7 +927,7 @@ impl TuiState {
             Some(selected.min(remaining - 1))
         };
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
         Some(removed)
     }
 
@@ -941,7 +941,7 @@ impl TuiState {
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.input_vertical_column = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
     }
 
     pub(crate) fn kill_input_to_end(&mut self) -> bool {
@@ -962,7 +962,7 @@ impl TuiState {
         self.prune_draft_attachments();
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
         true
     }
 
@@ -1103,8 +1103,8 @@ impl TuiState {
         true
     }
 
-    pub(crate) fn reset_command_completion(&mut self) {
-        self.command_completion_index = 0;
+    pub(crate) fn reset_composer_completion(&mut self) {
+        self.composer_completion_index = 0;
     }
 
     fn replace_input_draft(&mut self, draft: ComposerDraftState) {
@@ -1115,7 +1115,7 @@ impl TuiState {
         self.draft_attachments = draft.draft_attachments;
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
     }
 
     fn current_input_draft(&self) -> ComposerDraftState {
@@ -1284,7 +1284,7 @@ impl TuiState {
     pub(super) fn take_submission(&mut self) -> ComposerSubmission {
         let submission = self.current_submission();
         self.input_history_navigation = None;
-        self.command_completion_index = 0;
+        self.composer_completion_index = 0;
         self.input_cursor = 0;
         self.input_vertical_column = None;
         let _ = std::mem::take(&mut self.input);
@@ -1338,7 +1338,7 @@ impl TuiState {
         self.renormalize_draft_attachment_placeholders();
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
-        self.reset_command_completion();
+        self.reset_composer_completion();
         summarize_attachment_edit(&before_rows, &self.row_attachment_previews())
     }
 

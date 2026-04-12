@@ -1,5 +1,7 @@
 use super::input_history::PersistedComposerHistoryEntry;
-use crate::interaction::{PendingControlKind, PendingControlSummary, SessionPermissionMode};
+use crate::interaction::{
+    PendingControlKind, PendingControlSummary, SessionPermissionMode, SkillSummary,
+};
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
@@ -104,6 +106,7 @@ pub(crate) struct SessionSummary {
     pub(crate) workspace_root: PathBuf,
     pub(crate) git: GitSnapshot,
     pub(crate) tool_names: Vec<String>,
+    pub(crate) skills: Vec<SkillSummary>,
     pub(crate) store_label: String,
     pub(crate) store_warning: Option<String>,
     pub(crate) stored_session_count: usize,
@@ -362,7 +365,7 @@ pub(crate) struct TuiState {
     pub(crate) local_input_history: Vec<ComposerDraftState>,
     pub(crate) local_command_history: Vec<ComposerDraftState>,
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
-    pub(crate) command_completion_index: usize,
+    pub(crate) composer_completion_index: usize,
     pub(crate) composer_context_hint: Option<ComposerContextHint>,
     pub(crate) toast: Option<ToastState>,
     pub(crate) transcript: Vec<TranscriptEntry>,

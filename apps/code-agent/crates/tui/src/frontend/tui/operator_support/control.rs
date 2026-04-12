@@ -98,8 +98,14 @@ pub(crate) fn composer_uses_image_input(state: &TuiState) -> bool {
 
 pub(crate) fn queued_command_preview(command: &RuntimeCommand) -> String {
     match command {
-        RuntimeCommand::Prompt { message, .. } => {
-            let preview = message_operator_text(message);
+        RuntimeCommand::Prompt {
+            message,
+            submitted_prompt,
+        } => {
+            let preview = submitted_prompt
+                .as_ref()
+                .map(|prompt| prompt.text.clone())
+                .unwrap_or_else(|| message_operator_text(message));
             format!("running prompt: {}", state::preview_text(&preview, 40))
         }
         RuntimeCommand::Steer { message, .. } => {

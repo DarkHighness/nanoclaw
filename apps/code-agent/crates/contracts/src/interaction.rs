@@ -105,6 +105,8 @@ pub struct UserInputPrompt {
 pub struct SkillSummary {
     pub name: String,
     pub description: String,
+    pub aliases: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

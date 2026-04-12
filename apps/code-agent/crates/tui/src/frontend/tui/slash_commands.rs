@@ -17,10 +17,7 @@ impl CodeAgentTui {
             | SlashCommand::Thinking { .. }
             | SlashCommand::Theme { .. }
             | SlashCommand::Help { .. }
-            | SlashCommand::Tools
-            | SlashCommand::Skills
             | SlashCommand::Diagnostics
-            | SlashCommand::CodeDiagnostics { .. }
             | SlashCommand::Steer { .. }
             | SlashCommand::Queue
             | SlashCommand::Permissions { .. }
@@ -31,17 +28,11 @@ impl CodeAgentTui {
             | SlashCommand::File { .. }
             | SlashCommand::Detach { .. }
             | SlashCommand::MoveAttachment { .. }) => self.apply_attachment_command(command).await,
-            command @ (SlashCommand::Mcp
-            | SlashCommand::Prompts
-            | SlashCommand::Resources
-            | SlashCommand::Prompt { .. }
-            | SlashCommand::Resource { .. }) => self.apply_mcp_command(command).await,
+            command @ (SlashCommand::Mcp | SlashCommand::Prompts | SlashCommand::Resources) => {
+                self.apply_mcp_command(command).await
+            }
             command @ (SlashCommand::LiveTasks
             | SlashCommand::Monitors { .. }
-            | SlashCommand::SpawnTask { .. }
-            | SlashCommand::SendTask { .. }
-            | SlashCommand::WaitTask { .. }
-            | SlashCommand::CancelTask { .. }
             | SlashCommand::StopMonitor { .. }) => {
                 self.apply_runtime_activity_command(command).await
             }

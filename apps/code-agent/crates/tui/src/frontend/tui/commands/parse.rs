@@ -32,23 +32,10 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Help { query } => Self::Help {
                 query: join_optional_tail(query),
             },
-            SlashSubcommand::Tools => Self::Tools,
-            SlashSubcommand::Skills => Self::Skills,
             SlashSubcommand::Diagnostics => Self::Diagnostics,
-            SlashSubcommand::CodeDiagnostics { path } => Self::CodeDiagnostics {
-                path: join_optional_tail(path),
-            },
             SlashSubcommand::Mcp => Self::Mcp,
             SlashSubcommand::Prompts => Self::Prompts,
             SlashSubcommand::Resources => Self::Resources,
-            SlashSubcommand::Prompt {
-                server_name,
-                prompt_name,
-            } => Self::Prompt {
-                server_name,
-                prompt_name,
-            },
-            SlashSubcommand::Resource { server_name, uri } => Self::Resource { server_name, uri },
             SlashSubcommand::Steer { message } => Self::Steer {
                 message: join_optional_tail(message),
             },
@@ -72,25 +59,6 @@ impl From<SlashSubcommand> for SlashCommand {
                 include_closed: include_closed
                     .into_iter()
                     .any(|value| value.eq_ignore_ascii_case("all")),
-            },
-            SlashSubcommand::SpawnTask { role, prompt } => Self::SpawnTask {
-                role,
-                prompt: join_required_tail(prompt),
-            },
-            SlashSubcommand::SendTask {
-                task_or_agent_ref,
-                message,
-            } => Self::SendTask {
-                task_or_agent_ref,
-                message: join_optional_tail(message),
-            },
-            SlashSubcommand::WaitTask { task_or_agent_ref } => Self::WaitTask { task_or_agent_ref },
-            SlashSubcommand::CancelTask {
-                task_or_agent_ref,
-                reason,
-            } => Self::CancelTask {
-                task_or_agent_ref,
-                reason: join_optional_tail(reason),
             },
             SlashSubcommand::StopMonitor {
                 monitor_ref,

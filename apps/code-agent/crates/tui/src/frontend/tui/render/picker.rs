@@ -7,27 +7,34 @@ use super::shared::{
 };
 use super::shell::bottom_band_inner_area;
 use super::theme::palette;
-use crate::frontend::tui::commands::{SlashCommandHint, SlashCommandSpec};
+use crate::frontend::tui::commands::{
+    ComposerCompletionHint, SkillInvocationHint, SkillInvocationSpec, SlashCommandHint,
+    SlashCommandSpec,
+};
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-pub(super) fn render_command_hint_modal(
+pub(super) fn render_composer_hint_modal(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
-    command_hint: &SlashCommandHint,
+    composer_hint: &ComposerCompletionHint,
 ) {
-    let height = build_command_hint_text(command_hint)
+    let height = build_composer_hint_text(composer_hint)
         .lines
         .len()
         .saturating_add(3)
         .clamp(8, 16) as u16;
     let popup = centered_rect(area, 78, height.min(area.height.saturating_sub(2)).max(8));
     frame.render_widget(Clear, popup);
+    let title = match composer_hint {
+        ComposerCompletionHint::Slash(_) => " Commands ",
+        ComposerCompletionHint::Skill(_) => " Skills ",
+    };
     frame.render_widget(
         Block::default()
-            .title(" Commands ")
+            .title(title)
             .title_style(
                 Style::default()
                     .fg(palette().accent)
@@ -43,14 +50,21 @@ pub(super) fn render_command_hint_modal(
         horizontal: 2,
     });
     frame.render_widget(
-        Paragraph::new(build_command_hint_text(command_hint))
+        Paragraph::new(build_composer_hint_text(composer_hint))
             .wrap(Wrap { trim: false })
             .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
         inner,
     );
 }
 
-pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
+pub(super) fn build_composer_hint_text(composer_hint: &ComposerCompletionHint) -> Text<'static> {
+    match composer_hint {
+        ComposerCompletionHint::Slash(command_hint) => build_command_hint_text(command_hint),
+        ComposerCompletionHint::Skill(skill_hint) => build_skill_hint_text(skill_hint),
+    }
+}
+
+fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
     let mut lines = vec![Line::from(vec![
         Span::styled(
             "Commands",
@@ -211,6 +225,106 @@ pub(super) fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'
         Span::styled("Shift+Tab Previous", Style::default().fg(palette().muted)),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(enter_hint, Style::default().fg(palette().muted)),
+    ]));
+
+    Text::from(lines)
+}
+
+fn build_skill_hint_text(skill_hint: &SkillInvocationHint) -> Text<'static> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "Skills",
+            Style::default()
+                .fg(palette().header)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled(
+            format!("{} Matches", skill_hint.matches.len()),
+            Style::default()
+                .fg(palette().accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])];
+
+    let window = visible_skill_match_window(skill_hint, 4);
+    if window.start > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("… {} earlier", window.start),
+            Style::default().fg(palette().subtle),
+        )));
+    }
+
+    for spec in window.items {
+        if spec.name == skill_hint.selected.name {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "›",
+                    Style::default()
+                        .fg(palette().accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    spec.invocation(),
+                    Style::default()
+                        .fg(palette().header)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  ", Style::default().fg(palette().subtle)),
+                Span::styled(
+                    spec.description.clone(),
+                    Style::default().fg(palette().text),
+                ),
+            ]));
+            if !spec.aliases.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("  Aliases ", Style::default().fg(palette().subtle)),
+                    Span::styled(
+                        spec.aliases
+                            .iter()
+                            .map(|alias| format!("${alias}"))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        Style::default().fg(palette().muted),
+                    ),
+                ]));
+            }
+            if !spec.tags.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("  Tags ", Style::default().fg(palette().subtle)),
+                    Span::styled(spec.tags.join(" · "), Style::default().fg(palette().muted)),
+                ]));
+            }
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default().fg(palette().subtle)),
+                Span::styled(spec.invocation(), Style::default().fg(palette().muted)),
+                Span::styled("  ", Style::default().fg(palette().subtle)),
+                Span::styled(
+                    spec.description.clone(),
+                    Style::default().fg(palette().subtle),
+                ),
+            ]));
+        }
+    }
+
+    if window.end < skill_hint.matches.len() {
+        lines.push(Line::from(Span::styled(
+            format!("… {} more", skill_hint.matches.len() - window.end),
+            Style::default().fg(palette().subtle),
+        )));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("↑↓", Style::default().fg(palette().muted)),
+        Span::styled(" Move", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("Tab Use", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("Shift+Tab Previous", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("Enter Use", Style::default().fg(palette().muted)),
     ]));
 
     Text::from(lines)
@@ -532,4 +646,32 @@ fn visible_command_match_window(
         items: &command_hint.matches[start..end],
     }
 }
+
+struct VisibleSkillMatchWindow<'a> {
+    start: usize,
+    end: usize,
+    items: &'a [SkillInvocationSpec],
+}
+
+fn visible_skill_match_window(
+    skill_hint: &SkillInvocationHint,
+    max_items: usize,
+) -> VisibleSkillMatchWindow<'_> {
+    let total = skill_hint.matches.len();
+    let window = total.min(max_items.max(1));
+    let mut start = skill_hint
+        .selected_match_index
+        .saturating_add(1)
+        .saturating_sub(window);
+    let end = (start + window).min(total);
+    if end - start < window {
+        start = end.saturating_sub(window);
+    }
+    VisibleSkillMatchWindow {
+        start,
+        end,
+        items: &skill_hint.matches[start..end],
+    }
+}
+
 use crate::interaction::{PendingControlKind, PendingControlSummary};

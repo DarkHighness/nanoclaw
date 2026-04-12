@@ -64,7 +64,56 @@ pub(crate) fn inspector_action_for_slash_spec(spec: SlashCommandSpec) -> Inspect
     }
 }
 
-pub(crate) fn slash_command_hint(input: &str, selected_index: usize) -> Option<SlashCommandHint> {
+pub(crate) fn composer_completion_hint(
+    input: &str,
+    selected_index: usize,
+    skills: &[SkillSummary],
+) -> Option<ComposerCompletionHint> {
+    if let Some(hint) = slash_command_hint(input, selected_index) {
+        return Some(ComposerCompletionHint::Slash(hint));
+    }
+    skill_invocation_hint(input, selected_index, skills).map(ComposerCompletionHint::Skill)
+}
+
+pub(crate) fn cycle_composer_completion(
+    input: &str,
+    selected_index: usize,
+    backwards: bool,
+    skills: &[SkillSummary],
+) -> Option<(String, usize)> {
+    cycle_slash_command(input, selected_index, backwards)
+        .or_else(|| cycle_skill_invocation(input, selected_index, backwards, skills))
+}
+
+pub(crate) fn move_composer_completion_selection(
+    input: &str,
+    selected_index: usize,
+    backwards: bool,
+    skills: &[SkillSummary],
+) -> Option<usize> {
+    move_slash_command_selection(input, selected_index, backwards)
+        .or_else(|| move_skill_invocation_selection(input, selected_index, backwards, skills))
+}
+
+pub(crate) fn resolve_composer_enter_action(
+    input: &str,
+    selected_index: usize,
+    skills: &[SkillSummary],
+) -> Option<ComposerCompletionEnterAction> {
+    if let Some(action) = resolve_slash_enter_action(input, selected_index) {
+        return Some(match action {
+            SlashCommandEnterAction::Complete { input, index } => {
+                ComposerCompletionEnterAction::Complete { input, index }
+            }
+            SlashCommandEnterAction::Execute(command) => {
+                ComposerCompletionEnterAction::ExecuteSlash(command)
+            }
+        });
+    }
+    resolve_skill_enter_action(input, selected_index, skills)
+}
+
+fn slash_command_hint(input: &str, selected_index: usize) -> Option<SlashCommandHint> {
     let (command_token, tail) = split_slash_input(input)?;
     let matches = matching_specs(command_token);
     if let Some(selected) = selected_spec(command_token, tail, selected_index, &matches) {
@@ -85,7 +134,7 @@ pub(crate) fn slash_command_hint(input: &str, selected_index: usize) -> Option<S
     None
 }
 
-pub(crate) fn cycle_slash_command(
+fn cycle_slash_command(
     input: &str,
     selected_index: usize,
     backwards: bool,
@@ -116,7 +165,7 @@ pub(crate) fn cycle_slash_command(
     Some((format!("/{} ", matches[next].name), next))
 }
 
-pub(crate) fn move_slash_command_selection(
+fn move_slash_command_selection(
     input: &str,
     selected_index: usize,
     backwards: bool,
@@ -137,7 +186,7 @@ pub(crate) fn move_slash_command_selection(
     })
 }
 
-pub(crate) fn resolve_slash_enter_action(
+fn resolve_slash_enter_action(
     input: &str,
     selected_index: usize,
 ) -> Option<SlashCommandEnterAction> {
@@ -168,12 +217,110 @@ pub(crate) fn resolve_slash_enter_action(
     })
 }
 
+fn skill_invocation_hint(
+    input: &str,
+    selected_index: usize,
+    skills: &[SkillSummary],
+) -> Option<SkillInvocationHint> {
+    let (skill_token, tail) = split_skill_input(input)?;
+    if tail.is_some_and(|value| !value.trim().is_empty()) {
+        return None;
+    }
+    let matches = matching_skill_specs(skill_token, skills);
+    let selected = selected_skill_spec(skill_token, tail, selected_index, &matches)?;
+    Some(SkillInvocationHint {
+        exact: selected.matches_token(skill_token),
+        selected_match_index: matches
+            .iter()
+            .position(|spec| spec.name == selected.name)
+            .unwrap_or(0),
+        selected,
+        matches,
+    })
+}
+
+fn cycle_skill_invocation(
+    input: &str,
+    selected_index: usize,
+    backwards: bool,
+    skills: &[SkillSummary],
+) -> Option<(String, usize)> {
+    let (skill_token, tail) = split_skill_input(input)?;
+    if tail.is_some() {
+        return None;
+    }
+    let matches = matching_skill_specs(skill_token, skills);
+    if matches.is_empty() {
+        return None;
+    }
+    let current = selected_index.min(matches.len().saturating_sub(1));
+    let exact_at_current = matches
+        .get(current)
+        .is_some_and(|spec| spec.matches_token(skill_token));
+    let next = if backwards {
+        if exact_at_current {
+            current.checked_sub(1).unwrap_or(matches.len() - 1)
+        } else {
+            matches.len() - 1
+        }
+    } else if exact_at_current {
+        (current + 1) % matches.len()
+    } else {
+        current
+    };
+    Some((format!("${} ", matches[next].name), next))
+}
+
+fn move_skill_invocation_selection(
+    input: &str,
+    selected_index: usize,
+    backwards: bool,
+    skills: &[SkillSummary],
+) -> Option<usize> {
+    let (skill_token, tail) = split_skill_input(input)?;
+    if tail.is_some() {
+        return None;
+    }
+    let matches = matching_skill_specs(skill_token, skills);
+    if matches.is_empty() {
+        return None;
+    }
+    let current = selected_index.min(matches.len().saturating_sub(1));
+    Some(if backwards {
+        current.checked_sub(1).unwrap_or(matches.len() - 1)
+    } else {
+        (current + 1) % matches.len()
+    })
+}
+
+fn resolve_skill_enter_action(
+    input: &str,
+    selected_index: usize,
+    skills: &[SkillSummary],
+) -> Option<ComposerCompletionEnterAction> {
+    let hint = skill_invocation_hint(input, selected_index, skills)?;
+    Some(ComposerCompletionEnterAction::Complete {
+        input: format!("${} ", hint.selected.name),
+        index: hint.selected_match_index,
+    })
+}
+
 fn split_slash_input(input: &str) -> Option<(&str, Option<&str>)> {
     let body = input.strip_prefix('/')?;
     Some(
         body.split_once(' ')
             .map_or((body, None), |(command_token, tail)| {
                 (command_token, Some(tail))
+            }),
+    )
+}
+
+fn split_skill_input(input: &str) -> Option<(&str, Option<&str>)> {
+    let body = input.strip_prefix('$')?;
+    Some(
+        body.split_once(' ')
+            .map_or((body, None), |(skill_token, tail)| {
+                (skill_token, Some(tail))
             }),
     )
 }
@@ -202,6 +349,19 @@ fn palette_matching_specs(prefix: &str) -> Vec<SlashCommandSpec> {
         .collect()
 }
 
+fn matching_skill_specs(prefix: &str, skills: &[SkillSummary]) -> Vec<SkillInvocationSpec> {
+    let prefix = prefix.trim().to_ascii_lowercase();
+    let mut matches = skills
+        .iter()
+        .map(SkillInvocationSpec::from_summary)
+        .filter(|spec| spec.matches_prefix(&prefix))
+        .collect::<Vec<_>>();
+    if let Some(exact_index) = matches.iter().position(|spec| spec.matches_token(&prefix)) {
+        matches.swap(0, exact_index);
+    }
+    matches
+}
+
 fn selected_spec(
     command_token: &str,
     tail: Option<&str>,
@@ -217,6 +377,23 @@ fn selected_spec(
     matches
         .get(selected_index.min(matches.len().saturating_sub(1)))
         .copied()
+}
+
+fn selected_skill_spec(
+    skill_token: &str,
+    tail: Option<&str>,
+    selected_index: usize,
+    matches: &[SkillInvocationSpec],
+) -> Option<SkillInvocationSpec> {
+    if tail.is_some() {
+        return matches
+            .iter()
+            .find(|spec| spec.matches_token(skill_token))
+            .cloned();
+    }
+    matches
+        .get(selected_index.min(matches.len().saturating_sub(1)))
+        .cloned()
 }
 
 fn build_argument_hint(
@@ -239,7 +416,7 @@ fn build_argument_hint(
     for (index, placeholder) in placeholders.iter().take(provided_count).enumerate() {
         // The last positional is treated as a greedy tail because several host
         // commands intentionally accept spaces after the final placeholder
-        // (`spawn_task <prompt>`, export paths, free-form notes).
+        // (export paths, free-form notes, arbitrary queries).
         let value = if index + 1 == placeholders.len() {
             raw_values[index..].join(" ")
         } else {

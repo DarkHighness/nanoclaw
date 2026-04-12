@@ -32,7 +32,10 @@ impl CodeAgentTui {
         message: Message,
         submitted_prompt: Option<SubmittedPromptSnapshot>,
     ) {
-        let preview = state::preview_text(&message_operator_text(&message), 40);
+        let preview = submitted_prompt
+            .as_ref()
+            .map(|prompt| state::preview_text(&prompt.text, 40))
+            .unwrap_or_else(|| state::preview_text(&message_operator_text(&message), 40));
         match self
             .run_ui::<String>(UIAsyncCommand::QueuePromptCommand {
                 message,

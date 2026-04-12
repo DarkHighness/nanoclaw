@@ -8,12 +8,12 @@ use crate::tool_render::{
 };
 use crate::ui::{
     LiveMonitorControlAction, LiveMonitorControlOutcome, LiveMonitorSummary, LiveTaskControlAction,
-    LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome,
-    LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedSession, LoadedSubagentSession,
-    LoadedTask, LoadedTaskMessage, McpPromptSummary, McpResourceSummary, McpServerSummary,
-    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-    PersistedTaskSummary, SessionExportArtifact, SessionExportKind, SessionOperationAction,
-    SessionOperationOutcome, StartupDiagnosticsSnapshot,
+    LiveTaskControlOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession,
+    LoadedSession, LoadedSubagentSession, LoadedTask, LoadedTaskMessage, McpPromptSummary,
+    McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, PersistedTaskSummary,
+    SessionExportArtifact, SessionExportKind, SessionOperationAction, SessionOperationOutcome,
+    StartupDiagnosticsSnapshot,
 };
 use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
@@ -31,21 +31,18 @@ pub(crate) use events::{
     format_visible_transcript_preview_lines,
 };
 pub(crate) use inspectors::{
-    format_agent_session_inspector, format_code_diagnostics_inspector,
-    format_mcp_prompt_summary_line, format_mcp_resource_summary_line,
-    format_mcp_server_summary_line, format_session_inspector, format_startup_diagnostics,
-    format_task_inspector,
+    format_agent_session_inspector, format_mcp_prompt_summary_line,
+    format_mcp_resource_summary_line, format_mcp_server_summary_line, format_session_inspector,
+    format_startup_diagnostics, format_task_inspector,
 };
 pub(crate) use outcomes::{
     format_live_monitor_control_outcome, format_live_task_control_outcome,
-    format_live_task_message_outcome, format_live_task_wait_outcome, format_session_export_result,
-    format_session_operation_outcome,
+    format_live_task_wait_outcome, format_session_export_result, format_session_operation_outcome,
 };
 pub(crate) use summaries::{
     format_agent_session_summary_collection, format_live_monitor_summary_line,
-    format_live_task_spawn_outcome, format_live_task_summary_line,
-    format_session_search_collection, format_session_summary_collection,
-    format_task_summary_collection,
+    format_live_task_summary_collection, format_session_search_collection,
+    format_session_summary_collection, format_task_summary_collection,
 };
 
 #[derive(Clone, Copy)]

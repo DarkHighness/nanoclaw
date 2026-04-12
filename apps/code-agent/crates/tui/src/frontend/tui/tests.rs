@@ -34,6 +34,7 @@ fn startup_inspector_surfaces_backend_boot_snapshot() {
         workspace_root: PathBuf::from("/workspace"),
         git: Default::default(),
         tool_names: vec!["read".to_string(), "write".to_string()],
+        skills: Vec::new(),
         store_label: "file /workspace/.nanoclaw/store".to_string(),
         store_warning: Some("falling back soon".to_string()),
         stored_session_count: 12,
@@ -117,7 +118,7 @@ fn command_palette_groups_operator_commands() {
     assert!(
         lines
             .iter()
-            .any(|line| { line.starts_with("/spawn_task <role> <prompt>  launch child agent") })
+            .any(|line| { line.starts_with("/live_tasks  list live child agents") })
     );
 }
 

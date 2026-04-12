@@ -104,26 +104,6 @@ pub(crate) fn format_live_task_control_outcome(
     })]
 }
 
-pub(crate) fn format_live_task_message_outcome(
-    outcome: &LiveTaskMessageOutcome,
-) -> Vec<InspectorEntry> {
-    let headline = match outcome.action {
-        LiveTaskMessageAction::Sent => format!("Sent steer message to task {}", outcome.task_id),
-        LiveTaskMessageAction::AlreadyTerminal => {
-            format!("Task {} was already terminal", outcome.task_id)
-        }
-    };
-    vec![InspectorEntry::transcript(info_summary_entry(
-        headline,
-        [
-            format!("requested {}", outcome.requested_ref),
-            format!("agent {}", outcome.agent_id),
-            format!("status {}", outcome.status),
-            format!("message {}", preview_text(&outcome.message, 96)),
-        ],
-    ))]
-}
-
 pub(crate) fn format_live_task_wait_outcome(outcome: &LiveTaskWaitOutcome) -> Vec<InspectorEntry> {
     let (tone, headline) = match outcome.status {
         agent::types::TaskStatus::Completed => (

@@ -66,9 +66,9 @@ fn build_welcome_title_lines(compact: bool) -> Vec<Line<'static>> {
 
 fn build_prompt_line(compact: bool) -> Line<'static> {
     let detail = if compact {
-        "Ask for a change or run /help."
+        "Ask for a change, start with $skill_name, or run /help."
     } else {
-        "Ask for a change, inspect the workspace, review history, or run /help."
+        "Ask for a change, start with $skill_name for an explicit skill, review history, or run /help."
     };
     Line::from(vec![Span::styled(
         detail,
@@ -78,9 +78,9 @@ fn build_prompt_line(compact: bool) -> Line<'static> {
 
 fn build_shortcut_line(compact: bool) -> Line<'static> {
     let suffix = if compact {
-        "Enter run · Tab queue · ↑ history · ^T effort"
+        "Enter run · Tab queue · ↑ history · / commands · $ skills"
     } else {
-        "Enter run · Tab queue · ↑ history · ^T effort · ^O editor"
+        "Enter run · Tab queue · ↑ history · / commands · $ skills · ^T effort · ^O editor"
     };
     Line::from(vec![Span::styled(
         suffix,
@@ -118,6 +118,13 @@ fn build_runtime_summary_line(state: &TuiState) -> Line<'static> {
         Span::styled(
             diagnostics.mcp_servers.len().to_string(),
             Style::default().fg(palette().assistant),
+        ),
+        Span::styled("  ·  ", Style::default().fg(palette().subtle)),
+        Span::styled("skills", Style::default().fg(palette().subtle)),
+        Span::styled(" ", Style::default().fg(palette().subtle)),
+        Span::styled(
+            state.session.skills.len().to_string(),
+            Style::default().fg(palette().accent),
         ),
         Span::styled("  ·  ", Style::default().fg(palette().subtle)),
         Span::styled("plugins", Style::default().fg(palette().subtle)),

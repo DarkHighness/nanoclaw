@@ -1,10 +1,28 @@
 use super::{
-    SlashCommand, SlashCommandArgumentSpec, SlashCommandEnterAction, command_palette_lines,
-    command_palette_lines_for, cycle_slash_command, inspector_action_for_slash_name,
-    move_slash_command_selection, parse_slash_command, resolve_slash_enter_action,
-    slash_command_hint,
+    ComposerCompletionEnterAction, ComposerCompletionHint, SlashCommand, SlashCommandArgumentSpec,
+    command_palette_lines, command_palette_lines_for, composer_completion_hint,
+    cycle_composer_completion, inspector_action_for_slash_name, move_composer_completion_selection,
+    parse_slash_command, resolve_composer_enter_action,
 };
 use crate::frontend::tui::state::{InspectorAction, InspectorEntry};
+use crate::interaction::SkillSummary;
+
+fn sample_skills() -> Vec<SkillSummary> {
+    vec![
+        SkillSummary {
+            name: "openai-docs".to_string(),
+            description: "Use official OpenAI docs".to_string(),
+            aliases: vec!["docs".to_string()],
+            tags: vec!["api".to_string()],
+        },
+        SkillSummary {
+            name: "frontend-design".to_string(),
+            description: "Build polished interfaces".to_string(),
+            aliases: vec!["ui".to_string()],
+            tags: vec!["design".to_string()],
+        },
+    ]
+}
 
 #[test]
 fn parses_session_query_with_spaces() {
@@ -131,23 +149,6 @@ fn parses_stop_monitor_with_optional_reason_tail() {
 }
 
 #[test]
-fn parses_code_diagnostics_with_optional_path_tail() {
-    assert!(matches!(
-        parse_slash_command("/code_diagnostics"),
-        SlashCommand::CodeDiagnostics { path: None }
-    ));
-    match parse_slash_command("/code_diagnostics crates/tools/src/code_intel/tools.rs") {
-        SlashCommand::CodeDiagnostics { path } => {
-            assert_eq!(
-                path.as_deref(),
-                Some("crates/tools/src/code_intel/tools.rs")
-            );
-        }
-        _ => panic!("unexpected command"),
-    }
-}
-
-#[test]
 fn parses_permissions_mode_switch() {
     match parse_slash_command("/permissions danger-full-access") {
         SlashCommand::Permissions { mode } => {
@@ -161,85 +162,11 @@ fn parses_permissions_mode_switch() {
 }
 
 #[test]
-fn parses_spawn_task_with_prompt_tail() {
-    match parse_slash_command("/spawn_task reviewer inspect failing tests") {
-        SlashCommand::SpawnTask { role, prompt } => {
-            assert_eq!(role, "reviewer");
-            assert_eq!(prompt, "inspect failing tests");
-        }
-        _ => panic!("unexpected command"),
-    }
-}
-
-#[test]
-fn spawn_task_requires_prompt() {
-    match parse_slash_command("/spawn_task reviewer") {
-        SlashCommand::InvalidUsage(message) => {
-            assert!(message.contains("Usage:"));
-            assert!(message.contains("spawn_task <ROLE> <PROMPT>"));
-        }
-        _ => panic!("unexpected command"),
-    }
-}
-
-#[test]
-fn parses_send_task_with_message_tail() {
-    match parse_slash_command("/send_task review-task focus on tests") {
-        SlashCommand::SendTask {
-            task_or_agent_ref,
-            message,
-        } => {
-            assert_eq!(task_or_agent_ref, "review-task");
-            assert_eq!(message, Some("focus on tests".to_string()));
-        }
-        _ => panic!("unexpected command"),
-    }
-}
-
-#[test]
-fn parses_wait_task_lookup() {
-    match parse_slash_command("/wait_task review-task") {
-        SlashCommand::WaitTask { task_or_agent_ref } => {
-            assert_eq!(task_or_agent_ref, "review-task");
-        }
-        _ => panic!("unexpected command"),
-    }
-}
-
-#[test]
-fn parses_cancel_task_with_optional_reason_tail() {
-    match parse_slash_command("/cancel_task review-task fix it now") {
-        SlashCommand::CancelTask {
-            task_or_agent_ref,
-            reason,
-        } => {
-            assert_eq!(task_or_agent_ref, "review-task");
-            assert_eq!(reason, Some("fix it now".to_string()));
-        }
-        _ => panic!("unexpected command"),
-    }
-}
-
-#[test]
 fn missing_session_ref_returns_usage_error() {
     match parse_slash_command("/session") {
         SlashCommand::InvalidUsage(message) => {
             assert!(message.contains("Usage:"));
             assert!(message.contains("session <SESSION_REF>"));
-        }
-        _ => panic!("unexpected command"),
-    }
-}
-
-#[test]
-fn parses_mcp_prompt_lookup() {
-    match parse_slash_command("/prompt fs code_review") {
-        SlashCommand::Prompt {
-            server_name,
-            prompt_name,
-        } => {
-            assert_eq!(server_name, "fs");
-            assert_eq!(prompt_name, "code_review");
         }
         _ => panic!("unexpected command"),
     }
@@ -426,7 +353,11 @@ fn parses_help_query_tail() {
 
 #[test]
 fn slash_command_hint_matches_prefix() {
-    let hint = slash_command_hint("/sess", 0).expect("hint");
+    let ComposerCompletionHint::Slash(hint) =
+        composer_completion_hint("/sess", 0, &sample_skills()).expect("hint")
+    else {
+        panic!("expected slash hint");
+    };
 
     assert_eq!(hint.selected.name, "sessions");
     assert_eq!(hint.selected_match_index, 0);
@@ -437,7 +368,11 @@ fn slash_command_hint_matches_prefix() {
 
 #[test]
 fn slash_command_hint_matches_exit_alias_prefix() {
-    let hint = slash_command_hint("/q", 0).expect("hint");
+    let ComposerCompletionHint::Slash(hint) =
+        composer_completion_hint("/q", 0, &sample_skills()).expect("hint")
+    else {
+        panic!("expected slash hint");
+    };
 
     assert_eq!(hint.selected.name, "exit");
     assert!(hint.exact);
@@ -446,7 +381,8 @@ fn slash_command_hint_matches_exit_alias_prefix() {
 
 #[test]
 fn cycle_slash_command_completes_partial_input() {
-    let (input, index) = cycle_slash_command("/sess", 0, false).expect("completion");
+    let (input, index) =
+        cycle_composer_completion("/sess", 0, false, &sample_skills()).expect("completion");
 
     assert_eq!(input, "/sessions ");
     assert_eq!(index, 0);
@@ -454,7 +390,8 @@ fn cycle_slash_command_completes_partial_input() {
 
 #[test]
 fn cycle_slash_command_cycles_backward() {
-    let (input, index) = cycle_slash_command("/sess", 0, true).expect("completion");
+    let (input, index) =
+        cycle_composer_completion("/sess", 0, true, &sample_skills()).expect("completion");
 
     assert_eq!(input, "/session ");
     assert_eq!(index, 1);
@@ -462,19 +399,24 @@ fn cycle_slash_command_cycles_backward() {
 
 #[test]
 fn cycle_slash_command_stops_after_args_begin() {
-    assert!(cycle_slash_command("/session abc123", 0, false).is_none());
+    assert!(cycle_composer_completion("/session abc123", 0, false, &sample_skills()).is_none());
 }
 
 #[test]
 fn move_slash_command_selection_keeps_partial_input_in_picker() {
-    let next = move_slash_command_selection("/sess", 0, false).expect("selection");
+    let next =
+        move_composer_completion_selection("/sess", 0, false, &sample_skills()).expect("selection");
 
     assert_eq!(next, 1);
 }
 
 #[test]
 fn slash_command_hint_surfaces_next_required_argument() {
-    let hint = slash_command_hint("/session ", 0).expect("hint");
+    let ComposerCompletionHint::Slash(hint) =
+        composer_completion_hint("/session ", 0, &sample_skills()).expect("hint")
+    else {
+        panic!("expected slash hint");
+    };
 
     let arguments = hint.arguments.expect("arguments");
     assert_eq!(
@@ -490,16 +432,20 @@ fn slash_command_hint_surfaces_next_required_argument() {
 
 #[test]
 fn slash_command_hint_tracks_argument_progress() {
-    let hint = slash_command_hint("/spawn_task reviewer", 0).expect("hint");
+    let ComposerCompletionHint::Slash(hint) =
+        composer_completion_hint("/export_session session_123", 0, &sample_skills()).expect("hint")
+    else {
+        panic!("expected slash hint");
+    };
 
     let arguments = hint.arguments.expect("arguments");
     assert_eq!(arguments.provided.len(), 1);
-    assert_eq!(arguments.provided[0].placeholder, "<role>");
-    assert_eq!(arguments.provided[0].value, "reviewer");
+    assert_eq!(arguments.provided[0].placeholder, "<session-ref>");
+    assert_eq!(arguments.provided[0].value, "session_123");
     assert_eq!(
         arguments.next,
         Some(SlashCommandArgumentSpec {
-            placeholder: "<prompt>",
+            placeholder: "<path>",
             required: true,
         })
     );
@@ -507,21 +453,25 @@ fn slash_command_hint_tracks_argument_progress() {
 
 #[test]
 fn slash_command_hint_browses_all_commands_from_empty_slash() {
-    let hint = slash_command_hint("/", 0).expect("hint");
+    let ComposerCompletionHint::Slash(hint) =
+        composer_completion_hint("/", 0, &sample_skills()).expect("hint")
+    else {
+        panic!("expected slash hint");
+    };
 
     assert_eq!(hint.selected.name, "help");
     assert_eq!(hint.selected_match_index, 0);
     assert!(hint.matches.len() > 10);
-    assert!(hint.matches.iter().any(|spec| spec.name == "spawn_task"));
+    assert!(hint.matches.iter().any(|spec| spec.name == "live_tasks"));
 }
 
 #[test]
 fn slash_enter_action_completes_ambiguous_partial_command() {
-    let action = resolve_slash_enter_action("/sess", 0).expect("action");
+    let action = resolve_composer_enter_action("/sess", 0, &sample_skills()).expect("action");
 
     assert_eq!(
         action,
-        SlashCommandEnterAction::Complete {
+        ComposerCompletionEnterAction::Complete {
             input: "/sessions ".to_string(),
             index: 0,
         }
@@ -530,17 +480,21 @@ fn slash_enter_action_completes_ambiguous_partial_command() {
 
 #[test]
 fn slash_enter_action_executes_unique_no_arg_command() {
-    let action = resolve_slash_enter_action("/he", 0).expect("action");
+    let action = resolve_composer_enter_action("/he", 0, &sample_skills()).expect("action");
 
     assert_eq!(
         action,
-        SlashCommandEnterAction::Execute("/help".to_string())
+        ComposerCompletionEnterAction::ExecuteSlash("/help".to_string())
     );
 }
 
 #[test]
 fn exact_required_command_is_prioritized_in_hint() {
-    let hint = slash_command_hint("/session", 0).expect("hint");
+    let ComposerCompletionHint::Slash(hint) =
+        composer_completion_hint("/session", 0, &sample_skills()).expect("hint")
+    else {
+        panic!("expected slash hint");
+    };
 
     assert_eq!(hint.selected.name, "session");
     assert!(hint.exact);
@@ -548,13 +502,56 @@ fn exact_required_command_is_prioritized_in_hint() {
 
 #[test]
 fn slash_enter_action_accepts_required_argument_command_before_running() {
-    let action = resolve_slash_enter_action("/session", 0).expect("action");
+    let action = resolve_composer_enter_action("/session", 0, &sample_skills()).expect("action");
 
     assert_eq!(
         action,
-        SlashCommandEnterAction::Complete {
+        ComposerCompletionEnterAction::Complete {
             input: "/session ".to_string(),
             index: 0,
         }
+    );
+}
+
+#[test]
+fn skill_hint_matches_alias_prefix_and_uses_canonical_name() {
+    let ComposerCompletionHint::Skill(hint) =
+        composer_completion_hint("$docs", 0, &sample_skills()).expect("hint")
+    else {
+        panic!("expected skill hint");
+    };
+
+    assert_eq!(hint.selected.name, "openai-docs");
+    assert!(hint.exact);
+    assert_eq!(hint.selected_match_index, 0);
+}
+
+#[test]
+fn skill_completion_inserts_canonical_skill_invocation() {
+    let (input, index) =
+        cycle_composer_completion("$f", 0, false, &sample_skills()).expect("completion");
+
+    assert_eq!(input, "$frontend-design ");
+    assert_eq!(index, 0);
+}
+
+#[test]
+fn skill_enter_action_completes_before_prompt_tail() {
+    let action = resolve_composer_enter_action("$open", 0, &sample_skills()).expect("action");
+
+    assert_eq!(
+        action,
+        ComposerCompletionEnterAction::Complete {
+            input: "$openai-docs ".to_string(),
+            index: 0,
+        }
+    );
+}
+
+#[test]
+fn skill_enter_action_yields_to_prompt_submission_after_tail() {
+    assert!(
+        resolve_composer_enter_action("$openai-docs summarize the models", 0, &sample_skills())
+            .is_none()
     );
 }

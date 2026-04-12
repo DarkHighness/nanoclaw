@@ -313,10 +313,8 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/agent_sessions [session-ref]`
 - `/agent_session <agent-session-ref>`
 - `/live_tasks`
-- `/spawn_task <role> <prompt>`
-- `/send_task <task-or-agent-ref> <message>`
-- `/wait_task <task-or-agent-ref>`
-- `/cancel_task <task-or-agent-ref> [reason]`
+- `/monitors [all]`
+- `/stop_monitor <monitor-ref> [reason]`
 - `/tasks [session-ref]`
 - `/task <task-id>`
 - `/sessions [query]`
@@ -324,11 +322,10 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/resume <agent-session-ref>`
 - `/export_session <session-ref> <path>`
 - `/export_transcript <session-ref> <path>`
-- `/tools`
-- `/skills`
 - `/diagnostics`
 - `/mcp`
 - `/prompts`
+- `/resources`
 
 ## TUI shortcuts
 
@@ -388,16 +385,13 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   when pending image parts are present, and pasting a single local image path
   auto-attaches it instead of inserting raw text when the active model accepts
   image input.
-- `/prompt <server> <name>` and `/resource <server> <uri>` now restore richer
-  composer drafts too, so MCP-loaded images, files, and inline paste
+- MCP prompt/resource picks now restore richer composer drafts too, so loaded
+  images, files, and inline paste
   placeholders come back as first-class draft attachments instead of being
   flattened into plain text only.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
 - In the pending-control picker: `Enter` edits the selected item, `Delete`
   withdraws it, and `Esc` closes the picker.
-- `/resources`
-- `/prompt <server> <name>`
-- `/resource <server> <uri>`
 - `/image <path-or-url>`
 - `/file <path-or-url>`
 - `/detach [index]`
@@ -413,22 +407,18 @@ conversation history and `agent session` terminology for runtime-resume targets.
 `/session <session-ref>` opens persisted conversation history and exports
 artifacts. `/agent_session <agent-session-ref>` inspects a specific runtime
 window, including its transcript slice, token budget, and spawned subagent
-summaries. `/spawn_task <role> <prompt>` launches a new live child task from
-the active top-level session, `/live_tasks` lists currently attached child
-agents for that runtime, `/send_task <task-or-agent-ref> <message>` sends a
-follow-up user message to a live child, `/wait_task <task-or-agent-ref>` waits
-for one child in the background, and `/cancel_task <task-or-agent-ref> [reason]`
-can stop one without leaving the current session. `/tasks [session-ref]` lists
-persisted child tasks, and `/task <task-id>` opens their prompt/result/artifact
-view plus the child session transcript. `/resume <agent-session-ref>` resolves
-an
-`AgentSessionId` instead of a top-level `SessionId`. Historical agent sessions
-can now be reattached into the live runtime, and the resumed runtime receives a
-fresh active `AgentSessionId` bound to the original top-level `SessionId`.
-Older compacted histories that predate resume checkpoints still remain
-history-only.
+summaries. `/live_tasks` lists currently attached child agents for the active
+runtime and exposes typed picker actions: `Enter` waits on the selected child,
+and `c` cancels it without leaving the current session. `/tasks [session-ref]`
+lists persisted child tasks, and `/task <task-id>` opens their
+prompt/result/artifact view plus the child session transcript. `/resume
+<agent-session-ref>` resolves an `AgentSessionId` instead of a top-level
+`SessionId`. Historical agent sessions can now be reattached into the live
+runtime, and the resumed runtime receives a fresh active `AgentSessionId`
+bound to the original top-level `SessionId`. Older compacted histories that
+predate resume checkpoints still remain history-only.
 
-When a background `/wait_task` finishes, the TUI still records a transcript-side
+When a background live-task wait finishes, the TUI still records a transcript-side
 completion notice, raises a short-lived toast, and surfaces an operator hint.
 The host now also promotes that completion into runtime-owned control so the
 model can react without waiting for a manual follow-up: if the main turn is
@@ -475,8 +465,8 @@ so the durable task log can reconstruct operator-created child work later.
 events while the selected child agent finishes.
 
 The startup inspector is now backed by a structured backend snapshot, and the
-MCP-focused commands expose connected server catalogs plus prompt/resource
-loading directly from `code-agent` itself.
+MCP-focused commands expose connected server catalogs while prompt/resource
+loading runs from typed picker actions instead of direct slash-command mirrors.
 
 The TUI now follows a more minimal shell: a single main pane for transcript and
 command views, a bottom context footer, and a compact prompt line. When LSP or

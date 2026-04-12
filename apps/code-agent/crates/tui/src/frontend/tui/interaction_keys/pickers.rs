@@ -66,19 +66,23 @@ impl CodeAgentTui {
                 };
                 self.apply_inspector_action(action, &primary).await
             }
-            KeyCode::Char('r') | KeyCode::Char('R') => {
+            KeyCode::Char(pressed) => {
                 let Some(InspectorEntry::CollectionItem {
                     alternate_action: Some(alternate_action),
                     primary,
                     ..
                 }) = snapshot.selected_collection_entry()
                 else {
-                    self.ui_state.mutate(|state| {
-                        state.status = "Selected item does not support resume".to_string();
-                        state.push_activity("collection resume unavailable");
-                    });
                     return Ok(Some(TerminalLoopControl::Continue));
                 };
+                let expected = alternate_action
+                    .key_hint
+                    .chars()
+                    .next()
+                    .map(|value| value.to_ascii_lowercase());
+                if expected != Some(pressed.to_ascii_lowercase()) {
+                    return Ok(Some(TerminalLoopControl::Continue));
+                }
                 self.apply_inspector_action(alternate_action.action, &primary)
                     .await
             }
@@ -415,6 +419,34 @@ impl CodeAgentTui {
                     state.status = format!("Inserted command for {preview}");
                     state.push_activity(format!("inserted command from {preview}"));
                 });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            InspectorAction::LoadMcpPrompt {
+                server_name,
+                prompt_name,
+            } => {
+                self.load_mcp_prompt_into_input(server_name, prompt_name)
+                    .await?;
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            InspectorAction::LoadMcpResource { server_name, uri } => {
+                self.load_mcp_resource_into_input(server_name, uri).await?;
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            InspectorAction::WaitLiveTask { task_or_agent_ref } => {
+                if self.operator_task.is_some() {
+                    self.ui_state.mutate(|state| {
+                        state.status =
+                            "Wait for the current live-task operator action to finish".to_string();
+                        state.push_activity("live task wait blocked by existing operator task");
+                    });
+                    return Ok(Some(TerminalLoopControl::Continue));
+                }
+                self.start_wait_task(task_or_agent_ref);
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            InspectorAction::CancelLiveTask { task_or_agent_ref } => {
+                self.cancel_live_task(task_or_agent_ref, None).await?;
                 Ok(Some(TerminalLoopControl::Continue))
             }
         }

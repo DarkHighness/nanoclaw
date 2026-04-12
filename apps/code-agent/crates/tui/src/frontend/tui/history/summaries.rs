@@ -62,21 +62,25 @@ pub(crate) fn format_task_summary_collection(summary: &PersistedTaskSummary) -> 
     )
 }
 
-pub(crate) fn format_live_task_summary_line(summary: &LiveTaskSummary) -> TranscriptEntry {
-    info_summary_entry(
+pub(crate) fn format_live_task_summary_collection(summary: &LiveTaskSummary) -> InspectorEntry {
+    InspectorEntry::actionable_collection_with_alt(
         format!("{}  {}", summary.task_id, summary.status),
-        [
-            format!(
-                "role {} · agent {}",
-                summary.role,
-                preview_id(&summary.agent_id)
-            ),
-            format!(
-                "session {} · agent session {}",
-                preview_id(&summary.session_ref),
-                preview_id(&summary.agent_session_ref)
-            ),
-        ],
+        Some(format!(
+            "role {} · agent {} · session {}",
+            summary.role,
+            preview_id(&summary.agent_id),
+            preview_id(&summary.session_ref)
+        )),
+        InspectorAction::WaitLiveTask {
+            task_or_agent_ref: summary.task_id.to_string(),
+        },
+        InspectorKeyAction {
+            key_hint: "c".to_string(),
+            label: "cancel".to_string(),
+            action: InspectorAction::CancelLiveTask {
+                task_or_agent_ref: summary.task_id.to_string(),
+            },
+        },
     )
 }
 
@@ -88,22 +92,6 @@ pub(crate) fn format_live_monitor_summary_line(summary: &LiveMonitorSummary) -> 
             format!("command {}", preview_text(&summary.command, 96)),
         ],
     )
-}
-
-pub(crate) fn format_live_task_spawn_outcome(
-    outcome: &LiveTaskSpawnOutcome,
-) -> Vec<InspectorEntry> {
-    vec![InspectorEntry::transcript(info_summary_entry(
-        format!("Spawned task {}", outcome.task.task_id),
-        [
-            format!("role {}", outcome.task.role),
-            format!("status {}", outcome.task.status),
-            format!("agent {}", outcome.task.agent_id),
-            format!("session {}", outcome.task.session_ref),
-            format!("agent session {}", outcome.task.agent_session_ref),
-            format!("prompt {}", preview_text(&outcome.prompt, 96)),
-        ],
-    ))]
 }
 
 #[cfg(test)]

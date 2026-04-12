@@ -103,5 +103,7 @@ pub(crate) fn skill_summary_from_skill(skill: &Skill) -> SkillSummary {
     SkillSummary {
         name: skill.name.clone(),
         description: skill.description.clone(),
+        aliases: skill.aliases.clone(),
+        tags: skill.tags.clone(),
     }
 }

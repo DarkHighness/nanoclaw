@@ -35,6 +35,8 @@ pub fn build_system_preamble(
             .to_string(),
         "Use the skill tool to inspect loaded workspace skills before reading their companion files directly."
             .to_string(),
+        "Treat leading `$skill_name` directives in the user prompt as explicit skill requests. Resolve each skill name or alias with the skill tool, then apply those skill instructions before continuing with the rest of the prompt."
+            .to_string(),
     ];
     if tool_visibility.has_feature(HOST_FEATURE_REQUEST_USER_INPUT) {
         preamble.push(

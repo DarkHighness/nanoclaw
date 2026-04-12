@@ -6,7 +6,7 @@ use super::history_rollback_overlay::{
     build_history_rollback_list_text, build_history_rollback_preview_text,
 };
 use super::main_pane_viewport_height;
-use super::picker::build_command_hint_text;
+use super::picker::build_composer_hint_text;
 use super::statusline::{format_footer_context, format_toast_line, toast_height};
 use super::theme::palette;
 use super::tool_review_overlay::{build_tool_review_list_text, build_tool_review_preview_text};
@@ -24,8 +24,8 @@ use super::welcome::build_welcome_lines;
 use crate::frontend::tui::UserInputView;
 use crate::frontend::tui::approval::ApprovalPrompt;
 use crate::frontend::tui::commands::{
-    SlashCommandArgumentHint, SlashCommandArgumentSpec, SlashCommandArgumentValue,
-    SlashCommandHint, SlashCommandSpec,
+    ComposerCompletionHint, SkillInvocationHint, SkillInvocationSpec, SlashCommandArgumentHint,
+    SlashCommandArgumentSpec, SlashCommandArgumentValue, SlashCommandHint, SlashCommandSpec,
 };
 use crate::frontend::tui::state::{
     ActiveToolCell, ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
@@ -499,14 +499,12 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     assert!(lines.iter().any(|line| {
         line_text_for(line).contains("workspace nanoclaw  ·  model gpt-5.4 · high")
     }));
-    assert!(
-        lines
-            .iter()
-            .any(|line| { line_text_for(line).contains("tools 0  ·  mcp 0  ·  plugins 0/0") })
-    );
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("tools 0  ·  mcp 0  ·  skills 0  ·  plugins 0/0")
+    }));
     assert!(lines.iter().any(|line| {
         line_text_for(line)
-            .contains("Ask for a change, inspect the workspace, review history, or run /help.")
+            .contains("Ask for a change, start with $skill_name for an explicit skill, review history, or run /help.")
     }));
 }
 
@@ -2006,7 +2004,7 @@ fn permission_request_modal_does_not_shrink_main_pane_viewport() {
 
 #[test]
 fn command_hint_text_surfaces_selected_usage_and_matches() {
-    let rendered = build_command_hint_text(&SlashCommandHint {
+    let rendered = build_composer_hint_text(&ComposerCompletionHint::Slash(SlashCommandHint {
         selected: SlashCommandSpec {
             section: "History",
             name: "sessions",
@@ -2030,7 +2028,7 @@ fn command_hint_text_surfaces_selected_usage_and_matches() {
         selected_match_index: 0,
         arguments: None,
         exact: false,
-    });
+    }));
 
     assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Commands");
     assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "›");
@@ -2052,40 +2050,40 @@ fn command_hint_text_surfaces_selected_usage_and_matches() {
 
 #[test]
 fn command_hint_text_surfaces_argument_progress() {
-    let rendered = build_command_hint_text(&SlashCommandHint {
+    let rendered = build_composer_hint_text(&ComposerCompletionHint::Slash(SlashCommandHint {
         selected: SlashCommandSpec {
-            section: "Agents",
-            name: "spawn_task",
-            usage: "spawn_task <role> <prompt>",
-            summary: "launch child agent",
+            section: "Export",
+            name: "export_session",
+            usage: "export_session <session-ref> <path>",
+            summary: "write session export",
         },
         matches: vec![SlashCommandSpec {
-            section: "Agents",
-            name: "spawn_task",
-            usage: "spawn_task <role> <prompt>",
-            summary: "launch child agent",
+            section: "Export",
+            name: "export_session",
+            usage: "export_session <session-ref> <path>",
+            summary: "write session export",
         }],
         selected_match_index: 0,
         arguments: Some(SlashCommandArgumentHint {
             provided: vec![SlashCommandArgumentValue {
-                placeholder: "<role>",
-                value: "reviewer".to_string(),
+                placeholder: "<session-ref>",
+                value: "session_123".to_string(),
             }],
             next: Some(SlashCommandArgumentSpec {
-                placeholder: "<prompt>",
+                placeholder: "<path>",
                 required: true,
             }),
         }),
         exact: true,
-    });
+    }));
 
-    assert_eq!(rendered.lines[2].spans[1].content.as_ref(), "<role>");
-    assert_eq!(rendered.lines[2].spans[3].content.as_ref(), "reviewer");
+    assert_eq!(rendered.lines[2].spans[1].content.as_ref(), "<session-ref>");
+    assert_eq!(rendered.lines[2].spans[3].content.as_ref(), "session_123");
     assert!(
         rendered.lines[2]
             .spans
             .iter()
-            .any(|span| span.content.as_ref().contains("<prompt>"))
+            .any(|span| span.content.as_ref().contains("<path>"))
     );
     assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "Keep Typing");
     assert_eq!(rendered.lines[3].spans[7].content.as_ref(), "Keep Typing");
@@ -2093,7 +2091,7 @@ fn command_hint_text_surfaces_argument_progress() {
 
 #[test]
 fn command_hint_text_keeps_enter_run_for_optional_arguments() {
-    let rendered = build_command_hint_text(&SlashCommandHint {
+    let rendered = build_composer_hint_text(&ComposerCompletionHint::Slash(SlashCommandHint {
         selected: SlashCommandSpec {
             section: "Session",
             name: "help",
@@ -2115,7 +2113,7 @@ fn command_hint_text_keeps_enter_run_for_optional_arguments() {
             }),
         }),
         exact: true,
-    });
+    }));
 
     assert_eq!(rendered.lines[2].spans[1].content.as_ref(), "[query]");
     assert_eq!(rendered.lines[3].spans[3].content.as_ref(), "Enter Run");
@@ -2124,7 +2122,7 @@ fn command_hint_text_keeps_enter_run_for_optional_arguments() {
 
 #[test]
 fn command_hint_text_shows_browse_window_ellipsis() {
-    let rendered = build_command_hint_text(&SlashCommandHint {
+    let rendered = build_composer_hint_text(&ComposerCompletionHint::Slash(SlashCommandHint {
         selected: SlashCommandSpec {
             section: "History",
             name: "resume",
@@ -2178,7 +2176,7 @@ fn command_hint_text_shows_browse_window_ellipsis() {
         selected_match_index: 5,
         arguments: None,
         exact: false,
-    });
+    }));
 
     assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Commands");
     assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "… 2 earlier");
@@ -2187,6 +2185,51 @@ fn command_hint_text_shows_browse_window_ellipsis() {
         "/resume <agent-session-ref>"
     );
     assert_eq!(rendered.lines[6].spans[0].content.as_ref(), "… 1 more");
+}
+
+#[test]
+fn skill_hint_text_surfaces_aliases_and_tags() {
+    let rendered = build_composer_hint_text(&ComposerCompletionHint::Skill(SkillInvocationHint {
+        selected: SkillInvocationSpec {
+            name: "openai-docs".to_string(),
+            description: "Use official OpenAI docs".to_string(),
+            aliases: vec!["docs".to_string()],
+            tags: vec!["api".to_string()],
+        },
+        matches: vec![
+            SkillInvocationSpec {
+                name: "openai-docs".to_string(),
+                description: "Use official OpenAI docs".to_string(),
+                aliases: vec!["docs".to_string()],
+                tags: vec!["api".to_string()],
+            },
+            SkillInvocationSpec {
+                name: "frontend-design".to_string(),
+                description: "Build polished interfaces".to_string(),
+                aliases: vec!["ui".to_string()],
+                tags: vec!["design".to_string()],
+            },
+        ],
+        selected_match_index: 0,
+        exact: false,
+    }));
+
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Skills");
+    assert_eq!(rendered.lines[1].spans[2].content.as_ref(), "$openai-docs");
+    assert!(
+        rendered.lines[2]
+            .spans
+            .iter()
+            .any(|span| span.content.as_ref() == "$docs")
+    );
+    assert!(
+        rendered.lines[3]
+            .spans
+            .iter()
+            .any(|span| span.content.as_ref() == "api")
+    );
+    assert_eq!(rendered.lines[5].spans[3].content.as_ref(), "Tab Use");
+    assert_eq!(rendered.lines[5].spans[7].content.as_ref(), "Enter Use");
 }
 
 #[test]

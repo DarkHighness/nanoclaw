@@ -51,6 +51,11 @@ impl CodeAgentTui {
         draft: &ComposerDraftState,
     ) -> Result<Message> {
         let mut parts = Vec::new();
+        let skills = self.ui_state.snapshot().session.skills;
+        let (skill_references, prompt_text) = split_leading_skill_references(&draft.text, &skills);
+        parts.extend(skill_references.into_iter().map(|skill| {
+            MessagePart::reference("skill", Some(skill.name), None, Some(skill.description))
+        }));
         for attachment in draft
             .draft_attachments
             .iter()
@@ -59,7 +64,7 @@ impl CodeAgentTui {
             parts.extend(self.materialize_attachment_parts(attachment).await?);
         }
 
-        let mut remaining = draft.text.as_str();
+        let mut remaining = prompt_text.as_str();
         while !remaining.is_empty() {
             let next_attachment = draft
                 .draft_attachments
@@ -182,5 +187,73 @@ impl CodeAgentTui {
             }
         }
         true
+    }
+}
+
+fn split_leading_skill_references(
+    text: &str,
+    skills: &[crate::interaction::SkillSummary],
+) -> (Vec<crate::interaction::SkillSummary>, String) {
+    let mut remaining = text.trim_start();
+    let mut matched = Vec::new();
+
+    while let Some(body) = remaining.strip_prefix('$') {
+        let body = body.trim_start();
+        let token_end = body.find(char::is_whitespace).unwrap_or(body.len());
+        let token = body[..token_end].trim();
+        if token.is_empty() {
+            break;
+        }
+        let Some(skill) = skills
+            .iter()
+            .find(|skill| skill.name == token || skill.aliases.iter().any(|alias| alias == token))
+        else {
+            break;
+        };
+        matched.push(skill.clone());
+        remaining = body[token_end..].trim_start();
+    }
+
+    (matched, remaining.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_leading_skill_references;
+    use crate::interaction::SkillSummary;
+
+    fn skill(name: &str, aliases: &[&str]) -> SkillSummary {
+        SkillSummary {
+            name: name.to_string(),
+            description: format!("Use {name}"),
+            aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn extracts_multiple_leading_skill_directives() {
+        let skills = vec![
+            skill("openai-docs", &["docs"]),
+            skill("frontend-design", &["ui"]),
+        ];
+        let (matched, remaining) = split_leading_skill_references(
+            "$docs $frontend-design summarize the API differences",
+            &skills,
+        );
+
+        assert_eq!(matched.len(), 2);
+        assert_eq!(matched[0].name, "openai-docs");
+        assert_eq!(matched[1].name, "frontend-design");
+        assert_eq!(remaining, "summarize the API differences");
+    }
+
+    #[test]
+    fn leaves_prompt_intact_when_skill_token_is_unknown() {
+        let skills = vec![skill("openai-docs", &["docs"])];
+        let (matched, remaining) = split_leading_skill_references("$unknown inspect this", &skills);
+
+        assert!(matched.is_empty());
+        assert_eq!(remaining, "$unknown inspect this");
     }
 }

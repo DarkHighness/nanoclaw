@@ -30,26 +30,24 @@ use crate::theme::{ThemeCatalog, active_theme_id, install_theme_catalog, set_act
 use crate::ui::{
     HistoryRollbackRound, LiveMonitorControlAction, LiveMonitorControlOutcome, LiveMonitorSummary,
     LiveTaskAttentionAction, LiveTaskAttentionOutcome, LiveTaskControlAction,
-    LiveTaskControlOutcome, LiveTaskMessageAction, LiveTaskMessageOutcome, LiveTaskSpawnOutcome,
-    LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession, LoadedMcpPrompt, LoadedMcpResource,
-    LoadedSession, LoadedTask, McpPromptSummary, McpResourceSummary, McpServerSummary,
-    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-    PersistedTaskSummary, SessionEvent, SessionExportArtifact, SessionOperation,
-    SessionOperationAction, SessionOperationOutcome, SessionStartupSnapshot, SideQuestionOutcome,
-    StartupDiagnosticsSnapshot, UIAsyncCommand, UIAsyncValue, UICommand, UIQuery, UIQueryValue,
-    UIResultValue,
+    LiveTaskControlOutcome, LiveTaskSummary, LiveTaskWaitOutcome, LoadedAgentSession,
+    LoadedMcpPrompt, LoadedMcpResource, LoadedSession, LoadedTask, McpPromptSummary,
+    McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, PersistedTaskSummary, SessionEvent,
+    SessionExportArtifact, SessionOperation, SessionOperationAction, SessionOperationOutcome,
+    SessionStartupSnapshot, SideQuestionOutcome, StartupDiagnosticsSnapshot, UIAsyncCommand,
+    UIAsyncValue, UICommand, UIQuery, UIQueryValue, UIResultValue,
 };
 use approval::approval_decision_for_key;
 use commands::{
-    SlashCommand, SlashCommandEnterAction, command_palette_lines_for, cycle_slash_command,
-    move_slash_command_selection, parse_slash_command, resolve_slash_enter_action,
+    SlashCommand, command_palette_lines_for, cycle_composer_completion,
+    move_composer_completion_selection, parse_slash_command,
 };
 use history::{
     format_agent_session_inspector, format_agent_session_summary_collection,
-    format_code_diagnostics_inspector, format_live_monitor_control_outcome,
-    format_live_monitor_summary_line, format_live_task_control_outcome,
-    format_live_task_message_outcome, format_live_task_spawn_outcome,
-    format_live_task_summary_line, format_live_task_wait_outcome, format_mcp_prompt_summary_line,
+    format_live_monitor_control_outcome, format_live_monitor_summary_line,
+    format_live_task_control_outcome, format_live_task_summary_collection,
+    format_live_task_wait_outcome, format_mcp_prompt_summary_line,
     format_mcp_resource_summary_line, format_mcp_server_summary_line, format_session_export_result,
     format_session_inspector, format_session_operation_outcome, format_session_search_collection,
     format_session_summary_collection, format_session_transcript_lines, format_startup_diagnostics,
