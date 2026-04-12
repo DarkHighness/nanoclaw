@@ -4,6 +4,23 @@ Date: 2026-04-12
 
 Status: Active
 
+## Progress Ledger
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Phase 1: Task Model | Complete | `task_create`, `task_get`, `task_list`, `task_update`, `task_stop` are registered and backed by typed task records. |
+| Phase 2: Monitor | Complete | `monitor_start`, `monitor_list`, `monitor_stop` are registered and surfaced through typed monitor/session flows. |
+| Phase 3: Worktree Lifecycle | Not Started | No typed worktree lifecycle yet. |
+| Phase 4: Checkpoint And Restore | Not Started | Rollback remains transcript/history-centric. |
+| Phase 5: Diagnostics | Complete | `code_diagnostics` exists as a typed tool surface and no longer has a mirrored slash command. |
+| Phase 6: Cron / Automation | Not Started | No scheduled execution tool family yet. |
+| Phase 7: Code Search | Not Started | No semantic/index-backed `code_search` surface yet. |
+| Phase 8: Browser / Computer Use | Not Started | No first-class browser session tools yet. |
+| Phase 9: Notebook Editing | Not Started | Notebook work still falls back to generic file tooling. |
+| Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; remaining slash commands are operator/session surfaces only. |
+| Cross-cutting: Tool Review Surface | In Progress | Typed transcript cells exist, but operator review for running input/output/failure still needs a fuller design pass. |
+| Cross-cutting: Skill Lifecycle & Self-Evolution | Not Started | Skills can be listed/resolved, but there is no verifier-backed skill creation, archival, or promotion loop yet. |
+
 ## Goal
 
 Close the highest-value tool-surface gaps between `nanoclaw` and mature code
@@ -70,6 +87,10 @@ This plan uses the following external baselines:
 - OpenCode LSP:
   - diagnostics feed back into the agent loop
   - source: OpenCode, 2026, https://opencode.ai/docs/lsp/
+- Hermes Agent skills baseline:
+  - automated skill creation, agentskills.io-compatible `SKILL.md`, and an explicit skill-vs-tool boundary
+  - source: Hermes Agent, 2026, https://hermes-agent.org/
+  - source: Hermes Agent, 2026, https://hermes-agent.nousresearch.com/docs/developer-guide/adding-tools/
 
 ## Current Source Of Truth
 
@@ -88,20 +109,20 @@ The current TUI operator surfaces relevant to this plan are defined in:
 - [history_rollback.rs](/home/twiliness/nanoclaw/apps/code-agent/crates/tui/src/frontend/tui/history_rollback.rs)
 - [tool_render.rs](/home/twiliness/nanoclaw/apps/code-agent/crates/contracts/src/tool_render.rs)
 
-## Gap Summary
+## Remaining Gap Summary
 
 ### P0 Gaps
 
-- Task / todo tool family
-- Monitor tool
 - Worktree lifecycle tools
 - Checkpoint / restore tool family
-- Diagnostics surface
+- Skill lifecycle and self-evolution
+- Tool review surface parity for running input/output/failure rendering
 
 ### P1 Gaps
 
 - Cron / automation tools
 - Code search beyond symbol search and text grep
+- Skill archive / promotion workflow
 
 ### P2 Gaps
 
@@ -136,6 +157,12 @@ The current TUI operator surfaces relevant to this plan are defined in:
    exist for session control, review, history, export, attachments, and
    runtime supervision. Explicit skill invocation belongs to composer-native
    `$skill_name` directives, not to tool-mirroring slash commands.
+
+7. Keep `update_plan` narrow.
+   `update_plan` is host-owned coordination state, not a replacement for typed
+   task, monitor, checkpoint, or worktree entities. If an object needs its own
+   lifecycle, persistence, or operator controls, it should not be shoved into
+   the plan.
 
 ## Phase 1: Task Model
 
@@ -570,6 +597,80 @@ Support notebook-native workflows without degrading them into JSON patching.
 
 - Common notebook workflows no longer require brittle raw JSON edits.
 
+## Cross-Cutting Workstream: Skill Lifecycle And Self-Evolution
+
+### Objective
+
+Bring skills closer to the stronger lifecycle used by Hermes-style agent
+systems and the broader meta-agent roadmap: explicit discovery, creation,
+evaluation, archival, and promotion instead of static skill loading only.
+
+### User-facing outcome
+
+- The runtime can distinguish:
+  - loaded skills
+  - candidate skills
+  - archived skills
+  - promoted skills
+- Skill improvements can be proposed, reviewed, verified, and promoted without
+  silently mutating the active skill set.
+- Skill invocation stays explicit through `$skill_name`, while operator review
+  can inspect the current loaded catalog and promotion history.
+
+### Planned work
+
+- extend skill metadata with lifecycle state and provenance
+- define a verifier-backed path for reusable skill extraction from successful
+  runs
+- add archive/promotion storage instead of treating the workspace skill roots
+  as the only source of truth
+- align tool-vs-skill guidance with the Hermes split:
+  - use skills for instruction-plus-existing-tool workflows
+  - use tools for capabilities that require typed runtime integration
+
+### Write set
+
+- `crates/skills/`
+- `crates/tools/src/agentic/skill.rs`
+- `apps/code-agent/crates/backend/src/backend/`
+- `apps/code-agent/crates/tui/src/frontend/tui/`
+- `docs/meta-agent-evolution-plan.md`
+
+### Exit criteria
+
+- Skill state is no longer just "present on disk or not".
+- Reusable skill evolution is auditable, reversible, and verifier-gated.
+
+## Cross-Cutting Workstream: Operator Tool Review Surface
+
+### Objective
+
+Keep tool execution readable and operator-friendly while multiple tools are
+running concurrently.
+
+### User-facing outcome
+
+- Running tool cells show typed status, intent, and in-flight output without
+  dumping raw JSON.
+- Completed tool cells clearly distinguish success, failure, and partial
+  results.
+- Operators can inspect input/output/review payloads without reopening raw
+  protocol dumps.
+
+### Planned work
+
+- tighten typed tool render contracts for running vs terminal states
+- improve structured input/output summaries and head/tail collapsing rules
+- keep approval, running tool state, and final result distinct in the TUI
+- avoid protocol text like `path>` / `query>` leaking into operator-facing
+  rendering when structured fields exist
+
+### Exit criteria
+
+- The transcript remains readable under concurrent tool activity.
+- The operator can tell what ran, what is still running, and what failed
+  without expanding raw payloads.
+
 ## Recommended Delivery Order
 
 ### Wave A
@@ -636,18 +737,19 @@ Every phase must ship with:
   composer is the correct explicit invocation path.
 - Do not encode new state machines as transcript strings.
 - Do not let `update_plan` absorb task, checkpoint, or monitor semantics.
+- Do not reintroduce slash commands that merely proxy model tools when a typed
+  picker action or direct model tool invocation already exists.
 
 ## Immediate Next Step
 
-Start with Phase 1.
+The next highest-value implementation slices are:
 
-The highest-value first implementation slice is:
+1. Phase 3: add typed worktree lifecycle
+2. Phase 4: split transcript rewind from durable checkpoint restore
+3. cross-cutting: finish the operator tool review surface for concurrent
+   running/completed tool cells
+4. cross-cutting: add skill lifecycle state and promotion flow
 
-1. add typed task ids, task status, and task origin
-2. implement `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`
-3. rebase live child-task tracking onto the typed task model
-4. teach the TUI `/tasks` and `/task` surfaces to read typed task records
-5. keep `update_plan` as high-level coordination only
-
-Do not start `Monitor`, `Checkpoint`, or `Cron` before the task object model is
-in place. Those later phases all need a stable execution-entity layer.
+Do not remove `update_plan` unless task, checkpoint, worktree, and operator
+review flows can already express the same high-level coordination need without
+regressing shared visibility.

@@ -29,7 +29,7 @@ pub fn build_system_preamble(
         "Use patch_files for coordinated multi-file mutations, and use write or edit for single-file creation or precise local edits."
             .to_string(),
         "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
-        "Maintain a concise plan with update_plan for multi-step work. update_plan also carries the optional live focus slice for current execution, blockers, and verification state."
+        "Use update_plan only for shared high-level coordination that the user or operator benefits from seeing. Do not mirror every task into update_plan; use task_create/task_update/task_stop for execution objects and TODO tracking. update_plan may also carry the optional live focus slice for current execution, blockers, and verification state."
             .to_string(),
         "Use spawn_agent for bounded child work, then send_input, wait_agent, resume_agent, and close_agent to manage that child explicitly."
             .to_string(),

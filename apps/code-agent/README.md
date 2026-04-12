@@ -118,9 +118,11 @@ does not open a second approval step. Harmfulness is decided on `exec_command`,
 and stdin follow-ups stay inside that existing session.
 
 `update_plan` is also approval-free now. It mutates host-owned coordination
-state, including the shared task plan and the optional live focus slice, not
-the workspace or an external system, so it no longer shares the same approval
-path as filesystem writes or new process execution.
+state, including the shared high-level plan and the optional live focus slice,
+not the workspace or an external system, so it no longer shares the same
+approval path as filesystem writes or new process execution. It is not the
+primary execution tracker for `task_*`; typed task records own TODO/live-task
+state, while `update_plan` stays reserved for operator-visible coordination.
 
 MCP resource reads now use the connected server boundary instead of treating
 every MCP resource as the same risk. Resources from locally launched `stdio`
