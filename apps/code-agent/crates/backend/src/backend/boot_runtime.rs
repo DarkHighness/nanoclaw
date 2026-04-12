@@ -12,10 +12,10 @@ use agent::{
     ApplyPatchTool, CodeCallHierarchyTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
     CodeHoverTool, CodeImplementationsTool, CodeIntelBackend, CodeReferencesTool,
     CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
-    ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
-    PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog,
-    SkillTool, ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry, ToolResult,
-    UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
+    ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchFilesTool,
+    PatchTool, PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy,
+    SkillCatalog, SkillTool, ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry,
+    ToolResult, UpdatePlanTool, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
     WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
@@ -535,6 +535,9 @@ fn build_builtin_tools(
     tools.register(EditTool::with_file_activity_observer(
         file_activity_observer.clone(),
     ));
+    tools.register(PatchFilesTool::with_file_activity_observer(
+        file_activity_observer.clone(),
+    ));
     tools.register(ApplyPatchTool::with_file_activity_observer(
         file_activity_observer.clone(),
     ));
@@ -717,6 +720,7 @@ mod tests {
         assert!(tool_names.iter().any(|name| name.as_str() == "write_stdin"));
         assert!(tool_names.iter().any(|name| name.as_str() == "web_fetch"));
         assert!(tool_names.iter().any(|name| name.as_str() == "web_search"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "patch_files"));
         assert!(
             tool_names
                 .iter()
@@ -752,6 +756,33 @@ mod tests {
         assert!(tool_names.iter().any(|name| name.as_str() == "close_agent"));
         assert!(!tool_names.iter().any(|name| name.as_str() == "task"));
         assert!(!tool_names.iter().any(|name| name.as_str() == "task_batch"));
+    }
+
+    #[test]
+    fn patch_visibility_prefers_patch_files_over_legacy_patch_names() {
+        let options = load_options();
+        let workspace = tempdir().unwrap();
+        let tooling = build_runtime_tooling(
+            &options,
+            workspace.path(),
+            &SandboxPolicy::permissive(),
+            &SandboxBackendStatus::Unavailable {
+                reason: "not needed".to_string(),
+            },
+            SkillCatalog::default(),
+        );
+
+        let openai_visible = tooling
+            .tools
+            .specs()
+            .into_iter()
+            .filter(|spec| spec.is_model_visible_for_provider("openai"))
+            .map(|spec| spec.name.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(openai_visible.iter().any(|name| name == "patch_files"));
+        assert!(!openai_visible.iter().any(|name| name == "patch"));
+        assert!(!openai_visible.iter().any(|name| name == "apply_patch"));
     }
 
     #[test]

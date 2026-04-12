@@ -101,10 +101,9 @@ Completed so far:
 - OpenAI Responses mapping now supports freeform/custom tools, including
   transcript replay through `custom_tool_call` and
   `custom_tool_call_output`
-- provider-specific patch surfaces are now live:
-  - `apply_patch` is exposed as a freeform grammar tool for GPT-5-family
-    OpenAI models
-  - `patch` remains a structured function tool for Anthropic
+- the runtime still carries legacy `apply_patch` and `patch` implementations,
+  but the model-visible surface is being normalized around one canonical
+  staged mutator
 
 Still pending inside this pass:
 
@@ -210,8 +209,7 @@ not count here because they are not currently in the live registry.
 `nanoclaw` currently exposes these major families from the code-agent runtime:
 
 - file and code:
-  `read`, `write`, `edit`, provider-specific patch surfaces (`apply_patch` on
-  OpenAI, `patch` on Anthropic), `glob`, `grep`, `list`
+  `read`, `write`, `edit`, `patch_files`, `glob`, `grep`, `list`
 - execution:
   `exec_command`, `write_stdin`, `js_repl`
 - web:
@@ -483,19 +481,19 @@ Key design rules:
 
 ### File Tools
 
-Keep the current `read`, `edit`, `write`, `patch`, `glob`, `grep`, and `list`
-family. The main remaining work is protocol hardening:
+Keep the current `read`, `edit`, `write`, `patch_files`, `glob`, `grep`, and
+`list` family. The main remaining work is protocol hardening:
 
 - keep line windows and snapshot guards
 - standardize continuation metadata
 - make diff previews and failure diagnostics predictable across all mutators
-- add a freeform `apply_patch` surface without deleting the structured local
-  `patch` tool
+- keep legacy patch transports as hidden compatibility paths instead of part of
+  the canonical model-visible tool list
 
-The target is a two-tier edit surface:
+The target is a stable edit surface:
 
 - structured local edit tools for deterministic small changes
-- freeform patch grammar for model families that are strongly optimized for it
+- one canonical staged multi-file mutator for larger changes
 
 ### Execution Tools
 

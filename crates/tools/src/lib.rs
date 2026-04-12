@@ -1,9 +1,9 @@
 //! Local tool abstraction plus the default built-in tool set.
 //!
 //! The default surface is intentionally small: `read`, `write`, `edit`,
-//! provider-specific patch tooling (`apply_patch` on OpenAI-oriented surfaces,
-//! `patch` on Anthropic-oriented surfaces), `glob`, `grep`, `list`,
-//! `exec_command`, and `write_stdin`. Non-essential tool
+//! `patch_files`, `glob`, `grep`, `list`, `exec_command`, and `write_stdin`.
+//! Legacy compatibility tooling such as `apply_patch` and `patch` stays behind
+//! the same runtime but outside the default model-visible surface. Non-essential tool
 //! bundles should be exposed through explicit Cargo features instead of
 //! silently expanding the default runtime surface.
 

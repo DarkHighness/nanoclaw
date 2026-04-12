@@ -80,6 +80,7 @@ impl Tool for ApplyPatchTool {
         )
         .with_approval(tool_approval_profile(false, true, true, false))
         .with_availability(ToolAvailability {
+            hidden_from_model: true,
             provider_allowlist: vec!["openai".to_string()],
             model_allowlist: vec!["gpt-5*".to_string()],
             ..ToolAvailability::default()

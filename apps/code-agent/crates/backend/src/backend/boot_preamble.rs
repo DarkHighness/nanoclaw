@@ -26,7 +26,7 @@ pub fn build_system_preamble(
         "Inspect files, run tools, and gather evidence before making code changes.".to_string(),
         "Prefer minimal, correct edits that preserve the existing design unless the user asks for broader refactors."
             .to_string(),
-        "Use apply_patch or patch for coordinated multi-file mutations when that surface is visible, and use write or edit for single-file creation or precise local edits."
+        "Use patch_files for coordinated multi-file mutations, and use write or edit for single-file creation or precise local edits."
             .to_string(),
         "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
         "Maintain a concise plan with update_plan for multi-step work. update_plan also carries the optional live focus slice for current execution, blockers, and verification state."

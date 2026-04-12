@@ -5,7 +5,7 @@ compact `ratatui` terminal UI that still feels like a real product surface.
 
 It intentionally keeps the host layer thin:
 
-- model-visible coding tools: `read`, `write`, `edit`, provider/model-aware patch surfaces (`apply_patch` for GPT-5-family OpenAI models, `patch` for Anthropic), `glob`, `grep`, `list`, `exec_command`, `write_stdin`
+- model-visible coding tools: `read`, `write`, `edit`, `patch_files`, `glob`, `grep`, `list`, `exec_command`, `write_stdin`
 - discovery tools: `tool_discover` (`tool_search` / `tool_suggest` remain compatibility aliases)
 - operator/debug-only tools: `web_search_backends`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`, `code_hover`, `code_implementations`, `code_call_hierarchy`
@@ -219,11 +219,11 @@ The older `auto_allow_*` and `[approval.exec]` fields are still accepted as
 compatibility sugar. `code-agent` lowers them into the same ordered host rule
 model that powers explicit `approval.rules`.
 
-Model-visible tool exposure is also model-aware now. `code-agent` still keeps
-`write` and `edit` available as the baseline mutators, but the freeform
-`apply_patch` surface is exposed only to GPT-5-family OpenAI models. Other
-OpenAI models fall back to the structured mutator set instead of seeing a
-freeform patch grammar they are not optimized for.
+Model-visible mutation exposure is now normalized around one staged multi-file
+surface. `code-agent` keeps `write` and `edit` for single-file work and exposes
+`patch_files` as the canonical multi-file mutator. The older `patch` and
+`apply_patch` implementations remain available only as hidden compatibility
+surfaces rather than part of the normal model-visible tool list.
 
 Example:
 
@@ -265,7 +265,7 @@ The app now materializes the standard workspace state layout on startup:
 `code-agent` now follows the same broad LSP lifecycle that `opencode` uses for its code-aware file tools:
 
 - reading a supported source file triggers a best-effort `didOpen`
-- write/edit/patch/apply_patch mutations trigger best-effort document sync so later semantic queries see fresh content
+- write/edit/patch_files mutations trigger best-effort document sync so later semantic queries see fresh content
 - code-intel tools reuse the same per-language server session instead of spawning one process per query
 
 The difference is that `code-agent` also supports a managed install path when `CODE_AGENT_LSP_AUTO_INSTALL=true`.
@@ -506,7 +506,7 @@ conversation instead of being duplicated into visible `tool>` / `approval>` /
 Markdown-heavy assistant output now renders through a syntax-aware pipeline
 instead of the older ad hoc formatter. Fenced code blocks, `diff` snippets, and
 common Markdown structure all render directly in the transcript, and file
-mutation tools such as `write`, `edit`, and `patch` now surface structured diff
+mutation tools such as `write`, `edit`, and `patch_files` now surface structured diff
 previews instead of only terse completion summaries.
 
 Approval prompts now render as centered modal overlays with labeled context,

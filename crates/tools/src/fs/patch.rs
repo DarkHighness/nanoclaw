@@ -65,6 +65,11 @@ pub struct PatchTool {
     activity_observer: Option<Arc<dyn FileActivityObserver>>,
 }
 
+#[derive(Clone, Default)]
+pub struct PatchFilesTool {
+    activity_observer: Option<Arc<dyn FileActivityObserver>>,
+}
+
 #[derive(Clone, Debug)]
 struct StagedFile {
     display_path: String,
@@ -106,6 +111,22 @@ impl PatchTool {
     }
 }
 
+impl PatchFilesTool {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            activity_observer: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_file_activity_observer(activity_observer: Arc<dyn FileActivityObserver>) -> Self {
+        Self {
+            activity_observer: Some(activity_observer),
+        }
+    }
+}
+
 impl PatchOperation {
     fn command_name(&self) -> &'static str {
         match self {
@@ -129,7 +150,7 @@ impl Tool for PatchTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "patch",
-            "Apply a staged multi-file patch made of write, edit, delete, and move operations. Operations are validated against staged content first so a failed operation does not partially apply earlier changes.",
+            "Legacy compatibility wrapper for staged multi-file patch application. Prefer patch_files as the canonical model-visible mutation surface.",
             serde_json::to_value(schema_for!(PatchToolInput)).expect("patch schema"),
             ToolOutputMode::Text,
             tool_approval_profile(false, true, true, false),
@@ -138,6 +159,7 @@ impl Tool for PatchTool {
             serde_json::to_value(schema_for!(PatchToolOutput)).expect("patch output schema"),
         )
         .with_availability(ToolAvailability {
+            hidden_from_model: true,
             provider_allowlist: vec!["anthropic".to_string()],
             ..ToolAvailability::default()
         })
@@ -152,6 +174,39 @@ impl Tool for PatchTool {
         let input: PatchToolInput = serde_json::from_value(arguments)?;
         execute_patch_operations(
             "patch",
+            self.activity_observer.clone(),
+            call_id,
+            input.operations,
+            ctx,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl Tool for PatchFilesTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            "patch_files",
+            "Apply a staged multi-file patch made of write, edit, delete, and move operations. Operations are validated against staged content first so a failed operation does not partially apply earlier changes.",
+            serde_json::to_value(schema_for!(PatchToolInput)).expect("patch_files schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, true, false),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(PatchToolOutput)).expect("patch_files output schema"),
+        )
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let input: PatchToolInput = serde_json::from_value(arguments)?;
+        execute_patch_operations(
+            "patch_files",
             self.activity_observer.clone(),
             call_id,
             input.operations,
