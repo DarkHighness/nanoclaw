@@ -287,6 +287,32 @@ fn transcript_renders_exploration_commands_with_summary_detail() {
 }
 
 #[test]
+fn transcript_keeps_piped_shell_commands_as_ran_entries() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::tool(
+        TranscriptToolStatus::Finished,
+        "exec_command",
+        vec![command_tool_detail(
+            "find /tmp -maxdepth 2 -type d 2>/dev/null | sed -n '1,80p'",
+        )],
+    )];
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(rendered.iter().any(|line| {
+        line_text_for(line).contains("Ran find /tmp -maxdepth 2 -type d 2>/dev/null | sed -n")
+    }));
+    assert!(
+        !rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Explored"))
+    );
+}
+
+#[test]
 fn transcript_colors_completed_command_marker_from_typed_completion_state() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,

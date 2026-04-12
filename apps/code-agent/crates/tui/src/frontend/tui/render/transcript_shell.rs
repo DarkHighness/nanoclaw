@@ -1,7 +1,8 @@
 use super::super::state::{
     ExecutionStatus, PlanEntryStatus, TranscriptEntry, TranscriptExecutionEntry,
     TranscriptPlanEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
-    TranscriptShellStatus, TranscriptToolEntry, TranscriptToolStatus, TuiState, preview_text,
+    TranscriptShellStatus, TranscriptToolEntry, TranscriptToolHeadlineSubjectKind,
+    TranscriptToolStatus, TuiState, preview_text,
 };
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
@@ -14,7 +15,7 @@ use super::transcript_markdown_blocks::code_span;
 use super::transcript_markdown_line::render_transcript_body_line;
 use crate::tool_render::{
     ToolCommand, ToolCommandIntent, ToolCompletionState, ToolDetail, ToolDetailBlockKind,
-    ToolDetailLabel, ToolRenderKind,
+    ToolDetailLabel,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -652,13 +653,34 @@ fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Lin
 fn render_command_detail(command: &ToolCommand) -> Vec<Line<'static>> {
     match command.intent {
         ToolCommandIntent::Explore => {
-            let summary = command
-                .summary_line()
-                .unwrap_or_else(|| command.preview_line());
-            vec![detail_line(
-                false,
-                vec![Span::styled(summary, Style::default().fg(palette().text))],
-            )]
+            let summaries = command.summary_lines();
+            if let Some((first, rest)) = summaries.split_first() {
+                let mut rendered = vec![detail_line(
+                    false,
+                    vec![Span::styled(
+                        first.clone(),
+                        Style::default().fg(palette().text),
+                    )],
+                )];
+                rendered.extend(rest.iter().map(|summary| {
+                    detail_line(
+                        true,
+                        vec![Span::styled(
+                            summary.clone(),
+                            Style::default().fg(palette().text),
+                        )],
+                    )
+                }));
+                rendered
+            } else {
+                vec![detail_line(
+                    false,
+                    vec![Span::styled(
+                        command.preview_line(),
+                        Style::default().fg(palette().text),
+                    )],
+                )]
+            }
         }
         ToolCommandIntent::Execute => vec![detail_line(
             false,
@@ -827,128 +849,18 @@ enum ToolHeadlineSubject<'a> {
 
 fn tool_headline(entry: &TranscriptToolEntry) -> ToolHeadline<'_> {
     let accent = tool_status_accent(entry.status, entry.completion);
-    if let Some(command) = first_tool_command(entry) {
-        if command.intent == ToolCommandIntent::Explore {
-            return ToolHeadline {
-                verb: exploration_verb(entry.status),
-                accent,
-                subject: None,
-            };
-        }
-        return ToolHeadline {
-            verb: command_verb(entry.status),
-            accent,
-            subject: Some(ToolHeadlineSubject::Command(command)),
-        };
-    }
-
-    let kind = ToolRenderKind::classify(&entry.tool_name);
-    let (verb, subject) = tool_kind_headline(kind, entry.status, &entry.tool_name);
     ToolHeadline {
-        verb,
+        verb: entry.headline_prefix(),
         accent,
-        subject,
-    }
-}
-
-fn tool_kind_headline<'a>(
-    kind: ToolRenderKind,
-    status: TranscriptToolStatus,
-    tool_name: &'a str,
-) -> (&'static str, Option<ToolHeadlineSubject<'a>>) {
-    match kind {
-        ToolRenderKind::UpdatePlan => (
-            lifecycle_verb(status, "Updating plan", "Updated plan"),
-            None,
-        ),
-        ToolRenderKind::UpdateExecution => (
-            lifecycle_verb(status, "Updating execution", "Updated execution"),
-            None,
-        ),
-        ToolRenderKind::SendInput => (
-            lifecycle_verb(status, "Sending follow-up", "Sent follow-up"),
-            None,
-        ),
-        ToolRenderKind::SpawnAgent => (
-            lifecycle_verb(status, "Spawning agent", "Spawned agent"),
-            None,
-        ),
-        ToolRenderKind::WaitAgent => (
-            lifecycle_verb(status, "Waiting on agents", "Waited on agents"),
-            None,
-        ),
-        ToolRenderKind::ResumeAgent => (
-            lifecycle_verb(status, "Resuming agent", "Resumed agent"),
-            None,
-        ),
-        ToolRenderKind::CloseAgent => (
-            lifecycle_verb(status, "Closing agent", "Closed agent"),
-            None,
-        ),
-        ToolRenderKind::FileMutation => (
-            lifecycle_verb(status, "Editing files", "Updated files"),
-            None,
-        ),
-        ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => (
-            generic_tool_verb(status),
-            Some(ToolHeadlineSubject::Text(tool_name)),
-        ),
-    }
-}
-
-fn lifecycle_verb(
-    status: TranscriptToolStatus,
-    running: &'static str,
-    finished: &'static str,
-) -> &'static str {
-    match status {
-        TranscriptToolStatus::Requested => running,
-        TranscriptToolStatus::WaitingApproval => "Awaiting approval",
-        TranscriptToolStatus::Approved => "Approved",
-        TranscriptToolStatus::Running => running,
-        TranscriptToolStatus::Finished => finished,
-        TranscriptToolStatus::Denied => "Denied",
-        TranscriptToolStatus::Failed => "Failed",
-        TranscriptToolStatus::Cancelled => "Cancelled",
-    }
-}
-
-fn generic_tool_verb(status: TranscriptToolStatus) -> &'static str {
-    match status {
-        TranscriptToolStatus::Requested => "Calling",
-        TranscriptToolStatus::WaitingApproval => "Awaiting approval",
-        TranscriptToolStatus::Approved => "Approved",
-        TranscriptToolStatus::Running => "Calling",
-        TranscriptToolStatus::Finished => "Called",
-        TranscriptToolStatus::Denied => "Denied",
-        TranscriptToolStatus::Failed => "Failed",
-        TranscriptToolStatus::Cancelled => "Cancelled",
-    }
-}
-
-fn command_verb(status: TranscriptToolStatus) -> &'static str {
-    match status {
-        TranscriptToolStatus::Requested => "Will run",
-        TranscriptToolStatus::WaitingApproval => "Awaiting approval to run",
-        TranscriptToolStatus::Approved => "Approved command",
-        TranscriptToolStatus::Running => "Running",
-        TranscriptToolStatus::Finished => "Ran",
-        TranscriptToolStatus::Denied => "Denied command",
-        TranscriptToolStatus::Failed => "Command failed",
-        TranscriptToolStatus::Cancelled => "Cancelled command",
-    }
-}
-
-fn exploration_verb(status: TranscriptToolStatus) -> &'static str {
-    match status {
-        TranscriptToolStatus::Requested => "Will explore",
-        TranscriptToolStatus::WaitingApproval => "Awaiting approval to explore",
-        TranscriptToolStatus::Approved => "Approved exploration",
-        TranscriptToolStatus::Running => "Exploring",
-        TranscriptToolStatus::Finished => "Explored",
-        TranscriptToolStatus::Denied => "Denied exploration",
-        TranscriptToolStatus::Failed => "Exploration failed",
-        TranscriptToolStatus::Cancelled => "Cancelled exploration",
+        subject: match entry.headline_subject_kind() {
+            TranscriptToolHeadlineSubjectKind::None => None,
+            TranscriptToolHeadlineSubjectKind::Command => {
+                first_tool_command(entry).map(ToolHeadlineSubject::Command)
+            }
+            TranscriptToolHeadlineSubjectKind::ToolName => {
+                Some(ToolHeadlineSubject::Text(&entry.tool_name))
+            }
+        },
     }
 }
 

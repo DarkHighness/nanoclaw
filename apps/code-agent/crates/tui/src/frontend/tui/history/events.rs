@@ -360,14 +360,19 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
                 &output.text_content(),
                 output.structured_content.as_ref(),
             ));
+            let completion = crate::tool_render::tool_completion_state(
+                call.tool_name.as_str(),
+                output.structured_content.as_ref(),
+            );
+            crate::tool_render::compact_successful_exploration_details(
+                &mut detail_lines,
+                completion,
+            );
             TranscriptEntry::tool_with_completion(
                 TranscriptToolStatus::Finished,
                 call.tool_name.to_string(),
                 detail_lines,
-                crate::tool_render::tool_completion_state(
-                    call.tool_name.as_str(),
-                    output.structured_content.as_ref(),
-                ),
+                completion,
             )
         }
         SessionEventKind::ToolCallFailed { call, error } => {

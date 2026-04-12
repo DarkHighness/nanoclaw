@@ -30,7 +30,8 @@ pub(crate) use picker::{
 pub(crate) use transcript::{
     InspectorAction, InspectorEntry, InspectorKeyAction, TranscriptEntry, TranscriptExecutionEntry,
     TranscriptPlanEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
-    TranscriptShellStatus, TranscriptToolEntry, TranscriptToolStatus,
+    TranscriptShellStatus, TranscriptToolEntry, TranscriptToolHeadlineSubjectKind,
+    TranscriptToolStatus,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -238,9 +239,18 @@ impl TuiState {
         }
     }
 
-    pub(crate) fn push_transcript(&mut self, entry: impl Into<TranscriptEntry>) {
-        self.transcript.push(entry.into());
+    pub(crate) fn push_transcript(&mut self, entry: impl Into<TranscriptEntry>) -> usize {
+        let entry = entry.into();
+        if let Some((index, last)) = self.transcript.iter_mut().enumerate().last()
+            && last.try_merge(&entry)
+        {
+            self.mark_transcript_follow();
+            return index;
+        }
+
+        self.transcript.push(entry);
         self.mark_transcript_follow();
+        self.transcript.len() - 1
     }
 
     pub(crate) fn append_transcript_text(&mut self, index: usize, delta: &str) -> bool {

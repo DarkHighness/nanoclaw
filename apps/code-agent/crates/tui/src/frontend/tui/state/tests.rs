@@ -7,7 +7,9 @@ use super::{
     page_scroll_amount,
 };
 use crate::theme::ThemeSummary;
-use crate::tool_render::{ToolCommand, ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile};
+use crate::tool_render::{
+    ToolCommand, ToolCompletionState, ToolDetail, ToolDetailLabel, ToolReview, ToolReviewFile,
+};
 use agent::types::{
     Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
     SubmittedPromptAttachmentKind, SubmittedPromptSnapshot,
@@ -47,6 +49,45 @@ fn transcript_push_keeps_manual_scroll_position_until_follow_is_restored() {
 
     state.push_transcript("third");
     assert_eq!(state.transcript_scroll, u16::MAX);
+}
+
+#[test]
+fn transcript_push_merges_finished_exploration_entries() {
+    let mut state = TuiState::default();
+
+    assert_eq!(
+        state.push_transcript(TranscriptEntry::tool_with_completion(
+            TranscriptToolStatus::Finished,
+            "exec_command",
+            vec![command_tool_detail("rg shimmer_spans")],
+            ToolCompletionState::Success,
+        )),
+        0
+    );
+    assert_eq!(
+        state.push_transcript(TranscriptEntry::tool_with_completion(
+            TranscriptToolStatus::Finished,
+            "exec_command",
+            vec![command_tool_detail("cat shimmer.rs")],
+            ToolCompletionState::Success,
+        )),
+        0
+    );
+    assert_eq!(
+        state.push_transcript(TranscriptEntry::tool_with_completion(
+            TranscriptToolStatus::Finished,
+            "exec_command",
+            vec![command_tool_detail("cat status_indicator_widget.rs")],
+            ToolCompletionState::Success,
+        )),
+        0
+    );
+
+    assert_eq!(state.transcript.len(), 1);
+    assert_eq!(
+        state.transcript[0].serialized(),
+        "• Explored\n  └ Search shimmer_spans\n    Read shimmer.rs, status_indicator_widget.rs"
+    );
 }
 
 #[test]

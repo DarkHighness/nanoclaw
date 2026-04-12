@@ -7,8 +7,8 @@ use super::tool_state::{
     plan_items_from_tool_output, plan_update_entry_from_tool_output,
 };
 use crate::tool_render::{
-    ToolDetail, ToolDetailLabel, tool_argument_details, tool_completion_state_from_preview,
-    tool_output_details_from_preview, tool_review_from_preview,
+    ToolDetail, ToolDetailLabel, compact_successful_exploration_details, tool_argument_details,
+    tool_completion_state_from_preview, tool_output_details_from_preview, tool_review_from_preview,
 };
 use crate::ui::{SessionEvent, SessionToolCall};
 
@@ -191,8 +191,7 @@ impl SharedRenderObserver {
                     state.status = format!("Denied {}: {}", call.tool_name, reason);
                     state.turn_phase = TurnPhase::Failed;
                     remove_active_tool(state, &call.call_id);
-                    let transcript_index = state.transcript.len();
-                    state.push_transcript(denied_tool_entry(&call, &reason));
+                    let transcript_index = state.push_transcript(denied_tool_entry(&call, &reason));
                     state.promote_live_tool_selection(&call.call_id, transcript_index);
                     state.push_activity(format!(
                         "denied {}: {}",
@@ -227,8 +226,7 @@ impl SharedRenderObserver {
                     state.execution = execution;
                 }
                 remove_active_tool(state, &call.call_id);
-                let transcript_index = state.transcript.len();
-                state.push_transcript(completed_tool_entry(
+                let transcript_index = state.push_transcript(completed_tool_entry(
                     &call,
                     &output_preview,
                     structured_output_preview.as_deref(),
@@ -262,8 +260,7 @@ impl SharedRenderObserver {
                 state.status = format!("{} failed", call.tool_name);
                 state.turn_phase = TurnPhase::Failed;
                 remove_active_tool(state, &call.call_id);
-                let transcript_index = state.transcript.len();
-                state.push_transcript(failed_tool_entry(&call, &error));
+                let transcript_index = state.push_transcript(failed_tool_entry(&call, &error));
                 state.promote_live_tool_selection(&call.call_id, transcript_index);
                 state.push_activity(format!(
                     "{} failed: {}",
@@ -275,8 +272,8 @@ impl SharedRenderObserver {
                 state.status = format!("{} cancelled", call.tool_name);
                 state.turn_phase = TurnPhase::Failed;
                 remove_active_tool(state, &call.call_id);
-                let transcript_index = state.transcript.len();
-                state.push_transcript(cancelled_tool_entry(&call, reason.as_deref()));
+                let transcript_index =
+                    state.push_transcript(cancelled_tool_entry(&call, reason.as_deref()));
                 state.promote_live_tool_selection(&call.call_id, transcript_index);
                 state.push_activity(format!(
                     "{} cancelled{}",
@@ -428,12 +425,14 @@ fn completed_tool_entry(
         output_preview,
         structured_output_preview,
     ));
+    let completion = tool_completion_state_from_preview(&call.tool_name, structured_output_preview);
+    compact_successful_exploration_details(&mut detail_lines, completion);
     TranscriptEntry::tool_with_review_and_completion(
         TranscriptToolStatus::Finished,
         call.tool_name.clone(),
         detail_lines,
         tool_review_from_preview(&call.tool_name, structured_output_preview),
-        tool_completion_state_from_preview(&call.tool_name, structured_output_preview),
+        completion,
     )
 }
 
@@ -648,8 +647,12 @@ mod tests {
                 .iter()
                 .all(|line| !transcript_text(line).contains('>'))
         );
-        assert!(snapshot.transcript.iter().any(|line| transcript_text(line)
-            == "• Explored\n  └ List .\n  └ result exit 0\n  └ stdout\n    listed files"));
+        assert!(
+            snapshot
+                .transcript
+                .iter()
+                .any(|line| transcript_text(line) == "• Explored\n  └ List .")
+        );
     }
 
     #[test]
@@ -684,7 +687,46 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Explored\n  └ List .\n  └ result exit 0\n  └ stdout\n    listed files"
+            "• Explored\n  └ List ."
+        );
+    }
+
+    #[test]
+    fn finished_exploration_calls_merge_into_one_transcript_cell() {
+        let ui_state = SharedUiState::new();
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        for (call_id, command) in [
+            ("call_search", "$ rg shimmer_spans"),
+            ("call_read_1", "$ cat shimmer.rs"),
+            ("call_read_2", "$ cat status_indicator_widget.rs"),
+        ] {
+            observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+                call: SessionToolCall {
+                    tool_name: "exec_command".to_string(),
+                    call_id: call_id.to_string(),
+                    origin: "shell".to_string(),
+                    arguments_preview: vec![command.to_string()],
+                },
+                output_preview: String::new(),
+                structured_output_preview: Some(
+                    json!({
+                        "kind": "run",
+                        "exit_code": 0,
+                        "timed_out": false,
+                        "stdout": {"text": "", "chars": 0, "truncated": false},
+                        "stderr": {"text": "", "chars": 0, "truncated": false}
+                    })
+                    .to_string(),
+                ),
+            });
+        }
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.transcript.len(), 1);
+        assert_eq!(
+            transcript_text(&snapshot.transcript[0]),
+            "• Explored\n  └ Search shimmer_spans\n    Read shimmer.rs, status_indicator_widget.rs"
         );
     }
 
@@ -719,6 +761,66 @@ mod tests {
         });
 
         let snapshot = ui_state.snapshot();
+        assert_eq!(
+            snapshot.tool_selection,
+            Some(ToolSelectionTarget::Transcript(0))
+        );
+    }
+
+    #[test]
+    fn merged_exploration_completion_keeps_selection_on_aggregate_cell() {
+        let ui_state = SharedUiState::new();
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call: SessionToolCall {
+                tool_name: "exec_command".to_string(),
+                call_id: "call_search".to_string(),
+                origin: "shell".to_string(),
+                arguments_preview: vec!["$ rg shimmer_spans".to_string()],
+            },
+            output_preview: String::new(),
+            structured_output_preview: Some(
+                json!({
+                    "kind": "run",
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "stdout": {"text": "", "chars": 0, "truncated": false},
+                    "stderr": {"text": "", "chars": 0, "truncated": false}
+                })
+                .to_string(),
+            ),
+        });
+
+        let read_call = SessionToolCall {
+            tool_name: "exec_command".to_string(),
+            call_id: "call_read".to_string(),
+            origin: "shell".to_string(),
+            arguments_preview: vec!["$ cat shimmer.rs".to_string()],
+        };
+        observer.apply_event(SessionEvent::ToolLifecycleStarted {
+            call: read_call.clone(),
+        });
+        ui_state.mutate(|state| {
+            state.tool_selection = Some(ToolSelectionTarget::Live("call_read".to_string()));
+        });
+        observer.apply_event(SessionEvent::ToolLifecycleCompleted {
+            call: read_call,
+            output_preview: String::new(),
+            structured_output_preview: Some(
+                json!({
+                    "kind": "run",
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "stdout": {"text": "", "chars": 0, "truncated": false},
+                    "stderr": {"text": "", "chars": 0, "truncated": false}
+                })
+                .to_string(),
+            ),
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             snapshot.tool_selection,
             Some(ToolSelectionTarget::Transcript(0))

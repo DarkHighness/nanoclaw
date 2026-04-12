@@ -291,6 +291,13 @@ impl TranscriptToolStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptToolHeadlineSubjectKind {
+    None,
+    Command,
+    ToolName,
+}
+
 fn default_tool_completion(status: TranscriptToolStatus) -> ToolCompletionState {
     match status {
         TranscriptToolStatus::Requested
@@ -310,14 +317,32 @@ fn tool_headline_text(
     tool_name: &str,
     detail_lines: &[ToolDetail],
 ) -> String {
+    let prefix = tool_headline_prefix(status, tool_name, detail_lines);
+    match tool_headline_subject_kind(tool_name, detail_lines) {
+        TranscriptToolHeadlineSubjectKind::None => prefix.to_string(),
+        TranscriptToolHeadlineSubjectKind::Command => detail_lines
+            .iter()
+            .find_map(|detail| match detail {
+                ToolDetail::Command(command) => Some(format!("{prefix} {}", command.raw)),
+                _ => None,
+            })
+            .unwrap_or_else(|| prefix.to_string()),
+        TranscriptToolHeadlineSubjectKind::ToolName => format!("{prefix} {tool_name}"),
+    }
+}
+
+fn tool_headline_prefix(
+    status: TranscriptToolStatus,
+    tool_name: &str,
+    detail_lines: &[ToolDetail],
+) -> &'static str {
     if let Some(command) = detail_lines.iter().find_map(|detail| match detail {
         ToolDetail::Command(command) => Some(command),
         _ => None,
     }) {
-        return if command.intent == ToolCommandIntent::Explore {
-            exploration_headline_text(status).to_string()
-        } else {
-            format!("{} {}", command_headline_text(status), command.raw)
+        return match command.intent {
+            ToolCommandIntent::Execute => command_headline_text(status),
+            ToolCommandIntent::Explore => exploration_headline_text(status),
         };
     }
 
@@ -347,20 +372,53 @@ fn tool_headline_text(
             lifecycle_headline_text(status, "Editing files", "Updated files")
         }
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
-            format!("{} {}", generic_headline_text(status), tool_name)
+            generic_headline_text(status)
         }
     }
 }
 
-fn lifecycle_headline_text(status: TranscriptToolStatus, running: &str, finished: &str) -> String {
+fn tool_headline_subject_kind(
+    tool_name: &str,
+    detail_lines: &[ToolDetail],
+) -> TranscriptToolHeadlineSubjectKind {
+    if let Some(command) = detail_lines.iter().find_map(|detail| match detail {
+        ToolDetail::Command(command) => Some(command),
+        _ => None,
+    }) {
+        return match command.intent {
+            ToolCommandIntent::Execute => TranscriptToolHeadlineSubjectKind::Command,
+            ToolCommandIntent::Explore => TranscriptToolHeadlineSubjectKind::None,
+        };
+    }
+
+    match ToolRenderKind::classify(tool_name) {
+        ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin | ToolRenderKind::Generic => {
+            TranscriptToolHeadlineSubjectKind::ToolName
+        }
+        ToolRenderKind::UpdatePlan
+        | ToolRenderKind::UpdateExecution
+        | ToolRenderKind::SendInput
+        | ToolRenderKind::SpawnAgent
+        | ToolRenderKind::WaitAgent
+        | ToolRenderKind::ResumeAgent
+        | ToolRenderKind::CloseAgent
+        | ToolRenderKind::FileMutation => TranscriptToolHeadlineSubjectKind::None,
+    }
+}
+
+fn lifecycle_headline_text(
+    status: TranscriptToolStatus,
+    running: &'static str,
+    finished: &'static str,
+) -> &'static str {
     match status {
-        TranscriptToolStatus::Requested | TranscriptToolStatus::Running => running.to_string(),
-        TranscriptToolStatus::WaitingApproval => "Awaiting approval".to_string(),
-        TranscriptToolStatus::Approved => "Approved".to_string(),
-        TranscriptToolStatus::Finished => finished.to_string(),
-        TranscriptToolStatus::Denied => "Denied".to_string(),
-        TranscriptToolStatus::Failed => "Failed".to_string(),
-        TranscriptToolStatus::Cancelled => "Cancelled".to_string(),
+        TranscriptToolStatus::Requested | TranscriptToolStatus::Running => running,
+        TranscriptToolStatus::WaitingApproval => "Awaiting approval",
+        TranscriptToolStatus::Approved => "Approved",
+        TranscriptToolStatus::Finished => finished,
+        TranscriptToolStatus::Denied => "Denied",
+        TranscriptToolStatus::Failed => "Failed",
+        TranscriptToolStatus::Cancelled => "Cancelled",
     }
 }
 
@@ -485,6 +543,61 @@ impl TranscriptToolEntry {
             detail_lines: preview_tool_details(&self.detail_lines, max_lines),
             review: self.review.clone(),
         }
+    }
+
+    pub(crate) fn headline_prefix(&self) -> &'static str {
+        tool_headline_prefix(self.status, &self.tool_name, &self.detail_lines)
+    }
+
+    pub(crate) fn headline_subject_kind(&self) -> TranscriptToolHeadlineSubjectKind {
+        tool_headline_subject_kind(&self.tool_name, &self.detail_lines)
+    }
+
+    fn is_finished_successful_exploration(&self) -> bool {
+        self.status == TranscriptToolStatus::Finished
+            && self.completion == ToolCompletionState::Success
+            && self
+                .primary_command()
+                .is_some_and(|command| command.intent == ToolCommandIntent::Explore)
+    }
+
+    fn try_merge_finished_exploration(&mut self, next: &Self) -> bool {
+        if self.tool_name != next.tool_name
+            || !self.is_finished_successful_exploration()
+            || !next.is_finished_successful_exploration()
+        {
+            return false;
+        }
+
+        let Some(self_index) = self.first_command_detail_index() else {
+            return false;
+        };
+        let Some(next_command) = next.primary_command().cloned() else {
+            return false;
+        };
+
+        let ToolDetail::Command(command) = &mut self.detail_lines[self_index] else {
+            return false;
+        };
+        if !command.merge_exploration(&next_command) {
+            return false;
+        }
+
+        self.headline = tool_headline_text(self.status, &self.tool_name, &self.detail_lines);
+        true
+    }
+
+    fn first_command_detail_index(&self) -> Option<usize> {
+        self.detail_lines
+            .iter()
+            .position(|detail| matches!(detail, ToolDetail::Command(_)))
+    }
+
+    fn primary_command(&self) -> Option<&crate::tool_render::ToolCommand> {
+        self.detail_lines.iter().find_map(|detail| match detail {
+            ToolDetail::Command(command) => Some(command),
+            _ => None,
+        })
     }
 }
 
@@ -743,6 +856,13 @@ impl TranscriptEntry {
             | Self::SuccessSummary(_)
             | Self::ErrorSummary(_)
             | Self::WarningSummary(_) => false,
+        }
+    }
+
+    pub(crate) fn try_merge(&mut self, next: &Self) -> bool {
+        match (self, next) {
+            (Self::Tool(current), Self::Tool(next)) => current.try_merge_finished_exploration(next),
+            _ => false,
         }
     }
 
