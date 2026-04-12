@@ -1,9 +1,9 @@
 use super::{
-    ComposerCompletionEnterAction, ComposerCompletionHint, SlashCommand, SlashCommandArgumentSpec,
-    command_palette_lines, command_palette_lines_for, command_palette_lines_for_skills,
-    composer_completion_hint, cycle_composer_completion, inspector_action_for_slash_name,
-    move_composer_completion_selection, parse_slash_command, parse_slash_command_with_skills,
-    resolve_composer_enter_action,
+    ComposerCompletionEnterAction, ComposerCompletionHint, SLASH_COMMAND_SPECS, SlashCommand,
+    SlashCommandArgumentSpec, command_palette_lines, command_palette_lines_for,
+    command_palette_lines_for_skills, composer_completion_hint, cycle_composer_completion,
+    inspector_action_for_slash_name, move_composer_completion_selection, parse_slash_command,
+    parse_slash_command_with_skills, resolve_composer_enter_action,
 };
 use crate::frontend::tui::state::{InspectorAction, InspectorEntry};
 use crate::interaction::SkillSummary;
@@ -294,12 +294,81 @@ fn command_palette_includes_help_and_clear_alias() {
             .iter()
             .any(|line| line == "/theme [name]  pick or set the tui theme")
     );
-    assert!(lines.iter().any(|line| line == "/clear  alias of /new"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "/new  fresh top-level session · aliases: /clear")
+    );
     assert!(
         lines
             .iter()
             .any(|line| { line == "/exit  leave tui · aliases: /quit /q" })
     );
+}
+
+#[test]
+fn builtin_slash_surface_does_not_mirror_canonical_model_tools() {
+    let mirrored_model_tools = [
+        "read",
+        "write",
+        "edit",
+        "patch_files",
+        "list",
+        "glob",
+        "grep",
+        "exec_command",
+        "write_stdin",
+        "web_fetch",
+        "web_search",
+        "tool_discover",
+        "request_user_input",
+        "request_permissions",
+        "skills_list",
+        "skill_view",
+        "skill_manage",
+        "task_create",
+        "task_get",
+        "task_list",
+        "task_update",
+        "task_stop",
+        "spawn_agent",
+        "send_input",
+        "wait_agent",
+        "resume_agent",
+        "list_agents",
+        "close_agent",
+        "monitor_start",
+        "monitor_list",
+        "monitor_stop",
+        "worktree_enter",
+        "worktree_list",
+        "worktree_exit",
+        "cron_create",
+        "cron_list",
+        "cron_delete",
+        "code_diagnostics",
+        "code_search",
+        "code_symbol_search",
+        "code_document_symbols",
+        "code_nav",
+        "browser_open",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_eval",
+        "browser_screenshot",
+        "browser_close",
+        "notebook_read",
+        "notebook_edit",
+    ];
+
+    for spec in SLASH_COMMAND_SPECS {
+        assert!(
+            !mirrored_model_tools.contains(&spec.name),
+            "builtin slash command `{}` mirrors a canonical model tool",
+            spec.name
+        );
+    }
 }
 
 #[test]

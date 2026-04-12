@@ -33,6 +33,7 @@ impl SlashCommandSpec {
 
     pub(crate) fn aliases(self) -> &'static [&'static str] {
         match self.name {
+            "new" => &["clear"],
             "exit" => &["quit", "q"],
             _ => &[],
         }
@@ -234,6 +235,9 @@ pub(crate) enum ComposerCompletionEnterAction {
     ExecuteSlash(String),
 }
 
+// Built-in slash commands are reserved for operator/session control surfaces.
+// Model-visible tools must not be mirrored here unless the operator needs a
+// distinct host control plane that a direct tool call cannot provide.
 const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         section: "Session",
@@ -300,12 +304,6 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         name: "new",
         usage: "new",
         summary: "fresh top-level session",
-    },
-    SlashCommandSpec {
-        section: "Session",
-        name: "clear",
-        usage: "clear",
-        summary: "alias of /new",
     },
     SlashCommandSpec {
         section: "Session",
