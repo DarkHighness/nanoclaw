@@ -119,6 +119,11 @@ operator-oriented for host/session actions, but explicit skill invocation is a
 first-class exception so operators can browse and seed skill prompts without
 mirroring arbitrary model tools into slash commands.
 
+Managed skills keep archived revisions under the local skill root. `skill_manage`
+can archive, restore, and promote archived revisions; when restore is asked to
+pick a default archived revision, it prefers explicitly promoted snapshots over
+merely newer drafts.
+
 Use `/permissions` inside the TUI to inspect or switch the session base sandbox
 mode between `default` and `danger-full-access`. Model-issued
 `request_permissions` grants stay separate and layer on top of that base mode

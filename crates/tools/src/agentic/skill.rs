@@ -18,6 +18,7 @@ const SKILL_MANAGE_REFRESH_NOTE: &str =
     "Skill catalog changed. Re-run skills_list or skill_view before relying on updated skills.";
 const SKILL_ARCHIVE_DIR: &str = ".archive";
 const SKILL_ARCHIVE_METADATA_FILE: &str = "skill_archive.toml";
+const SKILL_PROMOTION_METADATA_FILE: &str = "skill_promotion.toml";
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SkillsListToolInput {
@@ -99,6 +100,12 @@ pub enum SkillManageToolInput {
         #[serde(default)]
         archive_id: Option<String>,
     },
+    PromoteArchive {
+        name: String,
+        archive_id: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
     WriteFile {
         name: String,
         file_path: String,
@@ -132,6 +139,22 @@ pub struct SkillSummary {
     pub update_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_state: Option<String>,
+    #[serde(default)]
+    pub archived_revision_count: usize,
+    #[serde(default)]
+    pub promoted_archive_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ArchivedSkillRevision {
+    pub archive_id: String,
+    pub archive_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
@@ -142,6 +165,8 @@ pub struct SkillDetail {
     pub references: Vec<String>,
     pub scripts: Vec<String>,
     pub assets: Vec<String>,
+    #[serde(default)]
+    pub archived_revisions: Vec<ArchivedSkillRevision>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -188,6 +213,10 @@ pub struct SkillManageOutput {
     pub archive_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_reason: Option<String>,
     pub note: String,
 }
 
@@ -398,7 +427,7 @@ impl Tool for SkillManageTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "skill_manage",
-            "Create, edit, patch, archive, restore, delete, or manage companion files for skills in the managed skill root.",
+            "Create, edit, patch, archive, promote archived revisions, restore, delete, or manage companion files for skills in the managed skill root.",
             serde_json::to_value(schema_for!(SkillManageToolInput)).expect("skill_manage schema"),
             ToolOutputMode::ContentParts,
             tool_approval_profile(false, true, false, false),
@@ -470,6 +499,8 @@ impl Tool for SkillManageTool {
                     file_path: None,
                     archive_id: None,
                     archive_path: None,
+                    promotion_state: None,
+                    promotion_reason: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -511,6 +542,8 @@ impl Tool for SkillManageTool {
                     file_path: None,
                     archive_id: None,
                     archive_path: None,
+                    promotion_state: None,
+                    promotion_reason: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -566,6 +599,8 @@ impl Tool for SkillManageTool {
                     file_path: None,
                     archive_id: None,
                     archive_path: None,
+                    promotion_state: None,
+                    promotion_reason: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -579,6 +614,8 @@ impl Tool for SkillManageTool {
                     file_path: None,
                     archive_id: None,
                     archive_path: None,
+                    promotion_state: None,
+                    promotion_reason: None,
                     note: format!(
                         "Deleted skill `{}`. {}",
                         existing.name, SKILL_MANAGE_REFRESH_NOTE
@@ -617,6 +654,8 @@ impl Tool for SkillManageTool {
                     file_path: None,
                     archive_id: Some(archive_id),
                     archive_path: Some(archive_dir.display().to_string()),
+                    promotion_state: None,
+                    promotion_reason: None,
                     note: format!(
                         "Archived skill `{}`. {}",
                         existing.name, SKILL_MANAGE_REFRESH_NOTE
@@ -645,7 +684,48 @@ impl Tool for SkillManageTool {
                     file_path: None,
                     archive_id: Some(archive.archive_id),
                     archive_path: Some(archive.path.display().to_string()),
+                    promotion_state: archive
+                        .promotion_state
+                        .map(|state| state.as_str().to_string()),
+                    promotion_reason: archive.promotion_reason,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
+                }
+            }
+            SkillManageToolInput::PromoteArchive {
+                name,
+                archive_id,
+                reason,
+            } => {
+                let canonical = validate_skill_name(&name)?;
+                let archive = resolve_skill_archive(
+                    &managed_root.path,
+                    &canonical,
+                    Some(archive_id.clone()),
+                )?;
+                ctx.assert_path_write_allowed(&archive.path)?;
+                let promotion_reason = reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                write_skill_archive_promotion_metadata(
+                    &archive.path,
+                    &SkillArchivePromotionMetadata {
+                        archive_id: archive.archive_id.clone(),
+                        state: SkillArchivePromotionState::Promoted,
+                        promotion_reason: promotion_reason.clone(),
+                    },
+                )
+                .await?;
+                SkillManageOutput {
+                    action: "promote_archive".to_string(),
+                    skill: None,
+                    file_path: None,
+                    archive_id: Some(archive.archive_id),
+                    archive_path: Some(archive.path.display().to_string()),
+                    promotion_state: Some(SkillArchivePromotionState::Promoted.as_str().to_string()),
+                    promotion_reason,
+                    note: "Promoted archived skill revision for preferred restore reuse. Re-run skill_view to inspect archive metadata.".to_string(),
                 }
             }
             SkillManageToolInput::WriteFile {
@@ -672,6 +752,8 @@ impl Tool for SkillManageTool {
                     file_path: Some(relative),
                     archive_id: None,
                     archive_path: None,
+                    promotion_state: None,
+                    promotion_reason: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -692,6 +774,8 @@ impl Tool for SkillManageTool {
                     file_path: Some(relative),
                     archive_id: None,
                     archive_path: None,
+                    promotion_state: None,
+                    promotion_reason: None,
                     note: SKILL_MANAGE_REFRESH_NOTE.to_string(),
                 }
             }
@@ -787,6 +871,37 @@ struct SkillArchiveMetadata {
     archived_reason: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SkillArchivePromotionState {
+    Promoted,
+}
+
+impl SkillArchivePromotionState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Promoted => "promoted",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SkillArchivePromotionMetadata {
+    archive_id: String,
+    state: SkillArchivePromotionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    promotion_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct LoadedArchivedSkillRevision {
+    archive_id: String,
+    archive_path: PathBuf,
+    archived_reason: Option<String>,
+    promotion_state: Option<SkillArchivePromotionState>,
+    promotion_reason: Option<String>,
+}
+
 fn slice_is_empty<T>(value: &[T]) -> bool {
     value.is_empty()
 }
@@ -829,6 +944,19 @@ async fn write_skill_archive_metadata(
     Ok(())
 }
 
+async fn write_skill_archive_promotion_metadata(
+    archive_dir: &Path,
+    metadata: &SkillArchivePromotionMetadata,
+) -> Result<()> {
+    let raw = toml::to_string(metadata).map_err(|error| {
+        ToolError::invalid_state(format!(
+            "failed to serialize skill promotion metadata: {error}"
+        ))
+    })?;
+    fs::write(archive_dir.join(SKILL_PROMOTION_METADATA_FILE), raw).await?;
+    Ok(())
+}
+
 fn skill_archive_root(managed_root: &Path) -> PathBuf {
     managed_root.join(SKILL_ARCHIVE_DIR)
 }
@@ -850,10 +978,97 @@ fn next_skill_archive_id() -> String {
         .to_string()
 }
 
+fn load_skill_archive_revisions(
+    managed_root: &Path,
+    skill_name: &str,
+) -> Result<Vec<LoadedArchivedSkillRevision>> {
+    let archives_root = skill_archive_root(managed_root).join(skill_name);
+    if !archives_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let entries = std::fs::read_dir(&archives_root).map_err(|error| {
+        ToolError::invalid_state(format!(
+            "failed to inspect archived revisions for `{skill_name}`: {error}"
+        ))
+    })?;
+    let mut revisions = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|error| {
+                ToolError::invalid_state(format!(
+                    "failed to inspect archived revisions for `{skill_name}`: {error}"
+                ))
+            })?
+            .path();
+        if !path.join("SKILL.md").exists() {
+            continue;
+        }
+        let archive_id = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let archive_metadata = read_archive_metadata(&path)?;
+        let promotion_metadata = read_archive_promotion_metadata(&path)?;
+        revisions.push(LoadedArchivedSkillRevision {
+            archive_id,
+            archive_path: path,
+            archived_reason: archive_metadata.and_then(|metadata| metadata.archived_reason),
+            promotion_state: promotion_metadata.as_ref().map(|metadata| metadata.state),
+            promotion_reason: promotion_metadata.and_then(|metadata| metadata.promotion_reason),
+        });
+    }
+    revisions.sort_by(|left, right| {
+        archive_revision_preference(right).cmp(&archive_revision_preference(left))
+    });
+    Ok(revisions)
+}
+
+fn archive_revision_preference(revision: &LoadedArchivedSkillRevision) -> (bool, u128) {
+    (
+        revision
+            .promotion_state
+            .is_some_and(|state| state == SkillArchivePromotionState::Promoted),
+        parse_archive_sort_key(&revision.archive_id),
+    )
+}
+
+fn read_archive_metadata(path: &Path) -> Result<Option<SkillArchiveMetadata>> {
+    read_optional_toml(path.join(SKILL_ARCHIVE_METADATA_FILE))
+}
+
+fn read_archive_promotion_metadata(path: &Path) -> Result<Option<SkillArchivePromotionMetadata>> {
+    read_optional_toml(path.join(SKILL_PROMOTION_METADATA_FILE))
+}
+
+fn read_optional_toml<T>(path: PathBuf) -> Result<Option<T>>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|error| {
+        ToolError::invalid_state(format!(
+            "failed to read metadata from `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    let parsed = toml::from_str(&raw).map_err(|error| {
+        ToolError::invalid_state(format!(
+            "failed to parse metadata from `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(Some(parsed))
+}
+
 #[derive(Clone, Debug)]
 struct ResolvedSkillArchive {
     archive_id: String,
     path: PathBuf,
+    promotion_state: Option<SkillArchivePromotionState>,
+    promotion_reason: Option<String>,
 }
 
 fn resolve_skill_archive(
@@ -862,23 +1077,21 @@ fn resolve_skill_archive(
     requested_archive_id: Option<String>,
 ) -> Result<ResolvedSkillArchive> {
     let skill_name = validate_skill_name(skill_name)?;
-    let archives_root = skill_archive_root(managed_root).join(&skill_name);
-    if !archives_root.exists() {
-        return Err(ToolError::invalid(format!(
-            "skill `{skill_name}` does not have any archived revisions"
-        )));
-    }
-
     if let Some(archive_id) = requested_archive_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let archive_path = archives_root.join(archive_id);
+        let archive_path = skill_archive_root(managed_root)
+            .join(&skill_name)
+            .join(archive_id);
         if archive_path.join("SKILL.md").exists() {
+            let promotion_metadata = read_archive_promotion_metadata(&archive_path)?;
             return Ok(ResolvedSkillArchive {
                 archive_id: archive_id.to_string(),
                 path: archive_path,
+                promotion_state: promotion_metadata.as_ref().map(|metadata| metadata.state),
+                promotion_reason: promotion_metadata.and_then(|metadata| metadata.promotion_reason),
             });
         }
         return Err(ToolError::invalid(format!(
@@ -886,32 +1099,23 @@ fn resolve_skill_archive(
         )));
     }
 
-    let entries = std::fs::read_dir(&archives_root).map_err(|error| {
-        ToolError::invalid_state(format!(
-            "failed to inspect archived revisions for `{skill_name}`: {error}"
-        ))
-    })?;
-    let mut archives = entries
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && path.join("SKILL.md").exists())
-        .filter_map(|path| {
-            let archive_id = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)?;
-            Some((archive_id, path))
-        })
-        .collect::<Vec<_>>();
-    archives.sort_by(|left, right| {
-        parse_archive_sort_key(&right.0).cmp(&parse_archive_sort_key(&left.0))
-    });
-    let Some((archive_id, path)) = archives.into_iter().next() else {
+    // Prefer explicitly promoted archived revisions over merely newer snapshots so
+    // restore defaults stay tied to reviewed reusable candidates instead of
+    // whichever archive happened to be created last.
+    let Some(revision) = load_skill_archive_revisions(managed_root, &skill_name)?
+        .into_iter()
+        .next()
+    else {
         return Err(ToolError::invalid(format!(
             "skill `{skill_name}` does not have any archived revisions"
         )));
     };
-    Ok(ResolvedSkillArchive { archive_id, path })
+    Ok(ResolvedSkillArchive {
+        archive_id: revision.archive_id,
+        path: revision.archive_path,
+        promotion_state: revision.promotion_state,
+        promotion_reason: revision.promotion_reason,
+    })
 }
 
 fn parse_archive_sort_key(value: &str) -> u128 {
@@ -1027,9 +1231,27 @@ fn render_skill_list(query: Option<&str>, skills: &[SkillSummary]) -> String {
             .as_deref()
             .map(|value| format!(" · update: {value}"))
             .unwrap_or_default();
+        let archived = if skill.archived_revision_count == 0 {
+            String::new()
+        } else {
+            format!(" · archived: {}", skill.archived_revision_count)
+        };
+        let promoted = if skill.promoted_archive_count == 0 {
+            String::new()
+        } else {
+            format!(" · promoted: {}", skill.promoted_archive_count)
+        };
         lines.push(format!(
-            "- /{} · {}{}{}{}{}{}",
-            skill.name, skill.description, aliases, tags, shadowed, trust, update
+            "- /{} · {}{}{}{}{}{}{}{}",
+            skill.name,
+            skill.description,
+            aliases,
+            tags,
+            shadowed,
+            trust,
+            update,
+            archived,
+            promoted
         ));
     }
     lines.join("\n")
@@ -1081,6 +1303,18 @@ fn render_skill_detail(detail: &SkillDetail) -> String {
     if !detail.assets.is_empty() {
         lines.push(format!("Assets {}", detail.assets.join(", ")));
     }
+    if !detail.archived_revisions.is_empty() {
+        let promoted = detail
+            .archived_revisions
+            .iter()
+            .filter(|revision| revision.promotion_state.as_deref() == Some("promoted"))
+            .count();
+        lines.push(format!(
+            "Archived revisions {} · promoted {}",
+            detail.archived_revisions.len(),
+            promoted
+        ));
+    }
     if let Some(repo_url) = detail.repo_url.as_deref() {
         lines.push(format!("Repo {}", repo_url));
     }
@@ -1113,12 +1347,23 @@ fn render_skill_manage_result(output: &SkillManageOutput) -> String {
     if let Some(archive_path) = output.archive_path.as_deref() {
         lines.push(format!("Archive path {}", archive_path));
     }
+    if let Some(promotion_state) = output.promotion_state.as_deref() {
+        lines.push(format!("Promotion {}", promotion_state));
+    }
+    if let Some(promotion_reason) = output.promotion_reason.as_deref() {
+        lines.push(format!("Promotion reason {}", promotion_reason));
+    }
     lines.push(output.note.clone());
     lines.join("\n")
 }
 
 fn skill_summary(skill: &Skill) -> SkillSummary {
     let hub = skill.provenance.hub.as_ref();
+    let archived_revisions = if skill.provenance.root.writable() {
+        load_skill_archive_revisions(&skill.provenance.root.path, &skill.name).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     SkillSummary {
         name: skill.name.clone(),
         description: skill.description.clone(),
@@ -1153,11 +1398,23 @@ fn skill_summary(skill: &Skill) -> SkillSummary {
         audit_state: hub
             .and_then(|hub| hub.audit_state)
             .map(|state| state.as_str().to_string()),
+        archived_revision_count: archived_revisions.len(),
+        promoted_archive_count: archived_revisions
+            .iter()
+            .filter(|revision| {
+                revision.promotion_state == Some(SkillArchivePromotionState::Promoted)
+            })
+            .count(),
     }
 }
 
 fn skill_detail(skill: &Skill, include_instruction: bool) -> SkillDetail {
     let hub = skill.provenance.hub.as_ref();
+    let archived_revisions = if skill.provenance.root.writable() {
+        load_skill_archive_revisions(&skill.provenance.root.path, &skill.name).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     SkillDetail {
         summary: skill_summary(skill),
         shadowed_skill_paths: skill
@@ -1169,6 +1426,18 @@ fn skill_detail(skill: &Skill, include_instruction: bool) -> SkillDetail {
         references: relative_paths(&skill.root_dir, &skill.references),
         scripts: relative_paths(&skill.root_dir, &skill.scripts),
         assets: relative_paths(&skill.root_dir, &skill.assets),
+        archived_revisions: archived_revisions
+            .into_iter()
+            .map(|revision| ArchivedSkillRevision {
+                archive_id: revision.archive_id,
+                archive_path: revision.archive_path.display().to_string(),
+                archived_reason: revision.archived_reason,
+                promotion_state: revision
+                    .promotion_state
+                    .map(|state| state.as_str().to_string()),
+                promotion_reason: revision.promotion_reason,
+            })
+            .collect(),
         repo_url: hub.and_then(|hub| hub.repo_url.clone()),
         detail_url: hub.and_then(|hub| hub.detail_url.clone()),
         install_command: hub.and_then(|hub| hub.install_command.clone()),
@@ -1491,6 +1760,185 @@ Read docs carefully.
                 .root_dir
                 .join("references/guide.md")
                 .exists()
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_manage_promote_archive_biases_default_restore_selection() {
+        let catalog = catalog().await;
+        let tool = SkillManageTool::new(catalog.clone());
+
+        let first_archive = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "action": "archive",
+                    "name": "pdf",
+                    "reason": "baseline"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let first_archive_id = first_archive.structured_content.as_ref().unwrap()["archive_id"]
+            .as_str()
+            .expect("expected first archive id")
+            .to_string();
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "action": "restore",
+                "name": "pdf",
+                "archive_id": first_archive_id
+            }),
+            &crate::ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "action": "patch",
+                "name": "pdf",
+                "description": "Use for newer PDF tasks"
+            }),
+            &crate::ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        let second_archive = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "action": "archive",
+                    "name": "pdf",
+                    "reason": "newer draft"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let second_archive_id = second_archive.structured_content.as_ref().unwrap()["archive_id"]
+            .as_str()
+            .expect("expected second archive id")
+            .to_string();
+        assert_ne!(first_archive_id, second_archive_id);
+
+        let promoted = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "action": "promote_archive",
+                    "name": "pdf",
+                    "archive_id": first_archive_id,
+                    "reason": "verified reusable baseline"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let promoted_structured = promoted.structured_content.as_ref().unwrap();
+        assert_eq!(promoted_structured["promotion_state"], "promoted");
+
+        let restored = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "action": "restore",
+                    "name": "pdf"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let restored_structured = restored.structured_content.as_ref().unwrap();
+        assert_eq!(restored_structured["archive_id"], first_archive_id);
+        assert_eq!(restored_structured["promotion_state"], "promoted");
+        assert_eq!(
+            restored_structured["skill"]["description"],
+            "Use for PDF tasks"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_view_and_list_surface_archived_revision_counts_and_promotion() {
+        let catalog = catalog().await;
+        let tool = SkillManageTool::new(catalog.clone());
+
+        let archived = tool
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "action": "archive",
+                    "name": "pdf",
+                    "reason": "baseline"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let archive_id = archived.structured_content.as_ref().unwrap()["archive_id"]
+            .as_str()
+            .expect("expected archive id")
+            .to_string();
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "action": "promote_archive",
+                "name": "pdf",
+                "archive_id": archive_id,
+                "reason": "passed manual review"
+            }),
+            &crate::ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        tool.execute(
+            ToolCallId::new(),
+            json!({
+                "action": "restore",
+                "name": "pdf"
+            }),
+            &crate::ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+
+        let list = SkillsListTool::new(catalog.clone())
+            .execute(
+                ToolCallId::new(),
+                json!({}),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let listed = list.structured_content.as_ref().unwrap();
+        assert_eq!(listed["skills"][1]["archived_revision_count"], 1);
+        assert_eq!(listed["skills"][1]["promoted_archive_count"], 1);
+
+        let view = SkillViewTool::new(catalog)
+            .execute(
+                ToolCallId::new(),
+                json!({
+                    "name": "pdf"
+                }),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+        let detail = view.structured_content.as_ref().unwrap();
+        assert_eq!(
+            detail["skill"]["archived_revisions"][0]["promotion_state"],
+            "promoted"
+        );
+        assert_eq!(
+            detail["skill"]["archived_revisions"][0]["promotion_reason"],
+            "passed manual review"
         );
     }
 
