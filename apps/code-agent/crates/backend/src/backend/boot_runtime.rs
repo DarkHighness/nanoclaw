@@ -10,7 +10,7 @@ use agent::tools::{
 };
 use agent::{
     ApplyPatchTool, CodeCallHierarchyTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
-    CodeHoverTool, CodeImplementationsTool, CodeIntelBackend, CodeReferencesTool,
+    CodeHoverTool, CodeImplementationsTool, CodeIntelBackend, CodeNavTool, CodeReferencesTool,
     CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchFilesTool,
     PatchTool, PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy,
@@ -568,6 +568,7 @@ fn build_builtin_tools(
     tools.register(CodeDocumentSymbolsTool::with_backend(
         code_intel_backend.clone(),
     ));
+    tools.register(CodeNavTool::with_backend(code_intel_backend.clone()));
     tools.register(CodeDefinitionsTool::with_backend(
         code_intel_backend.clone(),
     ));
@@ -783,6 +784,44 @@ mod tests {
         assert!(openai_visible.iter().any(|name| name == "patch_files"));
         assert!(!openai_visible.iter().any(|name| name == "patch"));
         assert!(!openai_visible.iter().any(|name| name == "apply_patch"));
+    }
+
+    #[test]
+    fn code_nav_visibility_prefers_canonical_surface_over_legacy_navigation_tools() {
+        let options = load_options();
+        let workspace = tempdir().unwrap();
+        let tooling = build_runtime_tooling(
+            &options,
+            workspace.path(),
+            &SandboxPolicy::permissive(),
+            &SandboxBackendStatus::Unavailable {
+                reason: "not needed".to_string(),
+            },
+            SkillCatalog::default(),
+        );
+
+        let openai_visible = tooling
+            .tools
+            .specs()
+            .into_iter()
+            .filter(|spec| spec.is_model_visible_for_provider("openai"))
+            .map(|spec| spec.name.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(openai_visible.iter().any(|name| name == "code_nav"));
+        assert!(!openai_visible.iter().any(|name| name == "code_definitions"));
+        assert!(!openai_visible.iter().any(|name| name == "code_references"));
+        assert!(!openai_visible.iter().any(|name| name == "code_hover"));
+        assert!(
+            !openai_visible
+                .iter()
+                .any(|name| name == "code_implementations")
+        );
+        assert!(
+            !openai_visible
+                .iter()
+                .any(|name| name == "code_call_hierarchy")
+        );
     }
 
     #[test]

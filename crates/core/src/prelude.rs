@@ -21,8 +21,9 @@ pub use tools::{
 pub use tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeCallHierarchyTool, CodeDefinitionsTool,
     CodeDocumentSymbolsTool, CodeHover, CodeHoverTool, CodeImplementationsTool, CodeIntelBackend,
-    CodeReference, CodeReferencesTool, CodeSymbol, CodeSymbolKind, CodeSymbolSearchTool,
-    ManagedCodeIntelBackend, ManagedCodeIntelOptions, WorkspaceTextCodeIntelBackend,
+    CodeNavOperation, CodeNavTool, CodeReference, CodeReferencesTool, CodeSymbol, CodeSymbolKind,
+    CodeSymbolSearchTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
+    WorkspaceTextCodeIntelBackend,
 };
 #[cfg(feature = "web-tools")]
 pub use tools::{WebFetchTool, WebSearchBackendsTool, WebSearchTool};

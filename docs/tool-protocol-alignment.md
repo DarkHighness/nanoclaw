@@ -215,11 +215,15 @@ not count here because they are not currently in the live registry.
 - web:
   `web_fetch`, `web_search`
 - code intelligence:
-  `code_symbol_search`, `code_document_symbols`, `code_definitions`,
-  `code_references`
+  `code_symbol_search`, `code_document_symbols`, `code_nav`
 - agentic:
   `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`,
   `close_agent`
+
+The runtime keeps `code_definitions`, `code_references`, `code_hover`,
+`code_implementations`, and `code_call_hierarchy` as compatibility wrappers,
+but they are hidden from the default model-visible surface so semantic
+navigation now converges on one canonical entry point.
 
 The child-control surfaces now follow Codex-style identifiers for
 `send_input`, `wait_agent`, `resume_agent`, and `close_agent`. `spawn_agent`
