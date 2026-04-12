@@ -14,6 +14,10 @@ Historical background remains available in:
 - `docs/archive/2026-03-26/tool-interface-design.md`
 - `docs/archive/2026-03-26/tooling-research.md`
 
+Execution companion:
+
+- `docs/code-agent-tooling-expansion-plan.md`
+
 ## Why This Pass Exists
 
 `nanoclaw` already has a credible coding-agent baseline:

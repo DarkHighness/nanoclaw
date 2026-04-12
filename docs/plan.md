@@ -81,6 +81,10 @@ Intentionally still documented as not yet implemented:
 - `docs/tool-protocol-alignment.md`
   - active Codex/OpenCode/nanoclaw tool-surface alignment note and target
     protocol draft
+- `docs/code-agent-tooling-expansion-plan.md`
+  - executable follow-up plan for the missing task, monitor, worktree,
+    checkpoint, diagnostics, automation, browser, notebook, and code-search
+    tool families
 - `docs/meta-agent-evolution-plan.md`
   - active 2026 literature-informed plan for a self-improving Meta Agent
     control plane on top of the current subagent/runtime substrate
