@@ -18,7 +18,9 @@ pub use tools::{
     WorktreeExitTool, WorktreeListTool,
 };
 #[cfg(feature = "browser-tools")]
-pub use tools::{BrowserManager, BrowserOpenTool, BrowserRuntimeContext, BrowserSnapshotTool};
+pub use tools::{
+    BrowserClickTool, BrowserManager, BrowserOpenTool, BrowserRuntimeContext, BrowserSnapshotTool,
+};
 #[cfg(feature = "code-intel")]
 pub use tools::{
     CodeCallHierarchyDirection, CodeCallHierarchyEntry, CodeDiagnostic, CodeDiagnosticSeverity,

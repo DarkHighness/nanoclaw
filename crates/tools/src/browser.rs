@@ -14,6 +14,7 @@ use types::{
 
 const BROWSER_OPEN_TOOL_NAME: &str = "browser_open";
 const BROWSER_SNAPSHOT_TOOL_NAME: &str = "browser_snapshot";
+const BROWSER_CLICK_TOOL_NAME: &str = "browser_click";
 const DEFAULT_BROWSER_TEXT_LINES: usize = 12;
 const DEFAULT_BROWSER_ELEMENT_COUNT: usize = 8;
 const DEFAULT_BROWSER_HTML_CHARS: usize = 2048;
@@ -74,6 +75,13 @@ pub struct BrowserSnapshotRequest {
     pub max_html_chars: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserClickRequest {
+    pub browser_id: Option<BrowserId>,
+    pub selector: String,
+    pub wait_for_navigation: bool,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserSnapshotElementKind {
@@ -123,6 +131,12 @@ pub trait BrowserManager: Send + Sync {
         runtime: BrowserRuntimeContext,
         request: BrowserSnapshotRequest,
     ) -> Result<BrowserSnapshotRecord>;
+
+    async fn click_browser(
+        &self,
+        runtime: BrowserRuntimeContext,
+        request: BrowserClickRequest,
+    ) -> Result<BrowserSummaryRecord>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -148,6 +162,15 @@ pub struct BrowserSnapshotToolInput {
     pub max_html_chars: Option<usize>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct BrowserClickToolInput {
+    #[serde(default)]
+    pub browser_id: Option<BrowserId>,
+    pub selector: String,
+    #[serde(default)]
+    pub wait_for_navigation: Option<bool>,
+}
+
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 struct BrowserOpenToolOutput {
     browser: BrowserSummaryRecord,
@@ -156,6 +179,12 @@ struct BrowserOpenToolOutput {
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 struct BrowserSnapshotToolOutput {
     snapshot: BrowserSnapshotRecord,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct BrowserClickToolOutput {
+    browser: BrowserSummaryRecord,
+    selector: String,
 }
 
 #[derive(Clone)]
@@ -168,6 +197,11 @@ pub struct BrowserSnapshotTool {
     manager: Arc<dyn BrowserManager>,
 }
 
+#[derive(Clone)]
+pub struct BrowserClickTool {
+    manager: Arc<dyn BrowserManager>,
+}
+
 impl BrowserOpenTool {
     #[must_use]
     pub fn new(manager: Arc<dyn BrowserManager>) -> Self {
@@ -176,6 +210,13 @@ impl BrowserOpenTool {
 }
 
 impl BrowserSnapshotTool {
+    #[must_use]
+    pub fn new(manager: Arc<dyn BrowserManager>) -> Self {
+        Self { manager }
+    }
+}
+
+impl BrowserClickTool {
     #[must_use]
     pub fn new(manager: Arc<dyn BrowserManager>) -> Self {
         Self { manager }
@@ -299,6 +340,64 @@ impl Tool for BrowserSnapshotTool {
     }
 }
 
+#[async_trait]
+impl Tool for BrowserClickTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            BROWSER_CLICK_TOOL_NAME,
+            "Click a DOM element inside an open browser session and persist the resulting browser summary as a typed runtime object update.",
+            serde_json::to_value(schema_for!(BrowserClickToolInput)).expect("browser_click schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, false, true).with_network(true),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(BrowserClickToolOutput))
+                .expect("browser_click output schema"),
+        )
+        .with_availability(ToolAvailability {
+            feature_flags: vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()],
+            provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
+            ..ToolAvailability::default()
+        })
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: BrowserClickToolInput = serde_json::from_value(arguments)?;
+        let selector = input.selector.trim();
+        if selector.is_empty() {
+            return Err(ToolError::invalid(
+                "browser_click requires a non-empty selector",
+            ));
+        }
+        let request = BrowserClickRequest {
+            browser_id: input.browser_id,
+            selector: selector.to_string(),
+            wait_for_navigation: input.wait_for_navigation.unwrap_or(false),
+        };
+        let browser = self
+            .manager
+            .click_browser(BrowserRuntimeContext::from(ctx), request.clone())
+            .await?;
+        Ok(ToolResult::text(
+            call_id,
+            BROWSER_CLICK_TOOL_NAME,
+            render_browser_click(&browser, &request.selector),
+        )
+        .with_structured_content(json!(BrowserClickToolOutput {
+            browser,
+            selector: request.selector,
+        }))
+        .with_call_id(external_call_id))
+    }
+}
+
 fn render_browser_summary(browser: &BrowserSummaryRecord) -> String {
     let mut lines = vec![format!("opened browser {}", browser.browser_id)];
     lines.push(format!("url {}", browser.current_url));
@@ -341,13 +440,29 @@ fn render_browser_snapshot(snapshot: &BrowserSnapshotRecord) -> String {
     lines.join("\n")
 }
 
+fn render_browser_click(browser: &BrowserSummaryRecord, selector: &str) -> String {
+    let mut lines = vec![format!("clicked browser {}", browser.browser_id)];
+    lines.push(format!("selector {selector}"));
+    lines.push(format!("url {}", browser.current_url));
+    lines.push(format!("status {}", browser.status));
+    if let Some(title) = browser
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("title {title}"));
+    }
+    lines.join("\n")
+}
+
 fn clamp_snapshot_limit(candidate: Option<usize>, default: usize, max: usize) -> usize {
     candidate.unwrap_or(default).clamp(1, max)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BrowserOpenTool, BrowserSnapshotTool};
+    use super::{BrowserClickTool, BrowserOpenTool, BrowserSnapshotTool};
     use crate::registry::Tool;
 
     #[test]
@@ -386,6 +501,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn browser_click_spec_exposes_feature_and_model_constraints() {
+        let spec = BrowserClickTool::new(std::sync::Arc::new(FailingManager)).spec();
+        assert_eq!(spec.name.as_str(), "browser_click");
+        assert_eq!(
+            spec.availability.feature_flags,
+            vec![crate::HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()]
+        );
+        assert_eq!(
+            spec.availability.provider_allowlist,
+            vec!["openai".to_string()]
+        );
+        assert_eq!(
+            spec.availability.model_allowlist,
+            vec!["gpt-5*".to_string()]
+        );
+    }
+
     struct FailingManager;
 
     #[async_trait::async_trait]
@@ -403,6 +536,14 @@ mod tests {
             _runtime: super::BrowserRuntimeContext,
             _request: super::BrowserSnapshotRequest,
         ) -> crate::Result<super::BrowserSnapshotRecord> {
+            unreachable!("spec test does not execute the tool")
+        }
+
+        async fn click_browser(
+            &self,
+            _runtime: super::BrowserRuntimeContext,
+            _request: super::BrowserClickRequest,
+        ) -> crate::Result<BrowserSummaryRecord> {
             unreachable!("spec test does not execute the tool")
         }
     }

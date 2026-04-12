@@ -380,6 +380,35 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::BrowserClick => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let mut preview = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("click browser {browser_id}"))
+                    .unwrap_or_else(|| "click current browser".to_string()),
+                format!("selector {selector}"),
+            ];
+            if arguments
+                .get("wait_for_navigation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                preview.push("wait for navigation".to_string());
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::MonitorStart => {
             let command = arguments.get("cmd").and_then(Value::as_str);
             if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
@@ -733,6 +762,43 @@ mod tests {
                 "html preview enabled".to_string(),
                 "text 10".to_string(),
                 "elements 6".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn approval_prompt_extracts_browser_click_context() {
+        let prompt = approval_prompt_from_request(&ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-browser-click".into(),
+                tool_name: "browser_click".into(),
+                arguments: json!({
+                    "browser_id": "browser_123",
+                    "selector": "#deploy",
+                    "wait_for_navigation": true
+                }),
+                origin: ToolOrigin::Local,
+            },
+            spec: ToolSpec::function(
+                "browser_click",
+                "click browser element",
+                json!({"type":"object"}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            ),
+            reasons: vec!["browser automation requires review".to_string()],
+        });
+
+        assert_eq!(prompt.tool_name, "browser_click");
+        assert_eq!(prompt.content.kind, ApprovalContentKind::Arguments);
+        assert_eq!(
+            prompt.content.preview,
+            vec![
+                "click browser browser_123".to_string(),
+                "selector #deploy".to_string(),
+                "wait for navigation".to_string(),
             ]
         );
     }

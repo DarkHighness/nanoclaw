@@ -21,6 +21,7 @@ pub enum ToolRenderKind {
     CodeDiagnostics,
     BrowserOpen,
     BrowserSnapshot,
+    BrowserClick,
     MonitorStart,
     MonitorList,
     MonitorStop,
@@ -50,6 +51,7 @@ impl ToolRenderKind {
             "code_diagnostics" => Self::CodeDiagnostics,
             "browser_open" => Self::BrowserOpen,
             "browser_snapshot" => Self::BrowserSnapshot,
+            "browser_click" => Self::BrowserClick,
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
             "monitor_stop" => Self::MonitorStop,
@@ -615,6 +617,32 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 (Some(max_text_lines), None) => lines.push(format!("text {max_text_lines}")),
                 (None, Some(max_elements)) => lines.push(format!("elements {max_elements}")),
                 (None, None) => {}
+            }
+            return lines;
+        }
+        ToolRenderKind::BrowserClick => {
+            let selector = arguments
+                .get("selector")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("<unknown>");
+            let mut lines = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("Click browser {browser_id}"))
+                    .unwrap_or_else(|| "Click current browser".to_string()),
+                format!("selector {}", truncate_inline(selector, 80)),
+            ];
+            if arguments
+                .get("wait_for_navigation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                lines.push("wait for navigation".to_string());
             }
             return lines;
         }
@@ -1211,6 +1239,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         | ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::BrowserOpen
         | ToolRenderKind::BrowserSnapshot
+        | ToolRenderKind::BrowserClick
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
         | ToolRenderKind::WorktreeEnter
@@ -1297,6 +1326,11 @@ pub fn tool_output_details(
         }
         ToolRenderKind::BrowserSnapshot => {
             if let Some(details) = browser_snapshot_output_details(structured) {
+                return details;
+            }
+        }
+        ToolRenderKind::BrowserClick => {
+            if let Some(details) = browser_click_output_details(structured) {
                 return details;
             }
         }
@@ -1848,6 +1882,36 @@ fn browser_snapshot_output_details(structured: Option<&Value>) -> Option<Vec<Too
         });
     }
 
+    Some(details)
+}
+
+fn browser_click_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let _browser = structured.get("browser")?;
+    let mut details = browser_open_output_details(Some(structured))?;
+    if let Some(selector) = structured
+        .get("selector")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.insert(
+            1,
+            ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Effect,
+                value: format!("clicked {}", truncate_inline(selector, 72)),
+            },
+        );
+    }
+    if let Some(state_detail) = details.iter_mut().find_map(|detail| match detail {
+        ToolDetail::LabeledValue { label, value } if *label == ToolDetailLabel::State => {
+            Some(value)
+        }
+        _ => None,
+    }) && !state_detail.contains("updated")
+    {
+        *state_detail = format!("{state_detail} · updated");
+    }
     Some(details)
 }
 
@@ -3238,6 +3302,21 @@ mod tests {
                 "text 10, elements 6"
             ]
         );
+        assert_eq!(
+            tool_arguments_preview_lines(
+                "browser_click",
+                &json!({
+                    "browser_id": "browser_123",
+                    "selector": "#deploy",
+                    "wait_for_navigation": true
+                })
+            ),
+            vec![
+                "Click browser browser_123",
+                "selector #deploy",
+                "wait for navigation"
+            ]
+        );
     }
 
     #[test]
@@ -3356,6 +3435,43 @@ mod tests {
             browser_snapshot_rendered
                 .iter()
                 .any(|line| line == "  └ html")
+        );
+
+        let browser_click_rendered = tool_output_detail_lines(
+            "browser_click",
+            "",
+            Some(&json!({
+                "browser": {
+                    "browser_id": "browser_123",
+                    "status": "open",
+                    "current_url": "https://example.com/clicked?selector=%23deploy",
+                    "headless": true,
+                    "title": "Clicked Example App",
+                    "viewport": {"width": 1280, "height": 720}
+                },
+                "selector": "#deploy"
+            })),
+        );
+        assert_eq!(browser_click_rendered[0], "  └ Session browser_123");
+        assert!(
+            browser_click_rendered
+                .iter()
+                .any(|line| line == "  └ Effect clicked #deploy")
+        );
+        assert!(
+            browser_click_rendered
+                .iter()
+                .any(|line| line == "  └ Context https://example.com/clicked?selector=%23deploy")
+        );
+        assert!(
+            browser_click_rendered
+                .iter()
+                .any(|line| line == "  └ State open · headless · 1280x720 · updated")
+        );
+        assert!(
+            browser_click_rendered
+                .iter()
+                .any(|line| line == "  └ Result Clicked Example App")
         );
 
         let cron_list_rendered = tool_output_detail_lines(

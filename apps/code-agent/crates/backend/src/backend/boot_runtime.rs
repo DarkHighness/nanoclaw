@@ -12,7 +12,7 @@ use agent::tools::{
     TaskManager, WorktreeManager,
 };
 #[cfg(feature = "browser-tools")]
-use agent::{BrowserOpenTool, BrowserSnapshotTool};
+use agent::{BrowserClickTool, BrowserOpenTool, BrowserSnapshotTool};
 use agent::{
     CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool, CodeSearchTool,
     CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
@@ -565,7 +565,8 @@ pub fn register_monitor_tools(tools: &mut ToolRegistry, monitor_manager: Arc<dyn
 #[cfg(feature = "browser-tools")]
 pub fn register_browser_tools(tools: &mut ToolRegistry, browser_manager: Arc<dyn BrowserManager>) {
     tools.register(BrowserOpenTool::new(browser_manager.clone()));
-    tools.register(BrowserSnapshotTool::new(browser_manager));
+    tools.register(BrowserSnapshotTool::new(browser_manager.clone()));
+    tools.register(BrowserClickTool::new(browser_manager));
 }
 
 #[cfg(feature = "automation-tools")]
