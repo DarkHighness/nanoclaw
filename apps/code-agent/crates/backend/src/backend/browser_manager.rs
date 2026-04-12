@@ -1,18 +1,23 @@
 use crate::backend::SessionEventStream;
 use crate::ui::SessionEvent;
 use agent::tools::{
-    BrowserManager, BrowserOpenRequest, BrowserRuntimeContext, Result as ToolResult, ToolError,
+    BrowserManager, BrowserOpenRequest, BrowserRuntimeContext, BrowserSnapshotElement,
+    BrowserSnapshotElementKind, BrowserSnapshotRecord, BrowserSnapshotRequest,
+    Result as ToolResult, ToolError,
 };
 use agent::types::{
     BrowserId, BrowserStatus, BrowserSummaryRecord, SessionEventEnvelope, SessionEventKind,
     SessionId, new_opaque_id,
 };
 use async_trait::async_trait;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use store::SessionStore;
 
-trait BrowserHandle: Send + Sync {}
+trait BrowserHandle: Send + Sync {
+    fn snapshot(&self, request: &BrowserSnapshotRequest) -> ToolResult<BrowserSnapshotRecord>;
+}
 
 struct BrowserLaunch {
     handle: Arc<dyn BrowserHandle>,
@@ -114,6 +119,41 @@ impl SessionBrowserManager {
             .expect("browser registry lock")
             .insert(state.summary().browser_id.clone(), state);
     }
+
+    fn resolve_browser_state(
+        &self,
+        runtime: &BrowserRuntimeContext,
+        browser_id: Option<&BrowserId>,
+    ) -> ToolResult<Arc<SessionBrowser>> {
+        let (session_id, _) = Self::require_attached_runtime(runtime)?;
+        let browsers = self.browsers.lock().expect("browser registry lock");
+        if let Some(browser_id) = browser_id {
+            let state = browsers.get(browser_id).cloned().ok_or_else(|| {
+                ToolError::invalid_state(format!("browser {browser_id} is not open"))
+            })?;
+            if state.summary().session_id != session_id {
+                return Err(ToolError::invalid_state(format!(
+                    "browser {browser_id} is not attached to the current session"
+                )));
+            }
+            return Ok(state);
+        }
+
+        let mut attached = browsers
+            .values()
+            .filter(|state| state.summary().session_id == session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        match attached.len() {
+            0 => Err(ToolError::invalid_state(
+                "browser_snapshot requires an open browser session",
+            )),
+            1 => Ok(attached.remove(0)),
+            _ => Err(ToolError::invalid(
+                "browser_snapshot requires browser_id when multiple browsers are open",
+            )),
+        }
+    }
 }
 
 #[async_trait]
@@ -160,6 +200,26 @@ impl BrowserManager for SessionBrowserManager {
         self.insert_browser(state);
         self.publish_opened(&runtime, summary.clone()).await?;
         Ok(summary)
+    }
+
+    async fn snapshot_browser(
+        &self,
+        runtime: BrowserRuntimeContext,
+        request: BrowserSnapshotRequest,
+    ) -> ToolResult<BrowserSnapshotRecord> {
+        let state = self.resolve_browser_state(&runtime, request.browser_id.as_ref())?;
+        let summary = state.summary();
+        let browser_id = summary.browser_id.clone();
+        let handle = state._handle.clone();
+        let snapshot = tokio::task::spawn_blocking(move || handle.snapshot(&request))
+            .await
+            .map_err(|error| {
+                ToolError::invalid_state(format!("failed to join browser task: {error}"))
+            })??;
+        Ok(BrowserSnapshotRecord {
+            browser_id,
+            ..snapshot
+        })
     }
 }
 
@@ -220,7 +280,182 @@ struct HeadlessChromeBrowserHandle {
     _tab: Arc<headless_chrome::Tab>,
 }
 
-impl BrowserHandle for HeadlessChromeBrowserHandle {}
+impl BrowserHandle for HeadlessChromeBrowserHandle {
+    fn snapshot(&self, request: &BrowserSnapshotRequest) -> ToolResult<BrowserSnapshotRecord> {
+        let current_url = self._tab.get_url();
+        let title = self
+            ._tab
+            .get_title()
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let text_preview = extract_text_preview(&self._tab, request.max_text_lines)?;
+        let interactive_elements = extract_interactive_elements(&self._tab, request.max_elements)?;
+        let html_preview = if request.include_html {
+            html_preview_lines(
+                &self._tab.get_content().map_err(|error| {
+                    ToolError::invalid_state(format!("failed to read browser html: {error}"))
+                })?,
+                request.max_html_chars,
+            )
+        } else {
+            Vec::new()
+        };
+
+        Ok(BrowserSnapshotRecord {
+            browser_id: BrowserId::from("browser_pending"),
+            current_url,
+            title,
+            text_preview,
+            interactive_elements,
+            html_preview,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct BrowserSnapshotPageData {
+    #[serde(default)]
+    text_preview: Vec<String>,
+    #[serde(default)]
+    interactive_elements: Vec<BrowserSnapshotElementData>,
+}
+
+#[derive(Deserialize)]
+struct BrowserSnapshotElementData {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    selector_hint: Option<String>,
+}
+
+fn extract_text_preview(
+    tab: &headless_chrome::Tab,
+    max_text_lines: usize,
+) -> ToolResult<Vec<String>> {
+    let data = evaluate_snapshot_page_data(tab, max_text_lines, 0)?;
+    Ok(data.text_preview)
+}
+
+fn extract_interactive_elements(
+    tab: &headless_chrome::Tab,
+    max_elements: usize,
+) -> ToolResult<Vec<BrowserSnapshotElement>> {
+    let data = evaluate_snapshot_page_data(tab, 0, max_elements)?;
+    Ok(data
+        .interactive_elements
+        .into_iter()
+        .map(BrowserSnapshotElementData::into_record)
+        .collect())
+}
+
+fn evaluate_snapshot_page_data(
+    tab: &headless_chrome::Tab,
+    max_text_lines: usize,
+    max_elements: usize,
+) -> ToolResult<BrowserSnapshotPageData> {
+    let script = format!(
+        r#"
+(() => {{
+  const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
+  const textPreview = (document.body?.innerText || "")
+    .split(/\r?\n/)
+    .map(normalize)
+    .filter(Boolean)
+    .slice(0, {max_text_lines});
+  const interactiveElements = Array.from(
+    document.querySelectorAll('a[href], button, input, textarea, select, [role="button"]')
+  )
+    .slice(0, {max_elements})
+    .map((element) => {{
+      const tag = (element.tagName || "").toLowerCase();
+      const role = normalize(element.getAttribute('role'));
+      const kind =
+        tag === 'a' ? 'link' :
+        tag === 'button' || role === 'button' ? 'button' :
+        tag === 'input' ? 'input' :
+        tag === 'textarea' ? 'textarea' :
+        tag === 'select' ? 'select' :
+        'other';
+      const selectorHint = element.id
+        ? `#${{element.id}}`
+        : (() => {{
+            const className = normalize(element.className);
+            if (className) {{
+              return `${{tag || 'node'}}.${{className.split(/\s+/)[0]}}`;
+            }}
+            return tag || null;
+          }})();
+      const text = normalize(
+        tag === 'input'
+          ? (element.getAttribute('value') || element.getAttribute('placeholder') || element.getAttribute('aria-label') || '')
+          : (element.innerText || element.textContent || element.getAttribute('aria-label') || '')
+      );
+      const target = normalize(
+        element.getAttribute('href') ||
+        element.getAttribute('name') ||
+        element.getAttribute('type') ||
+        element.getAttribute('value') ||
+        ''
+      );
+      return {{
+        kind,
+        text: text || null,
+        target: target || null,
+        selector_hint: selectorHint || null
+      }};
+    }});
+  return {{
+    text_preview: textPreview,
+    interactive_elements: interactiveElements
+  }};
+}})()
+"#
+    );
+    let value = tab
+        .evaluate(&script, false)
+        .map_err(|error| ToolError::invalid_state(format!("failed to inspect browser: {error}")))?
+        .value
+        .ok_or_else(|| ToolError::invalid_state("browser snapshot returned no value"))?;
+    serde_json::from_value(value).map_err(|error| {
+        ToolError::invalid_state(format!("invalid browser snapshot payload: {error}"))
+    })
+}
+
+impl BrowserSnapshotElementData {
+    fn into_record(self) -> BrowserSnapshotElement {
+        BrowserSnapshotElement {
+            kind: match self.kind.as_str() {
+                "link" => BrowserSnapshotElementKind::Link,
+                "button" => BrowserSnapshotElementKind::Button,
+                "input" => BrowserSnapshotElementKind::Input,
+                "textarea" => BrowserSnapshotElementKind::TextArea,
+                "select" => BrowserSnapshotElementKind::Select,
+                _ => BrowserSnapshotElementKind::Other,
+            },
+            text: self.text.filter(|value| !value.trim().is_empty()),
+            target: self.target.filter(|value| !value.trim().is_empty()),
+            selector_hint: self.selector_hint.filter(|value| !value.trim().is_empty()),
+        }
+    }
+}
+
+fn html_preview_lines(html: &str, max_chars: usize) -> Vec<String> {
+    let truncated = html.chars().take(max_chars).collect::<String>();
+    if truncated.is_empty() {
+        return Vec::new();
+    }
+    truncated
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(96)
+        .map(|chunk| chunk.iter().collect::<String>())
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -248,7 +483,35 @@ mod tests {
 
     struct FakeBrowserHandle;
 
-    impl BrowserHandle for FakeBrowserHandle {}
+    impl BrowserHandle for FakeBrowserHandle {
+        fn snapshot(&self, _request: &BrowserSnapshotRequest) -> ToolResult<BrowserSnapshotRecord> {
+            Ok(BrowserSnapshotRecord {
+                browser_id: BrowserId::from("browser_fake"),
+                current_url: "https://example.com/app".to_string(),
+                title: Some("Example App".to_string()),
+                text_preview: vec![
+                    "Dashboard".to_string(),
+                    "Queued builds".to_string(),
+                    "Recent deploys".to_string(),
+                ],
+                interactive_elements: vec![
+                    BrowserSnapshotElement {
+                        kind: BrowserSnapshotElementKind::Button,
+                        text: Some("Deploy".to_string()),
+                        target: Some("button".to_string()),
+                        selector_hint: Some("#deploy".to_string()),
+                    },
+                    BrowserSnapshotElement {
+                        kind: BrowserSnapshotElementKind::Link,
+                        text: Some("Settings".to_string()),
+                        target: Some("/settings".to_string()),
+                        selector_hint: Some("a.settings".to_string()),
+                    },
+                ],
+                html_preview: vec!["<html><body><main>Example</main></body></html>".to_string()],
+            })
+        }
+    }
 
     #[tokio::test]
     async fn open_browser_persists_and_publishes_typed_summary() {
@@ -306,5 +569,100 @@ mod tests {
             SessionEventKind::BrowserOpened { summary: persisted_summary }
                 if persisted_summary.browser_id == summary.browser_id
         )));
+    }
+
+    #[tokio::test]
+    async fn snapshot_browser_uses_current_session_browser_when_unambiguous() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let events = SessionEventStream::default();
+        let backend = Arc::new(FakeBrowserBackend::default());
+        let manager = SessionBrowserManager::with_backend(store, events, backend);
+        let runtime = BrowserRuntimeContext {
+            session_id: Some(agent::types::SessionId::from("session-1")),
+            agent_session_id: Some(agent::types::AgentSessionId::from("agent-session-1")),
+            turn_id: Some(agent::types::TurnId::from("turn-1")),
+            parent_agent_id: Some(agent::types::AgentId::from("agent-1")),
+            task_id: Some(agent::types::TaskId::from("task-1")),
+        };
+        let summary = manager
+            .open_browser(
+                runtime.clone(),
+                BrowserOpenRequest {
+                    url: "https://example.com".to_string(),
+                    headless: true,
+                    viewport: None,
+                },
+            )
+            .await
+            .expect("browser should open");
+
+        let snapshot = manager
+            .snapshot_browser(
+                runtime,
+                BrowserSnapshotRequest {
+                    browser_id: None,
+                    include_html: true,
+                    max_text_lines: 8,
+                    max_elements: 4,
+                    max_html_chars: 256,
+                },
+            )
+            .await
+            .expect("browser snapshot should resolve the only browser");
+
+        assert_eq!(snapshot.browser_id, summary.browser_id);
+        assert_eq!(snapshot.current_url, "https://example.com/app");
+        assert_eq!(snapshot.title.as_deref(), Some("Example App"));
+        assert_eq!(snapshot.text_preview.len(), 3);
+        assert_eq!(snapshot.interactive_elements.len(), 2);
+        assert_eq!(snapshot.html_preview.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn snapshot_browser_requires_browser_id_when_multiple_browsers_are_open() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let events = SessionEventStream::default();
+        let backend = Arc::new(FakeBrowserBackend::default());
+        let manager = SessionBrowserManager::with_backend(store, events, backend);
+        let runtime = BrowserRuntimeContext {
+            session_id: Some(agent::types::SessionId::from("session-1")),
+            agent_session_id: Some(agent::types::AgentSessionId::from("agent-session-1")),
+            turn_id: Some(agent::types::TurnId::from("turn-1")),
+            parent_agent_id: Some(agent::types::AgentId::from("agent-1")),
+            task_id: Some(agent::types::TaskId::from("task-1")),
+        };
+        for suffix in ["one", "two"] {
+            manager
+                .open_browser(
+                    runtime.clone(),
+                    BrowserOpenRequest {
+                        url: format!("https://example.com/{suffix}"),
+                        headless: true,
+                        viewport: None,
+                    },
+                )
+                .await
+                .expect("browser should open");
+        }
+
+        let error = manager
+            .snapshot_browser(
+                runtime,
+                BrowserSnapshotRequest {
+                    browser_id: None,
+                    include_html: false,
+                    max_text_lines: 8,
+                    max_elements: 4,
+                    max_html_chars: 256,
+                },
+            )
+            .await
+            .expect_err("snapshot should require explicit browser_id");
+
+        assert!(
+            error
+                .to_string()
+                .contains("browser_snapshot requires browser_id when multiple browsers are open")
+        );
     }
 }

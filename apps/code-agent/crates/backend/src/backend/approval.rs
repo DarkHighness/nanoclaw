@@ -352,6 +352,34 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::BrowserSnapshot => {
+            let mut preview = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("inspect browser {browser_id}"))
+                    .unwrap_or_else(|| "inspect current browser".to_string()),
+            ];
+            if arguments
+                .get("include_html")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                preview.push("html preview enabled".to_string());
+            }
+            if let Some(max_text_lines) = arguments.get("max_text_lines").and_then(Value::as_u64) {
+                preview.push(format!("text {max_text_lines}"));
+            }
+            if let Some(max_elements) = arguments.get("max_elements").and_then(Value::as_u64) {
+                preview.push(format!("elements {max_elements}"));
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::MonitorStart => {
             let command = arguments.get("cmd").and_then(Value::as_str);
             if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
@@ -666,6 +694,45 @@ mod tests {
                 "open browser https://example.com".to_string(),
                 "mode headful".to_string(),
                 "viewport 1280x720".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn approval_prompt_extracts_browser_snapshot_context() {
+        let prompt = approval_prompt_from_request(&ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-browser-snapshot".into(),
+                tool_name: "browser_snapshot".into(),
+                arguments: json!({
+                    "browser_id": "browser_123",
+                    "include_html": true,
+                    "max_text_lines": 10,
+                    "max_elements": 6
+                }),
+                origin: ToolOrigin::Local,
+            },
+            spec: ToolSpec::function(
+                "browser_snapshot",
+                "inspect browser session",
+                json!({"type":"object"}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            ),
+            reasons: vec!["browser inspection requires review".to_string()],
+        });
+
+        assert_eq!(prompt.tool_name, "browser_snapshot");
+        assert_eq!(prompt.content.kind, ApprovalContentKind::Arguments);
+        assert_eq!(
+            prompt.content.preview,
+            vec![
+                "inspect browser browser_123".to_string(),
+                "html preview enabled".to_string(),
+                "text 10".to_string(),
+                "elements 6".to_string(),
             ]
         );
     }

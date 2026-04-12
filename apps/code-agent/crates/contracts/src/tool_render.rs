@@ -20,6 +20,7 @@ pub enum ToolRenderKind {
     CodeSearch,
     CodeDiagnostics,
     BrowserOpen,
+    BrowserSnapshot,
     MonitorStart,
     MonitorList,
     MonitorStop,
@@ -48,6 +49,7 @@ impl ToolRenderKind {
             "code_search" => Self::CodeSearch,
             "code_diagnostics" => Self::CodeDiagnostics,
             "browser_open" => Self::BrowserOpen,
+            "browser_snapshot" => Self::BrowserSnapshot,
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
             "monitor_stop" => Self::MonitorStop,
@@ -584,6 +586,35 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 if width > 0 && height > 0 {
                     lines.push(format!("viewport {width}x{height}"));
                 }
+            }
+            return lines;
+        }
+        ToolRenderKind::BrowserSnapshot => {
+            let mut lines = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("Inspect browser {browser_id}"))
+                    .unwrap_or_else(|| "Inspect current browser".to_string()),
+            ];
+            if arguments
+                .get("include_html")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                lines.push("html preview enabled".to_string());
+            }
+            let max_text_lines = arguments.get("max_text_lines").and_then(Value::as_u64);
+            let max_elements = arguments.get("max_elements").and_then(Value::as_u64);
+            match (max_text_lines, max_elements) {
+                (Some(max_text_lines), Some(max_elements)) => {
+                    lines.push(format!("text {max_text_lines}, elements {max_elements}"));
+                }
+                (Some(max_text_lines), None) => lines.push(format!("text {max_text_lines}")),
+                (None, Some(max_elements)) => lines.push(format!("elements {max_elements}")),
+                (None, None) => {}
             }
             return lines;
         }
@@ -1179,6 +1210,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics
         | ToolRenderKind::BrowserOpen
+        | ToolRenderKind::BrowserSnapshot
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
         | ToolRenderKind::WorktreeEnter
@@ -1259,7 +1291,12 @@ pub fn tool_output_details(
             }
         }
         ToolRenderKind::BrowserOpen => {
-            if let Some(details) = browser_output_details(structured) {
+            if let Some(details) = browser_open_output_details(structured) {
+                return details;
+            }
+        }
+        ToolRenderKind::BrowserSnapshot => {
+            if let Some(details) = browser_snapshot_output_details(structured) {
                 return details;
             }
         }
@@ -1633,7 +1670,7 @@ fn code_diagnostics_output_details(structured: Option<&Value>) -> Option<Vec<Too
     Some(details)
 }
 
-fn browser_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+fn browser_open_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
     let browser = structured?.get("browser")?;
     let mut details = Vec::new();
     if let Some(browser_id) = browser
@@ -1706,6 +1743,147 @@ fn browser_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>>
     }
 
     Some(details)
+}
+
+fn browser_snapshot_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let snapshot = structured?.get("snapshot")?;
+    let mut details = Vec::new();
+    if let Some(browser_id) = snapshot
+        .get("browser_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Session,
+            value: browser_id.to_string(),
+        });
+    }
+    if let Some(url) = snapshot
+        .get("current_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: truncate_inline(url, 88),
+        });
+    }
+    if let Some(title) = snapshot
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Result,
+            value: title.to_string(),
+        });
+    }
+
+    let element_count = snapshot
+        .get("interactive_elements")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let html_count = snapshot
+        .get("html_preview")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let mut state_parts = vec![format!("{element_count} interactive element(s)")];
+    if html_count > 0 {
+        state_parts.push("html preview included".to_string());
+    }
+    details.push(ToolDetail::LabeledValue {
+        label: ToolDetailLabel::State,
+        value: state_parts.join(" · "),
+    });
+
+    let text_lines = snapshot
+        .get("text_preview")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if !text_lines.is_empty() {
+        details.push(ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Output,
+            lines: text_lines,
+        });
+    }
+
+    let element_lines = snapshot
+        .get("interactive_elements")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(render_browser_snapshot_element_line)
+        .collect::<Vec<_>>();
+    if !element_lines.is_empty() {
+        details.push(ToolDetail::LabeledBlock {
+            label: ToolDetailLabel::Snapshot,
+            lines: element_lines,
+        });
+    }
+
+    let html_lines = snapshot
+        .get("html_preview")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim_end)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if !html_lines.is_empty() {
+        details.push(ToolDetail::NamedBlock {
+            label: "html".to_string(),
+            kind: ToolDetailBlockKind::Stdout,
+            lines: html_lines,
+        });
+    }
+
+    Some(details)
+}
+
+fn render_browser_snapshot_element_line(element: &Value) -> Option<String> {
+    let kind = element
+        .get("kind")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("other");
+    let mut parts = vec![kind.to_string()];
+    if let Some(text) = element
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(truncate_inline(text, 56));
+    }
+    if let Some(target) = element
+        .get("target")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("target {}", truncate_inline(target, 40)));
+    }
+    if let Some(selector_hint) = element
+        .get("selector_hint")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("selector {}", truncate_inline(selector_hint, 32)));
+    }
+    Some(parts.join(" · "))
 }
 
 fn code_search_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
@@ -3044,6 +3222,22 @@ mod tests {
                 "viewport 1280x720"
             ]
         );
+        assert_eq!(
+            tool_arguments_preview_lines(
+                "browser_snapshot",
+                &json!({
+                    "browser_id": "browser_123",
+                    "include_html": true,
+                    "max_text_lines": 10,
+                    "max_elements": 6
+                })
+            ),
+            vec![
+                "Inspect browser browser_123",
+                "html preview enabled",
+                "text 10, elements 6"
+            ]
+        );
     }
 
     #[test]
@@ -3102,6 +3296,66 @@ mod tests {
             browser_rendered
                 .iter()
                 .any(|line| line == "  └ Result Example App")
+        );
+
+        let browser_snapshot_rendered = tool_output_detail_lines(
+            "browser_snapshot",
+            "",
+            Some(&json!({
+                "snapshot": {
+                    "browser_id": "browser_123",
+                    "current_url": "https://example.com/app",
+                    "title": "Example App",
+                    "text_preview": ["Dashboard", "Queued builds"],
+                    "interactive_elements": [
+                        {
+                            "kind": "button",
+                            "text": "Deploy",
+                            "target": "button",
+                            "selector_hint": "#deploy"
+                        },
+                        {
+                            "kind": "link",
+                            "text": "Settings",
+                            "target": "/settings",
+                            "selector_hint": "a.settings"
+                        }
+                    ],
+                    "html_preview": ["<main>Example</main>"]
+                }
+            })),
+        );
+        assert_eq!(browser_snapshot_rendered[0], "  └ Session browser_123");
+        assert!(
+            browser_snapshot_rendered
+                .iter()
+                .any(|line| line == "  └ Context https://example.com/app")
+        );
+        assert!(
+            browser_snapshot_rendered
+                .iter()
+                .any(|line| line == "  └ Result Example App")
+        );
+        assert!(
+            browser_snapshot_rendered
+                .iter()
+                .any(|line| line == "  └ State 2 interactive element(s) · html preview included")
+        );
+        assert!(
+            browser_snapshot_rendered
+                .iter()
+                .any(|line| line == "  └ Output Dashboard")
+        );
+        assert!(
+            browser_snapshot_rendered
+                .iter()
+                .any(|line| line
+                    == "  └ Snapshot button · Deploy · target button · selector #deploy")
+        );
+        assert!(
+            browser_snapshot_rendered
+                .iter()
+                .any(|line| line == "  └ html")
         );
 
         let cron_list_rendered = tool_output_detail_lines(
