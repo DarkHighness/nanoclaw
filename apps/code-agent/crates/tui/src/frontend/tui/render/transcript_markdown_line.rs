@@ -246,9 +246,7 @@ fn markdown_body_style(kind: TranscriptEntryKind, base: Style) -> Style {
         TranscriptEntryKind::AssistantMessage | TranscriptEntryKind::UserPrompt => {
             base.fg(palette().text)
         }
-        TranscriptEntryKind::PlanUpdate | TranscriptEntryKind::ExecutionUpdate => {
-            base.fg(palette().text)
-        }
+        TranscriptEntryKind::PlanUpdate => base.fg(palette().text),
         TranscriptEntryKind::ShellSummary => base.fg(palette().muted),
         TranscriptEntryKind::SuccessSummary => base.fg(palette().assistant),
         TranscriptEntryKind::ErrorSummary => base.fg(palette().error),

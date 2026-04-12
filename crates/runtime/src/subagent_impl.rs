@@ -17,8 +17,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use store::SessionStore;
 use tools::{
-    SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, ToolError,
-    ToolExecutionContext, ToolRegistry, resolve_tool_path_against_workspace_root,
+    PlanState, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
+    ToolError, ToolExecutionContext, ToolRegistry, UpdatePlanTool,
+    resolve_tool_path_against_workspace_root,
 };
 use types::{
     AgentArtifact, AgentEnvelope, AgentEnvelopeKind, AgentHandle, AgentId, AgentResultEnvelope,
@@ -41,7 +42,6 @@ const DEFAULT_EXCLUDED_CHILD_TOOLS: &[&str] = &[
     "agent_wait",
     "agent_list",
     "agent_cancel",
-    "update_plan",
 ];
 const READY_CHILD_LAUNCH_CONCURRENCY: usize = 4;
 
@@ -190,7 +190,13 @@ impl RuntimeSubagentExecutor {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        let filtered = self.tool_registry.filtered_by_names(&allowed_names);
+        let mut filtered = self.tool_registry.filtered_by_names(&allowed_names);
+        if filtered.remove("update_plan") {
+            // `filtered_by_names` reuses the parent's tool Arcs. Coordination
+            // tools hold mutable host state, so child runtimes need a fresh
+            // plan instance instead of sharing the parent's plan/focus surface.
+            filtered.register(UpdatePlanTool::new(PlanState::default()));
+        }
         let resolved_names = filtered.names();
         if !requested.is_empty() && resolved_names.is_empty() {
             return Err(RuntimeError::invalid_state(

@@ -66,7 +66,7 @@ impl CodeAgentTui {
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
                     state.plan_items = restored.plan_items;
-                    state.execution = restored.execution;
+                    state.focus = restored.focus;
                     state.status = format!(
                         "Loaded agent session {} with {} transcript messages",
                         agent_session_ref_preview, transcript_count
@@ -214,7 +214,7 @@ impl CodeAgentTui {
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
                     state.plan_items = restored.plan_items;
-                    state.execution = restored.execution;
+                    state.focus = restored.focus;
                     state.status = format!(
                         "Loaded session {} with {} transcript messages",
                         session_ref_preview, transcript_count
@@ -250,7 +250,7 @@ impl CodeAgentTui {
                     state.transcript = transcript;
                     state.transcript_scroll = 0;
                     state.plan_items.clear();
-                    state.execution = None;
+                    state.focus = None;
                     state.status = format!(
                         "Loaded task {} with {} child transcript messages",
                         task_id, transcript_count

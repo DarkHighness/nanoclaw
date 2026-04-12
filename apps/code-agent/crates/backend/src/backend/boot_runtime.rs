@@ -11,13 +11,12 @@ use agent::tools::{
 use agent::{
     ApplyPatchTool, CodeCallHierarchyTool, CodeDefinitionsTool, CodeDocumentSymbolsTool,
     CodeHoverTool, CodeImplementationsTool, CodeIntelBackend, CodeReferencesTool,
-    CodeSymbolSearchTool, EditTool, ExecCommandTool, ExecutionState, GlobTool, GrepTool,
-    JsReplTool, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
-    ManagedPolicyProcessExecutor, PatchTool, PlanState, ReadTool, RequestPermissionsTool,
-    RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool, TaskTool, ToolCallId,
-    ToolExecutionContext, ToolRegistry, ToolResult, ToolSearchTool, ToolSuggestTool,
-    UpdateExecutionTool, UpdatePlanTool, ViewImageTool, WebFetchTool, WebSearchBackendsTool,
-    WebSearchTool, WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
+    CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
+    ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, PatchTool,
+    PlanState, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog,
+    SkillTool, TaskTool, ToolCallId, ToolExecutionContext, ToolRegistry, ToolResult,
+    ToolSearchTool, ToolSuggestTool, UpdatePlanTool, ViewImageTool, WebFetchTool,
+    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -525,7 +524,6 @@ fn build_builtin_tools(
     let file_activity_backend = code_intel_backend.clone();
     let code_intel_backend: Arc<dyn CodeIntelBackend> = code_intel_backend;
     let plan_state = PlanState::default();
-    let execution_state = ExecutionState::default();
     let mut tools = ToolRegistry::new();
     let discovery_registry = tools.clone();
 
@@ -584,7 +582,6 @@ fn build_builtin_tools(
     tools.register(ToolSearchTool::new(discovery_registry.clone()));
     tools.register(ToolSuggestTool::new(discovery_registry));
     tools.register(UpdatePlanTool::new(plan_state));
-    tools.register(UpdateExecutionTool::new(execution_state));
     tools.register(SkillTool::new(skill_catalog));
     tools.register(RequestUserInputTool::new());
     tools.register(RequestPermissionsTool::new());

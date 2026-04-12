@@ -461,20 +461,22 @@ async fn update_plan_does_not_trigger_tool_approval_requests() {
 }
 
 #[tokio::test]
-async fn update_execution_does_not_trigger_tool_approval_requests() {
+async fn update_plan_focus_updates_do_not_trigger_tool_approval_requests() {
     let dir = tempfile::tempdir().unwrap();
     let mut registry = ToolRegistry::new();
     registry.register(InternalCoordinationTool {
-        name: "update_execution",
+        name: "update_plan",
     });
     let approval_handler = Arc::new(MockApprovalHandler::default());
     let store = Arc::new(InMemorySessionStore::new());
     let mut runtime: AgentRuntime = AgentRuntimeBuilder::new(
         Arc::new(CoordinationToolBackend {
-            tool_name: "update_execution",
+            tool_name: "update_plan",
             arguments: serde_json::json!({
-                "status": "active",
-                "summary": "Inspect approval model"
+                "focus": {
+                    "status": "active",
+                    "summary": "Inspect approval model"
+                }
             }),
         }),
         store.clone(),
@@ -490,18 +492,15 @@ async fn update_execution_does_not_trigger_tool_approval_requests() {
     .tool_approval_handler(approval_handler.clone())
     .build();
 
-    let outcome = runtime
-        .run_user_prompt("update execution state")
-        .await
-        .unwrap();
+    let outcome = runtime.run_user_prompt("update focus state").await.unwrap();
 
-    assert_eq!(outcome.assistant_text, "update_execution done");
+    assert_eq!(outcome.assistant_text, "update_plan done");
     assert!(approval_handler.requests().is_empty());
     let events = store.events(&runtime.session_id()).await.unwrap();
     assert!(!events.iter().any(|event| matches!(
         &event.event,
         SessionEventKind::ToolApprovalRequested { call, .. }
-            if call.tool_name == types::ToolName::from("update_execution")
+            if call.tool_name == types::ToolName::from("update_plan")
     )));
 }
 

@@ -1,43 +1,53 @@
-use super::state::{ExecutionEntry, ExecutionStatus, PlanEntry, PlanEntryStatus, TranscriptEntry};
+use super::state::{
+    PlanEntry, PlanEntryStatus, PlanFocusEntry, PlanFocusStatus, TranscriptEntry,
+    TranscriptPlanFocusChange,
+};
 use agent::types::{SessionEventEnvelope, SessionEventKind};
 use serde_json::Value;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RestoredToolPanels {
     pub(crate) plan_items: Vec<PlanEntry>,
-    pub(crate) execution: Option<ExecutionEntry>,
+    pub(crate) focus: Option<PlanFocusEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ParsedPlanToolOutput {
+    explanation: Option<String>,
+    warnings: Vec<String>,
+    plan_changed: bool,
+    focus_change: TranscriptPlanFocusChange,
+    items: Vec<PlanEntry>,
+    focus: Option<PlanFocusEntry>,
 }
 
 pub(crate) fn plan_items_from_tool_output(
     tool_name: &str,
     structured_output_preview: Option<&str>,
 ) -> Option<Vec<PlanEntry>> {
-    plan_payload_from_tool_output(tool_name, structured_output_preview).map(|(_, _, items)| items)
+    plan_payload_from_tool_output(tool_name, structured_output_preview).map(|parsed| parsed.items)
+}
+
+pub(crate) fn focus_state_from_tool_output(
+    tool_name: &str,
+    structured_output_preview: Option<&str>,
+) -> Option<Option<PlanFocusEntry>> {
+    plan_payload_from_tool_output(tool_name, structured_output_preview).map(|parsed| parsed.focus)
 }
 
 pub(crate) fn plan_update_entry_from_tool_output(
     tool_name: &str,
     structured_output_preview: Option<&str>,
 ) -> Option<TranscriptEntry> {
-    let (explanation, warnings, items) =
-        plan_payload_from_tool_output(tool_name, structured_output_preview)?;
-    Some(TranscriptEntry::plan_update(explanation, warnings, items))
-}
-
-pub(crate) fn execution_state_from_tool_output(
-    tool_name: &str,
-    structured_output_preview: Option<&str>,
-) -> Option<Option<ExecutionEntry>> {
-    execution_payload_from_tool_output(tool_name, structured_output_preview).map(|(_, state)| state)
-}
-
-pub(crate) fn execution_update_entry_from_tool_output(
-    tool_name: &str,
-    structured_output_preview: Option<&str>,
-) -> Option<TranscriptEntry> {
-    let (headline, state) =
-        execution_payload_from_tool_output(tool_name, structured_output_preview)?;
-    Some(TranscriptEntry::execution_update(headline, state))
+    let parsed = plan_payload_from_tool_output(tool_name, structured_output_preview)?;
+    Some(TranscriptEntry::plan_update(
+        parsed.plan_changed,
+        parsed.focus_change,
+        parsed.explanation,
+        parsed.warnings,
+        parsed.items,
+        parsed.focus,
+    ))
 }
 
 pub(crate) fn restore_tool_panels(events: &[SessionEventEnvelope]) -> RestoredToolPanels {
@@ -50,15 +60,11 @@ pub(crate) fn restore_tool_panels(events: &[SessionEventEnvelope]) -> RestoredTo
             .structured_content
             .as_ref()
             .and_then(|value| serde_json::to_string(value).ok());
-        if let Some(plan_items) =
-            plan_items_from_tool_output(call.tool_name.as_str(), structured.as_deref())
+        if let Some(parsed) =
+            plan_payload_from_tool_output(call.tool_name.as_str(), structured.as_deref())
         {
-            restored.plan_items = plan_items;
-        }
-        if let Some(execution) =
-            execution_state_from_tool_output(call.tool_name.as_str(), structured.as_deref())
-        {
-            restored.execution = execution;
+            restored.plan_items = parsed.items;
+            restored.focus = parsed.focus;
         }
     }
     restored
@@ -67,7 +73,7 @@ pub(crate) fn restore_tool_panels(events: &[SessionEventEnvelope]) -> RestoredTo
 fn plan_payload_from_tool_output(
     tool_name: &str,
     structured_output_preview: Option<&str>,
-) -> Option<(Option<String>, Vec<String>, Vec<PlanEntry>)> {
+) -> Option<ParsedPlanToolOutput> {
     if tool_name != "update_plan" {
         return None;
     }
@@ -95,55 +101,49 @@ fn plan_payload_from_tool_output(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    Some((
+    let items = items
+        .iter()
+        .filter_map(|item| {
+            let step = item.get("step")?.as_str()?.to_string();
+            Some(PlanEntry {
+                id: step.clone(),
+                content: step,
+                status: PlanEntryStatus::from_wire(item.get("status")?.as_str()?),
+            })
+        })
+        .collect::<Vec<_>>();
+    let focus = value.get("focus").and_then(parse_focus_payload);
+    let focus_change = if value
+        .get("focus_updated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        if focus.is_some() {
+            TranscriptPlanFocusChange::Updated
+        } else {
+            TranscriptPlanFocusChange::Cleared
+        }
+    } else {
+        TranscriptPlanFocusChange::Unchanged
+    };
+    Some(ParsedPlanToolOutput {
         explanation,
         warnings,
-        items
-            .iter()
-            .filter_map(|item| {
-                let step = item.get("step")?.as_str()?.to_string();
-                Some(PlanEntry {
-                    id: step.clone(),
-                    content: step,
-                    status: PlanEntryStatus::from_wire(item.get("status")?.as_str()?),
-                })
-            })
-            .collect(),
-    ))
+        plan_changed: value
+            .get("plan_updated")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        focus_change,
+        items,
+        focus,
+    })
 }
 
-fn execution_payload_from_tool_output(
-    tool_name: &str,
-    structured_output_preview: Option<&str>,
-) -> Option<(String, Option<ExecutionEntry>)> {
-    if tool_name != "update_execution" {
-        return None;
-    }
-    let value = serde_json::from_str::<Value>(structured_output_preview?).ok()?;
-    if value.get("kind")?.as_str()? != "success" {
-        return None;
-    }
-    let action = value.get("action")?.as_str()?;
-    let headline = match action {
-        "get" => "Execution Snapshot",
-        "clear" => "Cleared Execution",
-        _ => "Updated Execution",
-    }
-    .to_string();
-    let scope_label = value.pointer("/scope/label")?.as_str()?.to_string();
-    let state = value.get("state").and_then(parse_execution_state_payload);
-    let state = state.map(|mut entry| {
-        entry.scope_label = scope_label;
-        entry
-    });
-    Some((headline, state))
-}
-
-fn parse_execution_state_payload(value: &Value) -> Option<ExecutionEntry> {
+fn parse_focus_payload(value: &Value) -> Option<PlanFocusEntry> {
     value.as_object()?;
-    Some(ExecutionEntry {
-        scope_label: String::new(),
-        status: ExecutionStatus::from_wire(value.get("status")?.as_str()?),
+    Some(PlanFocusEntry {
+        scope_label: value.get("scope_label")?.as_str()?.to_string(),
+        status: PlanFocusStatus::from_wire(value.get("status")?.as_str()?),
         summary: value.get("summary")?.as_str()?.to_string(),
         next_action: value
             .get("next_action")
@@ -162,7 +162,7 @@ fn parse_execution_state_payload(value: &Value) -> Option<ExecutionEntry> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionStatus, execution_state_from_tool_output, restore_tool_panels};
+    use super::{PlanFocusStatus, focus_state_from_tool_output, restore_tool_panels};
     use agent::types::{
         AgentSessionId, CallId, MessagePart, SessionEventEnvelope, SessionEventKind, SessionId,
         ToolCall, ToolCallId, ToolOrigin, ToolResult,
@@ -170,15 +170,17 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn update_execution_payload_supports_clear_and_set() {
-        let set = execution_state_from_tool_output(
-            "update_execution",
+    fn update_plan_payload_supports_focus_updates() {
+        let focus = focus_state_from_tool_output(
+            "update_plan",
             Some(
                 &json!({
                     "kind": "success",
-                    "action": "set",
-                    "scope": {"label": "session root"},
-                    "state": {
+                    "plan_updated": false,
+                    "focus_updated": true,
+                    "items": [],
+                    "focus": {
+                        "scope_label": "session root",
                         "status": "active",
                         "summary": "Patch the observer",
                         "next_action": "Wire the side rail"
@@ -187,102 +189,74 @@ mod tests {
                 .to_string(),
             ),
         )
-        .expect("set payload");
-        assert_eq!(set.as_ref().unwrap().scope_label, "session root");
-        assert_eq!(set.as_ref().unwrap().status, ExecutionStatus::Active);
+        .expect("focus payload");
+        assert_eq!(focus.as_ref().unwrap().scope_label, "session root");
+        assert_eq!(focus.as_ref().unwrap().status, PlanFocusStatus::Active);
 
-        let clear = execution_state_from_tool_output(
-            "update_execution",
+        let cleared = focus_state_from_tool_output(
+            "update_plan",
             Some(
                 &json!({
                     "kind": "success",
-                    "action": "clear",
-                    "scope": {"label": "session root"},
-                    "state": null
+                    "plan_updated": false,
+                    "focus_updated": true,
+                    "items": [],
+                    "focus": null
                 })
                 .to_string(),
             ),
         )
         .expect("clear payload");
-        assert!(clear.is_none());
+        assert!(cleared.is_none());
     }
 
     #[test]
     fn restore_tool_panels_replays_latest_snapshots() {
         let session_id = SessionId::from("session-1");
         let agent_session_id = AgentSessionId::from("agent-1");
-        let events = vec![
-            SessionEventEnvelope::new(
-                session_id.clone(),
-                agent_session_id.clone(),
-                None,
-                None,
-                SessionEventKind::ToolCallCompleted {
-                    call: ToolCall {
-                        id: ToolCallId::new(),
-                        call_id: CallId::new(),
-                        tool_name: "update_plan".into(),
-                        arguments: json!({}),
-                        origin: ToolOrigin::Local,
-                    },
-                    output: ToolResult {
-                        id: ToolCallId::new(),
-                        call_id: CallId::new(),
-                        tool_name: "update_plan".into(),
-                        parts: vec![MessagePart::text("ok")],
-                        attachments: Vec::new(),
-                        structured_content: Some(json!({
-                            "kind": "success",
-                            "items": [{"step": "Inspect", "status": "completed"}]
-                        })),
-                        continuation: None,
-                        metadata: None,
-                        is_error: false,
-                    },
+        let events = vec![SessionEventEnvelope::new(
+            session_id,
+            agent_session_id,
+            None,
+            None,
+            SessionEventKind::ToolCallCompleted {
+                call: ToolCall {
+                    id: ToolCallId::new(),
+                    call_id: CallId::new(),
+                    tool_name: "update_plan".into(),
+                    arguments: json!({}),
+                    origin: ToolOrigin::Local,
                 },
-            ),
-            SessionEventEnvelope::new(
-                session_id,
-                agent_session_id,
-                None,
-                None,
-                SessionEventKind::ToolCallCompleted {
-                    call: ToolCall {
-                        id: ToolCallId::new(),
-                        call_id: CallId::new(),
-                        tool_name: "update_execution".into(),
-                        arguments: json!({}),
-                        origin: ToolOrigin::Local,
-                    },
-                    output: ToolResult {
-                        id: ToolCallId::new(),
-                        call_id: CallId::new(),
-                        tool_name: "update_execution".into(),
-                        parts: vec![MessagePart::text("ok")],
-                        attachments: Vec::new(),
-                        structured_content: Some(json!({
-                            "kind": "success",
-                            "action": "set",
-                            "scope": {"label": "session root"},
-                            "state": {
-                                "status": "verifying",
-                                "summary": "Run focused tests",
-                                "verification": "cargo test"
-                            }
-                        })),
-                        continuation: None,
-                        metadata: None,
-                        is_error: false,
-                    },
+                output: ToolResult {
+                    id: ToolCallId::new(),
+                    call_id: CallId::new(),
+                    tool_name: "update_plan".into(),
+                    parts: vec![MessagePart::text("ok")],
+                    attachments: Vec::new(),
+                    structured_content: Some(json!({
+                        "kind": "success",
+                        "plan_updated": true,
+                        "focus_updated": true,
+                        "items": [{"step": "Inspect", "status": "completed"}],
+                        "focus": {
+                            "scope_label": "session root",
+                            "status": "verifying",
+                            "summary": "Run focused tests",
+                            "verification": "cargo test"
+                        }
+                    })),
+                    continuation: None,
+                    metadata: None,
+                    is_error: false,
                 },
-            ),
-        ];
+            },
+        )];
 
         let restored = restore_tool_panels(&events);
         assert_eq!(restored.plan_items.len(), 1);
         assert_eq!(
-            restored.execution.as_ref().unwrap().status,
-            ExecutionStatus::Verifying
+            restored.focus.as_ref().unwrap().status,
+            PlanFocusStatus::Verifying
         );
     }
 }

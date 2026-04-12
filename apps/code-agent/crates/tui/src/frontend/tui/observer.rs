@@ -3,8 +3,7 @@ use super::state::{
     TranscriptToolEntry, TranscriptToolStatus, TurnPhase, preview_text,
 };
 use super::tool_state::{
-    execution_state_from_tool_output, execution_update_entry_from_tool_output,
-    plan_items_from_tool_output, plan_update_entry_from_tool_output,
+    focus_state_from_tool_output, plan_items_from_tool_output, plan_update_entry_from_tool_output,
 };
 use crate::tool_render::{
     ToolDetail, ToolDetailLabel, compact_successful_exploration_details, tool_argument_details,
@@ -223,11 +222,11 @@ impl SharedRenderObserver {
                 ) {
                     state.plan_items = plan_items;
                 }
-                if let Some(execution) = execution_state_from_tool_output(
+                if let Some(focus) = focus_state_from_tool_output(
                     &call.tool_name,
                     structured_output_preview.as_deref(),
                 ) {
-                    state.execution = execution;
+                    state.focus = focus;
                 }
                 let completed_entry = completed_tool_entry(
                     &call,
@@ -441,11 +440,6 @@ fn completed_tool_entry(
         plan_update_entry_from_tool_output(&call.tool_name, structured_output_preview)
     {
         return plan_entry;
-    }
-    if let Some(execution_entry) =
-        execution_update_entry_from_tool_output(&call.tool_name, structured_output_preview)
-    {
-        return execution_entry;
     }
 
     let mut detail_lines = tool_argument_detail_lines(call);
@@ -1067,25 +1061,27 @@ mod tests {
     }
 
     #[test]
-    fn update_execution_results_update_side_rail_snapshot() {
+    fn update_plan_focus_results_update_snapshot() {
         let ui_state = SharedUiState::new();
         let call = SessionToolCall {
-            tool_name: "update_execution".to_string(),
+            tool_name: "update_plan".to_string(),
             call_id: "call_exec".to_string(),
             origin: SessionToolOrigin::Local,
-            arguments_preview: vec!["set execution snapshot".to_string()],
+            arguments_preview: vec!["set focus".to_string()],
         };
         let mut observer = SharedRenderObserver::new(ui_state.clone());
 
         observer.apply_event(SessionEvent::ToolLifecycleCompleted {
             call,
-            output_preview: "updated execution".to_string(),
+            output_preview: "updated focus".to_string(),
             structured_output_preview: Some(
                 json!({
                     "kind": "success",
-                    "action": "set",
-                    "scope": {"label": "root session"},
-                    "state": {
+                    "plan_updated": false,
+                    "focus_updated": true,
+                    "items": [],
+                    "focus": {
+                        "scope_label": "root session",
                         "status": "verifying",
                         "summary": "Run focused regression checks",
                         "next_action": "Inspect failures",
@@ -1100,15 +1096,15 @@ mod tests {
         assert_eq!(snapshot.transcript.len(), 1);
         assert_eq!(
             transcript_text(&snapshot.transcript[0]),
-            "• Updated Execution\n  └ [~] Run focused regression checks\n  └ scope root session\n  └ next Inspect failures\n  └ verify cargo test -p code-agent"
+            "• Updated Focus\n  └ [~] Run focused regression checks\n  └ scope root session\n  └ next Inspect failures\n  └ verify cargo test -p code-agent"
         );
         assert_eq!(
-            snapshot.execution.as_ref().map(|entry| &entry.status),
-            Some(&crate::frontend::tui::state::ExecutionStatus::Verifying)
+            snapshot.focus.as_ref().map(|entry| &entry.status),
+            Some(&crate::frontend::tui::state::PlanFocusStatus::Verifying)
         );
         assert_eq!(
             snapshot
-                .execution
+                .focus
                 .as_ref()
                 .map(|entry| entry.scope_label.as_str()),
             Some("root session")

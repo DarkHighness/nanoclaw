@@ -6,12 +6,12 @@ pub use skills::{Skill, SkillCatalog, load_skill_from_dir, load_skill_roots};
 pub use store::{FileSessionStore, InMemorySessionStore, SessionStore};
 #[cfg(feature = "agentic-tools")]
 pub use tools::{
-    AgentResumeTool, ExecutionAction, ExecutionScopeDescriptor, ExecutionSnapshot, ExecutionState,
-    ExecutionStatus, PermissionGrantScope, PlanItem, PlanState, PlanStatus,
-    RequestPermissionProfile, RequestPermissionsArgs, RequestPermissionsTool, RequestUserInputTool,
-    SkillDetail, SkillSummary, SkillTool, TaskTool, ToolSearchTool, ToolSuggestTool,
-    UpdateExecutionTool, UpdatePlanTool, UserInputAnswer, UserInputHandler, UserInputOption,
-    UserInputQuestion, UserInputRequest, UserInputResponse,
+    AgentResumeTool, PermissionGrantScope, PlanFocusAction, PlanFocusInput, PlanFocusSnapshot,
+    PlanFocusStatus, PlanItem, PlanSnapshot, PlanState, PlanStatus, RequestPermissionProfile,
+    RequestPermissionsArgs, RequestPermissionsTool, RequestUserInputTool, SkillDetail,
+    SkillSummary, SkillTool, TaskTool, ToolSearchTool, ToolSuggestTool, UpdatePlanTool,
+    UserInputAnswer, UserInputHandler, UserInputOption, UserInputQuestion, UserInputRequest,
+    UserInputResponse,
 };
 pub use tools::{
     ApplyPatchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, HostProcessExecutor, JsReplTool,

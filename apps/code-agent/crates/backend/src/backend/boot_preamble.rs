@@ -29,8 +29,8 @@ pub fn build_system_preamble(
         "Use apply_patch or patch for coordinated multi-file mutations when that surface is visible, and use write or edit for single-file creation or precise local edits."
             .to_string(),
         "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
-        "Maintain a concise plan with update_plan for multi-step work.".to_string(),
-        "Track only the live execution slice with update_execution: current focus, blockers, and verification state. Do not duplicate the full plan there.".to_string(),
+        "Maintain a concise plan with update_plan for multi-step work. update_plan also carries the optional live focus slice for current execution, blockers, and verification state."
+            .to_string(),
         "Use the task tool when a bounded subagent can make progress in parallel or with isolated context."
             .to_string(),
         "Use the skill tool to inspect loaded workspace skills before reading their companion files directly."

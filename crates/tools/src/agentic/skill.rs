@@ -183,6 +183,10 @@ fn fuzzy_skill_matches(catalog: &SkillCatalog, query: &str, limit: usize) -> Vec
                     .aliases
                     .iter()
                     .any(|alias| alias.to_ascii_lowercase().contains(&query))
+                || skill
+                    .tags
+                    .iter()
+                    .any(|tag| tag.to_ascii_lowercase().contains(&query))
                 || skill.description.to_ascii_lowercase().contains(&query)
         })
         .map(skill_summary)
@@ -384,7 +388,7 @@ Inspect PDFs carefully.
         assert!(result.text_content().contains("Instruction"));
         let structured = result.structured_content.as_ref().unwrap();
         assert_eq!(structured["kind"], "detail");
-        assert_eq!(structured["skill"]["summary"]["name"], "pdf");
+        assert_eq!(structured["skill"]["name"], "pdf");
         assert_eq!(structured["skill"]["references"][0], "references/guide.md");
     }
 

@@ -13,7 +13,6 @@ pub enum ToolRenderKind {
     ExecCommand,
     WriteStdin,
     UpdatePlan,
-    UpdateExecution,
     SendInput,
     SpawnAgent,
     WaitAgent,
@@ -29,7 +28,6 @@ impl ToolRenderKind {
             "exec_command" => Self::ExecCommand,
             "write_stdin" => Self::WriteStdin,
             "update_plan" => Self::UpdatePlan,
-            "update_execution" => Self::UpdateExecution,
             "send_input" => Self::SendInput,
             "spawn_agent" => Self::SpawnAgent,
             "wait_agent" => Self::WaitAgent,
@@ -412,15 +410,43 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
             return lines;
         }
         ToolRenderKind::UpdatePlan => {
-            let item_count = arguments
-                .get("plan")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            let mut lines = vec![if item_count == 0 {
-                "clear plan".to_string()
-            } else {
-                format!("set {item_count} plan step(s)")
-            }];
+            let mut lines = Vec::new();
+            if arguments.get("plan").is_some() {
+                let item_count = arguments
+                    .get("plan")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                lines.push(if item_count == 0 {
+                    "clear plan".to_string()
+                } else {
+                    format!("set {item_count} plan step(s)")
+                });
+            }
+            if let Some(focus) = arguments.get("focus") {
+                let action = focus.get("action").and_then(Value::as_str).unwrap_or("set");
+                lines.push(match action {
+                    "clear" => "clear focus".to_string(),
+                    _ => {
+                        let status = focus
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("active");
+                        match focus
+                            .get("summary")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                        {
+                            Some(summary) => {
+                                format!("set {status} focus {}", truncate_inline(summary, 48))
+                            }
+                            None => format!("set {status} focus"),
+                        }
+                    }
+                });
+            }
             if let Some(explanation) = arguments
                 .get("explanation")
                 .and_then(Value::as_str)
@@ -526,9 +552,7 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 }
             }
         }
-        ToolRenderKind::UpdateExecution
-        | ToolRenderKind::FileMutation
-        | ToolRenderKind::Generic => {}
+        ToolRenderKind::FileMutation | ToolRenderKind::Generic => {}
     }
 
     if let Some(object) = arguments.as_object() {
@@ -935,7 +959,6 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
     match ToolRenderKind::classify(tool_name) {
         ToolRenderKind::ExecCommand | ToolRenderKind::WriteStdin => ToolCompletionState::Neutral,
         ToolRenderKind::UpdatePlan
-        | ToolRenderKind::UpdateExecution
         | ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent
@@ -993,7 +1016,6 @@ pub fn tool_output_details(
             }
         }
         ToolRenderKind::UpdatePlan
-        | ToolRenderKind::UpdateExecution
         | ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent

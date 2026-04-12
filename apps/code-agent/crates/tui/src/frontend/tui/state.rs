@@ -30,7 +30,7 @@ pub(crate) use picker::{
 };
 pub(crate) use transcript::{
     InspectorAction, InspectorEntry, InspectorKeyAction, TranscriptDetailPrefix, TranscriptEntry,
-    TranscriptExecutionEntry, TranscriptPlanEntry, TranscriptSerializedPrefix,
+    TranscriptPlanEntry, TranscriptPlanFocusChange, TranscriptSerializedPrefix,
     TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry, TranscriptShellStatus,
     TranscriptToolEntry, TranscriptToolHeadlineSubjectKind, TranscriptToolStatus,
 };
@@ -152,7 +152,7 @@ pub(crate) struct PlanEntry {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ExecutionStatus {
+pub(crate) enum PlanFocusStatus {
     #[default]
     Active,
     Blocked,
@@ -161,7 +161,7 @@ pub(crate) enum ExecutionStatus {
     Other(String),
 }
 
-impl ExecutionStatus {
+impl PlanFocusStatus {
     pub(crate) fn from_wire(status: &str) -> Self {
         match status.trim() {
             "" | "active" => Self::Active,
@@ -174,9 +174,9 @@ impl ExecutionStatus {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ExecutionEntry {
+pub(crate) struct PlanFocusEntry {
     pub(crate) scope_label: String,
-    pub(crate) status: ExecutionStatus,
+    pub(crate) status: PlanFocusStatus,
     pub(crate) summary: String,
     pub(crate) next_action: Option<String>,
     pub(crate) verification: Option<String>,
@@ -373,7 +373,7 @@ pub(crate) struct TuiState {
     pub(crate) turn_running: bool,
     pub(crate) turn_started_at: Option<Instant>,
     pub(crate) plan_items: Vec<PlanEntry>,
-    pub(crate) execution: Option<ExecutionEntry>,
+    pub(crate) focus: Option<PlanFocusEntry>,
     pub(crate) pending_controls: Vec<PendingControlSummary>,
     pub(crate) pending_control_picker: Option<PendingControlPickerState>,
     pub(crate) editing_pending_control: Option<PendingControlEditorState>,

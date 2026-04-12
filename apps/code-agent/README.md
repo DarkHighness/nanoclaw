@@ -8,7 +8,7 @@ It intentionally keeps the host layer thin:
 - model-visible coding tools: `read`, `view_image`, `write`, `edit`, provider/model-aware patch surfaces (`apply_patch` for GPT-5-family OpenAI models, `patch` for Anthropic), `glob`, `grep`, `list`, `exec_command`, `write_stdin`
 - discovery tools: `tool_search`, `tool_suggest`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_definitions`, `code_references`, `code_hover`, `code_implementations`, `code_call_hierarchy`
-- agentic tools: `update_plan`, `update_execution`, `skill`, `request_user_input`, `request_permissions`, `task`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
+- agentic tools: `update_plan`, `skill`, `request_user_input`, `request_permissions`, `task`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
   - `send_input interrupt=true` now performs a real child restart instead of queuing behind the active turn, and the TUI/history surfaces distinguish queued follow-ups from interrupt-driven restarts
@@ -116,10 +116,10 @@ entrypoints such as `python -c ...` stay on the normal approval path. `write_std
 does not open a second approval step. Harmfulness is decided on `exec_command`,
 and stdin follow-ups stay inside that existing session.
 
-`update_plan` and `update_execution` are also approval-free now. They mutate
-host-owned coordination state, not the workspace or an external system, so they
-no longer share the same approval path as filesystem writes or new process
-execution.
+`update_plan` is also approval-free now. It mutates host-owned coordination
+state, including the shared task plan and the optional live focus slice, not
+the workspace or an external system, so it no longer shares the same approval
+path as filesystem writes or new process execution.
 
 MCP resource reads now use the connected server boundary instead of treating
 every MCP resource as the same risk. Resources from locally launched `stdio`

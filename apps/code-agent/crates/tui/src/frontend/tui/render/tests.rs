@@ -29,10 +29,10 @@ use crate::frontend::tui::commands::{
 };
 use crate::frontend::tui::state::{
     ActiveToolCell, ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
-    ComposerDraftState, ExecutionEntry, ExecutionStatus, HistoryRollbackCandidate, InspectorAction,
-    InspectorEntry, MainPaneMode, PlanEntry, PlanEntryStatus, StatusLinePickerState,
-    ThemePickerState, ToastTone, ToolSelectionTarget, TranscriptEntry, TranscriptShellDetail,
-    TranscriptToolStatus, TuiState,
+    ComposerDraftState, HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode,
+    PlanEntry, PlanEntryStatus, PlanFocusEntry, PlanFocusStatus, StatusLinePickerState,
+    ThemePickerState, ToastTone, ToolSelectionTarget, TranscriptEntry, TranscriptPlanFocusChange,
+    TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::interaction::{
     ApprovalContent, ApprovalContentKind, ApprovalOrigin, PendingControlKind, PendingControlReason,
@@ -1759,6 +1759,8 @@ fn transcript_renders_plan_updates_as_dedicated_cells() {
         ..TuiState::default()
     };
     state.transcript = vec![TranscriptEntry::plan_update(
+        true,
+        TranscriptPlanFocusChange::Unchanged,
         Some("Keep the transcript focused on the next slice.".to_string()),
         vec!["Demoted extra active steps to pending.".to_string()],
         vec![
@@ -1778,6 +1780,7 @@ fn transcript_renders_plan_updates_as_dedicated_cells() {
                 status: PlanEntryStatus::Pending,
             },
         ],
+        None,
     )];
 
     let rendered = build_transcript_lines(&state);
@@ -1807,16 +1810,20 @@ fn transcript_renders_plan_updates_as_dedicated_cells() {
 }
 
 #[test]
-fn transcript_renders_execution_updates_as_dedicated_cells() {
+fn transcript_renders_focus_updates_inside_plan_cells() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
         ..TuiState::default()
     };
-    state.transcript = vec![TranscriptEntry::execution_update(
-        "Updated Execution",
-        Some(ExecutionEntry {
+    state.transcript = vec![TranscriptEntry::plan_update(
+        false,
+        TranscriptPlanFocusChange::Updated,
+        None,
+        Vec::new(),
+        Vec::new(),
+        Some(PlanFocusEntry {
             scope_label: "root session".to_string(),
-            status: ExecutionStatus::Blocked,
+            status: PlanFocusStatus::Blocked,
             summary: "Waiting for the new LSP protocol parser".to_string(),
             next_action: Some("Patch protocol tests".to_string()),
             verification: None,
@@ -1828,7 +1835,7 @@ fn transcript_renders_execution_updates_as_dedicated_cells() {
     assert!(
         rendered
             .iter()
-            .any(|line| { line_text_for(line).contains("Updated Execution") })
+            .any(|line| { line_text_for(line).contains("Updated Focus") })
     );
     assert!(rendered.iter().any(|line| {
         line_text_for(line).contains("blocked · Waiting for the new LSP protocol parser")

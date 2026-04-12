@@ -187,11 +187,21 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 .get("plan")
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len);
-            let mut preview = vec![if item_count == 0 {
-                "clear plan".to_string()
-            } else {
-                format!("set {item_count} plan step(s)")
-            }];
+            let mut preview = Vec::new();
+            if arguments.get("plan").is_some() {
+                preview.push(if item_count == 0 {
+                    "clear plan".to_string()
+                } else {
+                    format!("set {item_count} plan step(s)")
+                });
+            }
+            if let Some(focus) = arguments.get("focus") {
+                let action = focus.get("action").and_then(Value::as_str).unwrap_or("set");
+                preview.push(match action {
+                    "clear" => "clear focus".to_string(),
+                    _ => "set focus".to_string(),
+                });
+            }
             if let Some(explanation) = arguments
                 .get("explanation")
                 .and_then(Value::as_str)
@@ -210,8 +220,7 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
-        ToolRenderKind::UpdateExecution
-        | ToolRenderKind::SendInput
+        ToolRenderKind::SendInput
         | ToolRenderKind::SpawnAgent
         | ToolRenderKind::WaitAgent
         | ToolRenderKind::ResumeAgent
