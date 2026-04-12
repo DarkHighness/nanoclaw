@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use types::HookRegistration;
+use types::{HookRegistration, ToolName};
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct AgentCoreSkillExtension {
@@ -11,6 +11,16 @@ pub struct AgentCoreSkillExtension {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+pub struct SkillActivationFrontmatter {
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    #[serde(default)]
+    pub requires_tools: Vec<ToolName>,
+    #[serde(default)]
+    pub fallback_for_tools: Vec<ToolName>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct SkillFrontmatter {
     pub name: String,
     pub description: String,
@@ -18,6 +28,12 @@ pub struct SkillFrontmatter {
     pub aliases: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    #[serde(default)]
+    pub requires_tools: Vec<ToolName>,
+    #[serde(default)]
+    pub fallback_for_tools: Vec<ToolName>,
     #[serde(rename = "x-agent-core", default)]
     pub agent_core: AgentCoreSkillExtension,
     #[serde(flatten)]

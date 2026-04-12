@@ -6,13 +6,15 @@ mod completion;
 mod parse;
 
 #[cfg(test)]
-pub(crate) use completion::command_palette_lines;
+pub(crate) use completion::{command_palette_lines, command_palette_lines_for};
 pub(crate) use completion::{
-    command_palette_lines_for, composer_completion_hint, cycle_composer_completion,
+    command_palette_lines_for_skills, composer_completion_hint, cycle_composer_completion,
     inspector_action_for_slash_name, move_composer_completion_selection,
     resolve_composer_enter_action,
 };
+#[cfg(test)]
 pub(crate) use parse::parse_slash_command;
+pub(crate) use parse::parse_slash_command_with_skills;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SlashCommandSpec {
@@ -60,8 +62,8 @@ impl SlashCommandSpec {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SlashCommandHint {
-    pub(crate) selected: SlashCommandSpec,
-    pub(crate) matches: Vec<SlashCommandSpec>,
+    pub(crate) selected: SlashInvocationSpec,
+    pub(crate) matches: Vec<SlashInvocationSpec>,
     pub(crate) selected_match_index: usize,
     pub(crate) arguments: Option<SlashCommandArgumentHint>,
     pub(crate) exact: bool,
@@ -89,6 +91,85 @@ pub(crate) struct SlashCommandArgumentSpec {
 pub(crate) enum SlashCommandEnterAction {
     Complete { input: String, index: usize },
     Execute(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SlashInvocationSpec {
+    Builtin(SlashCommandSpec),
+    Skill(SkillInvocationSpec),
+}
+
+impl SlashInvocationSpec {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Builtin(spec) => spec.name,
+            Self::Skill(spec) => spec.name.as_str(),
+        }
+    }
+
+    pub(crate) fn section(&self) -> &'static str {
+        match self {
+            Self::Builtin(spec) => spec.section,
+            Self::Skill(_) => "Skills",
+        }
+    }
+
+    pub(crate) fn usage(&self) -> String {
+        match self {
+            Self::Builtin(spec) => format!("/{}", spec.usage),
+            Self::Skill(spec) => format!("/{} [prompt]", spec.name),
+        }
+    }
+
+    pub(crate) fn summary(&self) -> String {
+        match self {
+            Self::Builtin(spec) => spec.summary.to_string(),
+            Self::Skill(spec) => spec.description.clone(),
+        }
+    }
+
+    pub(crate) fn aliases(&self) -> Vec<String> {
+        match self {
+            Self::Builtin(spec) => spec
+                .aliases()
+                .iter()
+                .map(|alias| (*alias).to_string())
+                .collect(),
+            Self::Skill(spec) => spec.aliases.clone(),
+        }
+    }
+
+    pub(crate) fn argument_specs(&self) -> Vec<SlashCommandArgumentSpec> {
+        match self {
+            Self::Builtin(spec) => spec.argument_specs(),
+            Self::Skill(_) => Vec::new(),
+        }
+    }
+
+    pub(crate) fn matches_prefix(&self, prefix: &str) -> bool {
+        match self {
+            Self::Builtin(spec) => spec.matches_prefix(prefix),
+            Self::Skill(spec) => spec.matches_prefix(prefix),
+        }
+    }
+
+    pub(crate) fn matches_token(&self, token: &str) -> bool {
+        match self {
+            Self::Builtin(spec) => spec.matches_token(token),
+            Self::Skill(spec) => spec.matches_token(token),
+        }
+    }
+
+    pub(crate) fn completion_input(&self) -> String {
+        format!("/{} ", self.name())
+    }
+
+    pub(crate) fn executable_input(&self) -> Option<String> {
+        match self {
+            Self::Builtin(spec) if !spec.requires_arguments() => Some(format!("/{}", spec.name)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -441,6 +522,10 @@ pub(crate) enum SlashCommand {
     ExportTranscript {
         session_ref: String,
         path: String,
+    },
+    InvokeSkill {
+        skill_name: String,
+        prompt: Option<String>,
     },
     Quit,
     InvalidUsage(String),

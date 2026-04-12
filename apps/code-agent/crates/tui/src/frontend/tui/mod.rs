@@ -40,8 +40,8 @@ use crate::ui::{
 };
 use approval::approval_decision_for_key;
 use commands::{
-    SlashCommand, command_palette_lines_for, cycle_composer_completion,
-    move_composer_completion_selection, parse_slash_command,
+    SlashCommand, command_palette_lines_for_skills, cycle_composer_completion,
+    move_composer_completion_selection, parse_slash_command_with_skills,
 };
 use history::{
     format_agent_session_inspector, format_agent_session_summary_collection,

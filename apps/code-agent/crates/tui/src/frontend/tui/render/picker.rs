@@ -9,7 +9,7 @@ use super::shell::bottom_band_inner_area;
 use super::theme::palette;
 use crate::frontend::tui::commands::{
     ComposerCompletionHint, SkillInvocationHint, SkillInvocationSpec, SlashCommandHint,
-    SlashCommandSpec,
+    SlashInvocationSpec,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
@@ -90,7 +90,7 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
     }
 
     for spec in window.items {
-        if spec.name == command_hint.selected.name {
+        if spec.name() == command_hint.selected.name() {
             lines.push(Line::from(vec![
                 Span::styled(
                     "›",
@@ -100,19 +100,20 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    format!("/{}", spec.usage),
+                    spec.usage(),
                     Style::default()
                         .fg(palette().header)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("  ", Style::default().fg(palette().subtle)),
-                Span::styled(spec.summary, Style::default().fg(palette().text)),
+                Span::styled(spec.summary(), Style::default().fg(palette().text)),
             ]));
-            if !spec.aliases().is_empty() {
+            let aliases = spec.aliases();
+            if !aliases.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled("  Aliases ", Style::default().fg(palette().subtle)),
                     Span::styled(
-                        spec.aliases()
+                        aliases
                             .iter()
                             .map(|alias| format!("/{alias}"))
                             .collect::<Vec<_>>()
@@ -124,12 +125,9 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
         } else {
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default().fg(palette().subtle)),
-                Span::styled(
-                    format!("/{}", spec.usage),
-                    Style::default().fg(palette().muted),
-                ),
+                Span::styled(spec.usage(), Style::default().fg(palette().muted)),
                 Span::styled("  ", Style::default().fg(palette().subtle)),
-                Span::styled(spec.section, Style::default().fg(palette().subtle)),
+                Span::styled(spec.section(), Style::default().fg(palette().subtle)),
             ]));
         }
     }
@@ -194,8 +192,10 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
             "Keep Typing"
         } else if command_hint.matches.len() > 1 {
             "Tab Next"
-        } else {
+        } else if command_hint.selected.executable_input().is_some() {
             "Enter Run"
+        } else {
+            "Enter Accept"
         }
     } else {
         "Tab Complete"
@@ -208,10 +208,13 @@ fn build_command_hint_text(command_hint: &SlashCommandHint) -> Text<'static> {
             .is_some_and(|argument| argument.required)
         {
             "Keep Typing"
-        } else {
+        } else if command_hint.selected.executable_input().is_some() {
             "Enter Run"
+        } else {
+            "Enter Accept"
         }
-    } else if command_hint.matches.len() == 1 && !command_hint.selected.requires_arguments() {
+    } else if command_hint.matches.len() == 1 && command_hint.selected.executable_input().is_some()
+    {
         "Enter Run"
     } else {
         "Enter Accept"
@@ -623,7 +626,7 @@ fn visible_pending_control_window<'a>(
 struct VisibleCommandMatchWindow<'a> {
     start: usize,
     end: usize,
-    items: &'a [SlashCommandSpec],
+    items: &'a [SlashInvocationSpec],
 }
 
 fn visible_command_match_window(

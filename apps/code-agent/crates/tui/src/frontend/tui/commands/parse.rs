@@ -1,6 +1,14 @@
 use super::*;
 
+#[cfg(test)]
 pub(crate) fn parse_slash_command(input: &str) -> SlashCommand {
+    parse_slash_command_with_skills(input, &[])
+}
+
+pub(crate) fn parse_slash_command_with_skills(
+    input: &str,
+    skills: &[SkillSummary],
+) -> SlashCommand {
     let trimmed = input.trim();
     let body = trimmed.strip_prefix('/').unwrap_or(trimmed);
     let Some(args) = shlex::split(body) else {
@@ -9,7 +17,8 @@ pub(crate) fn parse_slash_command(input: &str) -> SlashCommand {
 
     match SlashCli::try_parse_from(args) {
         Ok(parsed) => parsed.command.into(),
-        Err(error) => SlashCommand::InvalidUsage(render_usage_error(error)),
+        Err(error) => try_parse_skill_slash_command(body, skills)
+            .unwrap_or_else(|| SlashCommand::InvalidUsage(render_usage_error(error))),
     }
 }
 
@@ -103,4 +112,38 @@ fn render_usage_error(error: clap::Error) -> String {
         return command.render_help().to_string().trim().to_string();
     }
     rendered
+}
+
+fn try_parse_skill_slash_command(body: &str, skills: &[SkillSummary]) -> Option<SlashCommand> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (command_token, tail) = trimmed
+        .split_once(char::is_whitespace)
+        .map_or((trimmed, None), |(token, remainder)| {
+            (token, Some(remainder.trim()))
+        });
+    if SLASH_COMMAND_SPECS
+        .iter()
+        .copied()
+        .any(|spec| spec.matches_token(command_token))
+    {
+        return None;
+    }
+    let skill = skills.iter().find(|skill| {
+        skill.name.eq_ignore_ascii_case(command_token)
+            || skill
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(command_token))
+    })?;
+    let prompt = tail
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    Some(SlashCommand::InvokeSkill {
+        skill_name: skill.name.clone(),
+        prompt,
+    })
 }

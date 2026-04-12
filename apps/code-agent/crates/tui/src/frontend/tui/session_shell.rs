@@ -163,6 +163,18 @@ impl CodeAgentTui {
         });
     }
 
+    pub(super) fn sync_skill_summaries(&self) {
+        let skills = self.skills();
+        self.ui_state.mutate(|state| {
+            // `skill_manage` mutates the shared catalog without forcing a new
+            // session, so the TUI keeps the slash palette/completion surface in
+            // sync with the backend-owned skill registry on every redraw.
+            if state.session.skills != skills {
+                state.session.skills = skills;
+            }
+        });
+    }
+
     pub(super) fn apply_backend_events(&mut self) {
         for event in self
             .dispatch::<Vec<SessionEvent>>(UICommand::DrainEvents)

@@ -1,6 +1,44 @@
 use super::*;
 
 impl CodeAgentTui {
+    pub(crate) async fn apply_skill_slash_submit(
+        &mut self,
+        skill_name: String,
+        prompt: Option<String>,
+    ) {
+        let slash_input = synthesize_skill_prompt_input(&skill_name, prompt.as_deref());
+        let snapshot = self.ui_state.snapshot();
+        if prompt
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(|value| value.is_empty())
+            && snapshot.draft_attachments.is_empty()
+        {
+            self.ui_state.mutate(|state| {
+                state.replace_input_text_preserving_attachments(format!("{slash_input} "));
+                state.composer_completion_index = 0;
+                state.status = format!("Selected skill {}", skill_name);
+                state.push_activity(format!("prepared skill prompt {}", skill_name));
+            });
+            return;
+        }
+
+        let action = plain_input_submit_action(
+            &slash_input,
+            true,
+            composer_requires_prompt_submission(&snapshot),
+            snapshot.turn_running,
+            KeyCode::Enter,
+        )
+        .expect("skill slash submissions should map to plain prompt submission");
+        self.ui_state.mutate(|state| {
+            state.replace_input_text_preserving_attachments(slash_input);
+            state.composer_completion_index = 0;
+        });
+        let submission = self.ui_state.take_submission();
+        self.apply_plain_input_submit(action, submission).await;
+    }
+
     pub(crate) async fn apply_plain_input_submit(
         &mut self,
         action: PlainInputSubmitAction,
@@ -190,6 +228,14 @@ impl CodeAgentTui {
     }
 }
 
+pub(crate) fn synthesize_skill_prompt_input(skill_name: &str, prompt: Option<&str>) -> String {
+    let prompt = prompt.map(str::trim).filter(|value| !value.is_empty());
+    match prompt {
+        Some(prompt) => format!("${skill_name} {prompt}"),
+        None => format!("${skill_name}"),
+    }
+}
+
 fn split_leading_skill_references(
     text: &str,
     skills: &[crate::interaction::SkillSummary],
@@ -219,7 +265,7 @@ fn split_leading_skill_references(
 
 #[cfg(test)]
 mod tests {
-    use super::split_leading_skill_references;
+    use super::{split_leading_skill_references, synthesize_skill_prompt_input};
     use crate::interaction::SkillSummary;
 
     fn skill(name: &str, aliases: &[&str]) -> SkillSummary {
@@ -255,5 +301,17 @@ mod tests {
 
         assert!(matched.is_empty());
         assert_eq!(remaining, "$unknown inspect this");
+    }
+
+    #[test]
+    fn synthesizes_skill_prompt_input_from_optional_tail() {
+        assert_eq!(
+            synthesize_skill_prompt_input("openai-docs", Some("summarize models")),
+            "$openai-docs summarize models"
+        );
+        assert_eq!(
+            synthesize_skill_prompt_input("openai-docs", None),
+            "$openai-docs"
+        );
     }
 }

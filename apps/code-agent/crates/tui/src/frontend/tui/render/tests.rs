@@ -26,6 +26,7 @@ use crate::frontend::tui::approval::ApprovalPrompt;
 use crate::frontend::tui::commands::{
     ComposerCompletionHint, SkillInvocationHint, SkillInvocationSpec, SlashCommandArgumentHint,
     SlashCommandArgumentSpec, SlashCommandArgumentValue, SlashCommandHint, SlashCommandSpec,
+    SlashInvocationSpec,
 };
 use crate::frontend::tui::state::{
     ActiveToolCell, ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
@@ -45,6 +46,10 @@ use crate::tool_render::{
 use agent::types::{MessageId, MessagePart, TaskId, TaskOrigin, TaskStatus};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
+
+fn builtin_slash(spec: SlashCommandSpec) -> SlashInvocationSpec {
+    SlashInvocationSpec::Builtin(spec)
+}
 
 #[test]
 fn key_value_text_renders_section_headers_without_treating_them_as_pairs() {
@@ -503,7 +508,7 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     }));
     assert!(lines.iter().any(|line| {
         line_text_for(line)
-            .contains("Ask for a change, start with $skill_name for an explicit skill, review history, or run /help.")
+            .contains("Ask for a change, start with $skill_name or /skill_name for an explicit skill, review history, or run /help.")
     }));
 }
 
@@ -1939,25 +1944,25 @@ fn permission_request_modal_does_not_shrink_main_pane_viewport() {
 #[test]
 fn command_hint_text_surfaces_selected_usage_and_matches() {
     let rendered = build_composer_hint_text(&ComposerCompletionHint::Slash(SlashCommandHint {
-        selected: SlashCommandSpec {
+        selected: builtin_slash(SlashCommandSpec {
             section: "History",
             name: "sessions",
             usage: "sessions [query]",
             summary: "browse persisted sessions",
-        },
+        }),
         matches: vec![
-            SlashCommandSpec {
+            builtin_slash(SlashCommandSpec {
                 section: "History",
                 name: "sessions",
                 usage: "sessions [query]",
                 summary: "browse persisted sessions",
-            },
-            SlashCommandSpec {
+            }),
+            builtin_slash(SlashCommandSpec {
                 section: "History",
                 name: "session",
                 usage: "session <session-ref>",
                 summary: "open persisted session",
-            },
+            }),
         ],
         selected_match_index: 0,
         arguments: None,
@@ -1985,18 +1990,18 @@ fn command_hint_text_surfaces_selected_usage_and_matches() {
 #[test]
 fn command_hint_text_surfaces_argument_progress() {
     let rendered = build_composer_hint_text(&ComposerCompletionHint::Slash(SlashCommandHint {
-        selected: SlashCommandSpec {
+        selected: builtin_slash(SlashCommandSpec {
             section: "Export",
             name: "export_session",
             usage: "export_session <session-ref> <path>",
             summary: "write session export",
-        },
-        matches: vec![SlashCommandSpec {
+        }),
+        matches: vec![builtin_slash(SlashCommandSpec {
             section: "Export",
             name: "export_session",
             usage: "export_session <session-ref> <path>",
             summary: "write session export",
-        }],
+        })],
         selected_match_index: 0,
         arguments: Some(SlashCommandArgumentHint {
             provided: vec![SlashCommandArgumentValue {
@@ -2026,18 +2031,18 @@ fn command_hint_text_surfaces_argument_progress() {
 #[test]
 fn command_hint_text_keeps_enter_run_for_optional_arguments() {
     let rendered = build_composer_hint_text(&ComposerCompletionHint::Slash(SlashCommandHint {
-        selected: SlashCommandSpec {
+        selected: builtin_slash(SlashCommandSpec {
             section: "Session",
             name: "help",
             usage: "help [query]",
             summary: "browse commands",
-        },
-        matches: vec![SlashCommandSpec {
+        }),
+        matches: vec![builtin_slash(SlashCommandSpec {
             section: "Session",
             name: "help",
             usage: "help [query]",
             summary: "browse commands",
-        }],
+        })],
         selected_match_index: 0,
         arguments: Some(SlashCommandArgumentHint {
             provided: Vec::new(),
@@ -2057,55 +2062,55 @@ fn command_hint_text_keeps_enter_run_for_optional_arguments() {
 #[test]
 fn command_hint_text_shows_browse_window_ellipsis() {
     let rendered = build_composer_hint_text(&ComposerCompletionHint::Slash(SlashCommandHint {
-        selected: SlashCommandSpec {
+        selected: builtin_slash(SlashCommandSpec {
             section: "History",
             name: "resume",
             usage: "resume <agent-session-ref>",
             summary: "reattach agent session",
-        },
+        }),
         matches: vec![
-            SlashCommandSpec {
+            builtin_slash(SlashCommandSpec {
                 section: "Session",
                 name: "help",
                 usage: "help",
                 summary: "browse commands",
-            },
-            SlashCommandSpec {
+            }),
+            builtin_slash(SlashCommandSpec {
                 section: "Session",
                 name: "status",
                 usage: "status",
                 summary: "session overview",
-            },
-            SlashCommandSpec {
+            }),
+            builtin_slash(SlashCommandSpec {
                 section: "Session",
                 name: "new",
                 usage: "new",
                 summary: "fresh top-level session",
-            },
-            SlashCommandSpec {
+            }),
+            builtin_slash(SlashCommandSpec {
                 section: "History",
                 name: "sessions",
                 usage: "sessions [query]",
                 summary: "browse persisted sessions",
-            },
-            SlashCommandSpec {
+            }),
+            builtin_slash(SlashCommandSpec {
                 section: "History",
                 name: "session",
                 usage: "session <session-ref>",
                 summary: "open persisted session",
-            },
-            SlashCommandSpec {
+            }),
+            builtin_slash(SlashCommandSpec {
                 section: "History",
                 name: "resume",
                 usage: "resume <agent-session-ref>",
                 summary: "reattach agent session",
-            },
-            SlashCommandSpec {
+            }),
+            builtin_slash(SlashCommandSpec {
                 section: "Agents",
                 name: "live_tasks",
                 usage: "live_tasks",
                 summary: "list live child agents",
-            },
+            }),
         ],
         selected_match_index: 5,
         arguments: None,

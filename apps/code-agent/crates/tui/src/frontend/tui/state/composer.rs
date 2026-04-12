@@ -675,6 +675,13 @@ impl TuiState {
         self.replace_input_draft(ComposerDraftState::from_text(input));
     }
 
+    pub(crate) fn replace_input_text_preserving_attachments(&mut self, input: impl Into<String>) {
+        let mut draft = self.current_input_draft();
+        draft.text = input.into();
+        draft.cursor = draft.text.len();
+        self.replace_input_draft(draft.normalized());
+    }
+
     pub(crate) fn clear_input(&mut self) {
         self.replace_input_draft(ComposerDraftState::default());
     }

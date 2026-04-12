@@ -8,8 +8,10 @@ mod catalog;
 mod error;
 mod frontmatter;
 mod loader;
+mod model;
 
 pub use catalog::*;
 pub use error::*;
 pub use frontmatter::*;
 pub use loader::*;
+pub use model::*;

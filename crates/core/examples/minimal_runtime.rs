@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 use runtime::Result as RuntimeResult;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tools::ManagedPolicyProcessExecutor;
 
@@ -48,19 +49,19 @@ impl ModelBackend for EchoBackend {
 }
 
 fn build_system_preamble(system_prompt: Option<&str>, skill_catalog: &SkillCatalog) -> Vec<String> {
+    let _ = skill_catalog;
     let mut preamble = vec![
         "You are a general-purpose software agent operating inside the current workspace."
             .to_string(),
         "Inspect repository state and use tools before guessing.".to_string(),
+        "Do not assume skills are already loaded. Use skills_list to discover skills and skill_view to inspect one skill before relying on it."
+            .to_string(),
     ];
     if let Some(system_prompt) = system_prompt
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         preamble.push(system_prompt.to_string());
-    }
-    if let Some(skill_manifest) = skill_catalog.prompt_manifest() {
-        preamble.push(skill_manifest);
     }
     preamble
 }
@@ -79,6 +80,11 @@ fn example_skill(workspace_root: &std::path::Path) -> Skill {
         assets: Vec::new(),
         metadata: BTreeMap::new(),
         extension_metadata: BTreeMap::new(),
+        activation: Default::default(),
+        provenance: agent::SkillProvenance {
+            root: agent::SkillRoot::managed(AgentWorkspaceLayout::new(workspace_root).skills_dir()),
+            skill_dir: workspace_root.join(".skills").join("workspace-rules"),
+        },
     }
 }
 

@@ -39,10 +39,9 @@ use agent::types::{
     SubmittedPromptSnapshot, TaskId, TaskOrigin, TaskStatus, ToolAvailability, ToolOrigin,
     ToolOutputMode, ToolSource, ToolSpec, ToolVisibilityContext,
 };
-use agent::{AgentRuntimeBuilder, RequestPermissionsTool, RuntimeCommand, Skill, SkillCatalog};
+use agent::{AgentRuntimeBuilder, RequestPermissionsTool, RuntimeCommand, SkillCatalog};
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
-use nanoclaw_config::CoreConfig;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -711,10 +710,7 @@ fn build_session_with_runtime_state(
         session_tool_context,
         default_sandbox_policy,
         startup,
-        CoreConfig::default().resolve_primary_agent().unwrap(),
         SkillCatalog::default(),
-        Vec::new(),
-        Vec::<Skill>::new(),
         memory_backend,
         Arc::new(std::sync::Mutex::new(
             crate::backend::session_memory_compaction::SessionMemoryRefreshState::default(),
@@ -889,7 +885,7 @@ async fn start_new_session_refreshes_backend_snapshot_refs() {
 }
 
 #[tokio::test]
-async fn start_new_session_refreshes_workspace_memory_primer() {
+async fn start_new_session_keeps_base_instructions_stable() {
     let dir = tempfile::tempdir().unwrap();
     let backend = RecordingPromptBackend::default();
     let store = Arc::new(InMemorySessionStore::new());
@@ -940,8 +936,9 @@ async fn start_new_session_refreshes_workspace_memory_primer() {
             .contains("# Workspace Memory Primer")
     );
     let refreshed = requests[1].instructions.join("\n\n");
-    assert!(refreshed.contains("# Workspace Memory Primer"));
-    assert!(refreshed.contains("refresh on new session"));
+    assert!(!refreshed.contains("# Workspace Memory Primer"));
+    assert!(!refreshed.contains("refresh on new session"));
+    assert_eq!(refreshed, requests[0].instructions.join("\n\n"));
 }
 
 #[tokio::test]
@@ -1867,7 +1864,7 @@ async fn resume_agent_session_resolves_session_note_title_to_root_agent() {
 }
 
 #[tokio::test]
-async fn resume_agent_session_refreshes_workspace_memory_primer() {
+async fn resume_agent_session_keeps_base_instructions_stable() {
     let dir = tempfile::tempdir().unwrap();
     let backend = RecordingPromptBackend::default();
     let store = Arc::new(InMemorySessionStore::new());
@@ -1927,8 +1924,9 @@ async fn resume_agent_session_refreshes_workspace_memory_primer() {
             .contains("# Workspace Memory Primer")
     );
     let refreshed = requests[1].instructions.join("\n\n");
-    assert!(refreshed.contains("# Workspace Memory Primer"));
-    assert!(refreshed.contains("refresh on resume"));
+    assert!(!refreshed.contains("# Workspace Memory Primer"));
+    assert!(!refreshed.contains("refresh on resume"));
+    assert_eq!(refreshed, requests[0].instructions.join("\n\n"));
 }
 
 #[tokio::test]

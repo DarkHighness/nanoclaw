@@ -14,7 +14,12 @@ impl CodeAgentSession {
     }
 
     pub fn skill_summaries(&self) -> Vec<SkillSummary> {
-        self.skills.iter().map(skill_summary_from_skill).collect()
+        self.preamble
+            .skill_catalog
+            .all()
+            .iter()
+            .map(crate::frontend_contract::skill_summary_from_skill)
+            .collect()
     }
 
     pub fn startup_diagnostics(&self) -> StartupDiagnosticsSnapshot {
@@ -82,21 +87,5 @@ impl CodeAgentSession {
     ) -> Result<LoadedMcpResource> {
         let servers = self.connected_mcp_servers_snapshot();
         load_mcp_resource(&servers, server_name, uri).await
-    }
-
-    pub(super) fn rebuild_system_preamble(&self) -> Vec<String> {
-        let tool_visibility = self
-            .session_tool_context
-            .read()
-            .unwrap()
-            .model_visibility
-            .clone();
-        build_system_preamble(
-            self.workspace_root(),
-            &self.preamble.profile,
-            &self.preamble.skill_catalog,
-            &self.preamble.plugin_instructions,
-            &tool_visibility,
-        )
     }
 }

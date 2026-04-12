@@ -192,7 +192,11 @@ pub(crate) fn permission_profile_summary(profile: &PermissionProfile) -> String 
     }
 }
 
-pub(crate) fn build_command_error_view(input: &str, message: &str) -> Vec<InspectorEntry> {
+pub(crate) fn build_command_error_view(
+    input: &str,
+    message: &str,
+    skills: &[crate::interaction::SkillSummary],
+) -> Vec<InspectorEntry> {
     let mut lines = message
         .lines()
         .map(|line| InspectorEntry::Plain(line.to_string()))
@@ -202,7 +206,7 @@ pub(crate) fn build_command_error_view(input: &str, message: &str) -> Vec<Inspec
         .split_whitespace()
         .next()
         .filter(|query| !query.is_empty());
-    let palette = command_palette_lines_for(query);
+    let palette = command_palette_lines_for_skills(query, skills);
     if !palette.is_empty() {
         lines.push(InspectorEntry::Empty);
         lines.extend(palette);

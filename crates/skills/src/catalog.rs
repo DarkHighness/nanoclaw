@@ -1,79 +1,101 @@
-use crate::Skill;
+use crate::{Skill, SkillRoot, SkillRootKind};
+use std::collections::BTreeSet;
+use std::sync::{Arc, RwLock};
+
+#[derive(Clone, Debug, Default)]
+struct SkillCatalogState {
+    roots: Vec<SkillRoot>,
+    skills: Vec<Skill>,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct SkillCatalog {
-    skills: Vec<Skill>,
+    state: Arc<RwLock<SkillCatalogState>>,
 }
 
 impl SkillCatalog {
     #[must_use]
-    pub fn new(mut skills: Vec<Skill>) -> Self {
+    pub fn new(skills: Vec<Skill>) -> Self {
+        Self::from_parts(Vec::new(), skills)
+    }
+
+    #[must_use]
+    pub fn from_parts(roots: Vec<SkillRoot>, mut skills: Vec<Skill>) -> Self {
         skills.sort_by(|left, right| left.name.cmp(&right.name));
-        Self { skills }
+        Self {
+            state: Arc::new(RwLock::new(SkillCatalogState { roots, skills })),
+        }
+    }
+
+    pub fn replace(&self, roots: Vec<SkillRoot>, mut skills: Vec<Skill>) {
+        skills.sort_by(|left, right| left.name.cmp(&right.name));
+        *self.state.write().expect("skill catalog write lock") =
+            SkillCatalogState { roots, skills };
     }
 
     #[must_use]
-    pub fn all(&self) -> &[Skill] {
-        &self.skills
+    pub fn roots(&self) -> Vec<SkillRoot> {
+        self.state
+            .read()
+            .expect("skill catalog read lock")
+            .roots
+            .clone()
     }
 
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<&Skill> {
-        self.skills.iter().find(|skill| skill.name == name)
+    pub fn managed_root(&self) -> Option<SkillRoot> {
+        self.roots()
+            .into_iter()
+            .find(|root| matches!(root.kind, SkillRootKind::Managed))
     }
 
     #[must_use]
-    pub fn resolve(&self, query: &str) -> Option<&Skill> {
+    pub fn all(&self) -> Vec<Skill> {
+        self.state
+            .read()
+            .expect("skill catalog read lock")
+            .skills
+            .clone()
+    }
+
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<Skill> {
+        self.state
+            .read()
+            .expect("skill catalog read lock")
+            .skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .cloned()
+    }
+
+    #[must_use]
+    pub fn resolve(&self, query: &str) -> Option<Skill> {
         let normalized = query.trim();
         if normalized.is_empty() {
             return None;
         }
-        self.skills.iter().find(|skill| {
-            skill.name == normalized
-                || skill
-                    .aliases
-                    .iter()
-                    .any(|alias| alias.as_str() == normalized)
-        })
+        self.state
+            .read()
+            .expect("skill catalog read lock")
+            .skills
+            .iter()
+            .find(|skill| {
+                skill.name == normalized
+                    || skill
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.as_str() == normalized)
+            })
+            .cloned()
     }
 
     #[must_use]
-    pub fn prompt_manifest(&self) -> Option<String> {
-        if self.skills.is_empty() {
-            return None;
+    pub fn tool_names(&self) -> Vec<String> {
+        let mut names = BTreeSet::new();
+        for skill in self.all() {
+            names.insert(skill.name.clone());
         }
-
-        let mut lines = vec![
-            "Available workspace skills are listed below.".to_string(),
-            "Do not rely on heuristic skill activation. If a skill is relevant, inspect it with the skill tool first, then read any referenced skill files you actually need.".to_string(),
-            "Loaded skills:".to_string(),
-        ];
-        lines.extend(self.skills.iter().map(format_skill_manifest_line));
-        Some(lines.join("\n"))
+        names.into_iter().collect()
     }
-}
-
-fn format_skill_manifest_line(skill: &Skill) -> String {
-    let skill_path = skill.root_dir.join("SKILL.md");
-    let aliases = if skill.aliases.is_empty() {
-        String::new()
-    } else {
-        format!(" aliases={}", skill.aliases.join(","))
-    };
-    let tags = if skill.tags.is_empty() {
-        String::new()
-    } else {
-        format!(" tags={}", skill.tags.join(","))
-    };
-    format!(
-        "- {}:{}{} path={}",
-        skill.name,
-        if skill.description.is_empty() {
-            " no description".to_string()
-        } else {
-            format!(" {}", skill.description)
-        },
-        format!("{aliases}{tags}"),
-        skill_path.display()
-    )
 }

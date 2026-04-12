@@ -9,7 +9,7 @@ It intentionally keeps the host layer thin:
 - discovery tools: `tool_discover`
 - operator/debug-only tools: `web_search_backends`
 - optional code-intel tools: `code_symbol_search`, `code_document_symbols`, `code_nav`
-- agentic tools: `skill`, `request_user_input`, `request_permissions`, `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
+- agentic tools: `skills_list`, `skill_view`, `skill_manage`, `request_user_input`, `request_permissions`, `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
   - `send_input interrupt=true` now performs a real child restart instead of queuing behind the active turn, and the TUI/history surfaces distinguish queued follow-ups from interrupt-driven restarts
@@ -25,6 +25,10 @@ It intentionally keeps the host layer thin:
 - loop detection as the primary guard against tool-call churn, without a fixed global iteration cap
 - provider adapter from `provider`
 - workspace skills loaded from conventional skill roots
+- Hermes-style skill discovery and mutation:
+  - `skills_list` discovers the catalog without injecting it into the system prompt
+  - `skill_view` progressively loads `SKILL.md` content or companion files on demand
+  - `skill_manage` mutates only the managed root and tells the model to refresh via `skills_list`/`skill_view`
 - interactive approval for destructive tools and higher-risk external reads,
   with a narrow host allowlist for safe built-in web research tools,
   argv-matched `exec_command` trust rules, approval-free `write_stdin`
@@ -95,6 +99,12 @@ This opens a compact `ratatui` screen with a single wide main surface for
 transcript and read-heavy command views, a Codex-style prompt line, a minimal
 context footer, inline approval and user-input bands in the bottom pane, and a
 more neutral dark palette tuned for prompt and slash-command workflows.
+
+Installed skills are available through both `$skill_name` in the composer and
+auto-generated `/skill_name` slash commands. The slash surface remains
+operator-oriented for host/session actions, but explicit skill invocation is a
+first-class exception so operators can browse and seed skill prompts without
+mirroring arbitrary model tools into slash commands.
 
 Use `/permissions` inside the TUI to inspect or switch the session base sandbox
 mode between `default` and `danger-full-access`. Model-issued

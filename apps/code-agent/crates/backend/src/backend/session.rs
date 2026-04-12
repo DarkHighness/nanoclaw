@@ -20,8 +20,8 @@ use crate::backend::session_resume;
 use crate::backend::task_history::{self};
 use crate::backend::{
     ApprovalCoordinator, PermissionRequestCoordinator, SessionEventObserver, SessionEventStream,
-    UserInputCoordinator, build_system_preamble, list_mcp_prompts, list_mcp_resources,
-    list_mcp_servers, load_mcp_prompt, load_mcp_resource,
+    UserInputCoordinator, list_mcp_prompts, list_mcp_resources, list_mcp_servers, load_mcp_prompt,
+    load_mcp_resource,
 };
 mod catalog;
 mod controls;
@@ -35,7 +35,6 @@ mod monitors;
 mod permissions;
 mod surface;
 
-use crate::frontend_contract::skill_summary_from_skill;
 use crate::interaction::{ModelReasoningEffortOutcome, SkillSummary};
 use crate::provider::{MutableAgentBackend, ReasoningEffortUpdate};
 use crate::ui::{
@@ -69,13 +68,12 @@ use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, HookHandler, HookRegistration,
     Message, MessageId, ModelEvent, ModelRequest, SessionId, ToolSpec, TurnId, new_opaque_id,
 };
-use agent::{AgentRuntime, RuntimeCommand, Skill, ToolExecutionContext};
+use agent::{AgentRuntime, RuntimeCommand, ToolExecutionContext};
 use anyhow::Result;
 use futures::{StreamExt, stream};
 #[cfg(test)]
 use memory::{CompactionWorkingSnapshot, SessionMemoryRefreshContext};
 use memory::{SessionEpisodicCaptureState, SideQuestionContextSnapshot};
-use nanoclaw_config::ResolvedAgentProfile;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
@@ -110,9 +108,7 @@ const PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING: &str =
 
 #[derive(Clone)]
 struct SessionPreambleConfig {
-    profile: ResolvedAgentProfile,
     skill_catalog: agent::SkillCatalog,
-    plugin_instructions: Vec<String>,
 }
 
 struct ActiveTurnGuard {
@@ -149,7 +145,6 @@ pub struct CodeAgentSession {
     events: SessionEventStream,
     workspace_root: PathBuf,
     startup: Arc<RwLock<SessionStartupSnapshot>>,
-    skills: Arc<Vec<Skill>>,
     permission_grants: PermissionGrantStore,
     session_tool_context: Arc<RwLock<ToolExecutionContext>>,
     default_sandbox_policy: SandboxPolicy,
@@ -186,10 +181,7 @@ impl CodeAgentSession {
         session_tool_context: Arc<RwLock<ToolExecutionContext>>,
         default_sandbox_policy: SandboxPolicy,
         startup: SessionStartupSnapshot,
-        profile: ResolvedAgentProfile,
         skill_catalog: agent::SkillCatalog,
-        plugin_instructions: Vec<String>,
-        skills: Vec<Skill>,
         memory_backend: Option<Arc<dyn MemoryBackend>>,
         session_memory_refresh: SharedSessionMemoryRefreshState,
     ) -> Self {
@@ -230,15 +222,10 @@ impl CodeAgentSession {
             events,
             workspace_root,
             startup: Arc::new(RwLock::new(startup)),
-            skills: Arc::new(skills),
             permission_grants,
             session_tool_context,
             default_sandbox_policy,
-            preamble: SessionPreambleConfig {
-                profile,
-                skill_catalog,
-                plugin_instructions,
-            },
+            preamble: SessionPreambleConfig { skill_catalog },
             session_memory_model_backend,
             memory_backend,
             session_memory_refresh,

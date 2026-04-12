@@ -56,12 +56,13 @@ impl CodeAgentTui {
                 Ok(false)
             }
             SlashCommand::Help { query } => {
+                let skills = self.ui_state.snapshot().session.skills;
                 let title = query
                     .as_deref()
                     .filter(|query| !query.trim().is_empty())
                     .map(|query| format!("Command Palette · {}", query.trim()))
                     .unwrap_or_else(|| "Command Palette".to_string());
-                let lines = command_palette_lines_for(query.as_deref());
+                let lines = command_palette_lines_for_skills(query.as_deref(), &skills);
                 self.ui_state.mutate(|state| {
                     state.show_main_view(title, lines);
                     state.status = "Opened command palette".to_string();

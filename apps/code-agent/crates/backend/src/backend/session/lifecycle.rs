@@ -97,10 +97,8 @@ impl CodeAgentSession {
     }
 
     async fn start_fresh_session(&self) -> Result<SessionOperationOutcome> {
-        let instructions = self.rebuild_system_preamble();
         let (session_ref, agent_session_ref, side_question_context) = {
             let mut runtime = self.runtime.lock().await;
-            runtime.replace_base_instructions(instructions);
             runtime
                 .start_new_session()
                 .await
@@ -165,10 +163,8 @@ impl CodeAgentSession {
         let events = self.store.events(&session_id).await?;
         let runtime_session =
             session_resume::reconstruct_runtime_session(&events, &target_agent_session_id)?;
-        let instructions = self.rebuild_system_preamble();
         let (active_session_ref, active_agent_session_ref, side_question_context) = {
             let mut runtime = self.runtime.lock().await;
-            runtime.replace_base_instructions(instructions);
             runtime
                 .resume_session(runtime_session)
                 .await

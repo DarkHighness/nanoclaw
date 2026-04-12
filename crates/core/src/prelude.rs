@@ -2,15 +2,19 @@ pub use mcp::{McpCatalog, McpClient, McpServerConfig, McpTransportConfig};
 pub use runtime::{AgentRuntime, HookRunner, ModelBackend};
 #[cfg(feature = "agentic-tools")]
 pub use runtime::{RuntimeCommand, RuntimeControlPlane, RuntimeSubagentExecutor};
-pub use skills::{Skill, SkillCatalog, load_skill_from_dir, load_skill_roots};
+pub use skills::{
+    Skill, SkillCatalog, SkillProvenance, SkillRoot, SkillRootKind, load_skill_from_dir,
+    load_skill_roots,
+};
 pub use store::{FileSessionStore, InMemorySessionStore, SessionStore};
 #[cfg(feature = "agentic-tools")]
 pub use tools::{
     AgentResumeTool, PermissionGrantScope, RequestPermissionProfile, RequestPermissionsArgs,
-    RequestPermissionsTool, RequestUserInputTool, SkillDetail, SkillSummary, SkillTool,
-    TaskCreateTool, TaskGetTool, TaskListTool, TaskManager, TaskStopTool, TaskUpdateTool,
-    ToolDiscoverTool, UserInputAnswer, UserInputHandler, UserInputOption, UserInputQuestion,
-    UserInputRequest, UserInputResponse,
+    RequestPermissionsTool, RequestUserInputTool, SkillDetail, SkillFileView, SkillManageOutput,
+    SkillManageTool, SkillSummary, SkillViewOutput, SkillViewTool, SkillsListOutput,
+    SkillsListTool, TaskCreateTool, TaskGetTool, TaskListTool, TaskManager, TaskStopTool,
+    TaskUpdateTool, ToolDiscoverTool, UserInputAnswer, UserInputHandler, UserInputOption,
+    UserInputQuestion, UserInputRequest, UserInputResponse,
 };
 #[cfg(feature = "code-intel")]
 pub use tools::{

@@ -1,6 +1,6 @@
+use agent::AgentWorkspaceLayout;
 use agent::tools::HOST_FEATURE_REQUEST_USER_INPUT;
 use agent::types::ToolVisibilityContext;
-use agent::{AgentWorkspaceLayout, SkillCatalog};
 use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,6 @@ const PRIMER_MEMORY_MAX_BYTES: usize = 16_000;
 pub fn build_system_preamble(
     workspace_root: &Path,
     profile: &ResolvedAgentProfile,
-    skill_catalog: &SkillCatalog,
     plugin_instructions: &[String],
     tool_visibility: &ToolVisibilityContext,
 ) -> Vec<String> {
@@ -33,9 +32,9 @@ pub fn build_system_preamble(
             .to_string(),
         "Use spawn_agent for bounded child work, then send_input, wait_agent, resume_agent, and close_agent to manage that child explicitly."
             .to_string(),
-        "Use the skill tool to inspect loaded workspace skills before reading their companion files directly."
+        "Do not assume any skill is available from the system prompt alone. Use skills_list to discover skills and skill_view to inspect one skill or one of its companion files before relying on it."
             .to_string(),
-        "Treat leading `$skill_name` directives in the user prompt as explicit skill requests. Resolve each skill name or alias with the skill tool, then apply those skill instructions before continuing with the rest of the prompt."
+        "Treat leading `$skill_name` directives in the user prompt as explicit requests to resolve that skill through skills_list or skill_view before continuing with the rest of the prompt."
             .to_string(),
     ];
     if tool_visibility.has_feature(HOST_FEATURE_REQUEST_USER_INPUT) {
@@ -56,9 +55,6 @@ pub fn build_system_preamble(
         preamble.push(memory_primer);
     }
     preamble.extend(plugin_instructions.iter().cloned());
-    if let Some(skill_manifest) = skill_catalog.prompt_manifest() {
-        preamble.push(skill_manifest);
-    }
     preamble
 }
 
@@ -177,16 +173,26 @@ pub fn resolve_skill_roots(
     configured_roots: &[PathBuf],
     workspace_root: &Path,
     plugin_plan: &agent::plugins::PluginActivationPlan,
-) -> Vec<PathBuf> {
+) -> Vec<agent::SkillRoot> {
     let mut roots = if configured_roots.is_empty() {
         default_skill_roots(workspace_root)
     } else {
-        configured_roots.to_vec()
+        configured_roots
+            .iter()
+            .cloned()
+            .map(agent::SkillRoot::external)
+            .collect()
     };
-    roots.extend(plugin_plan.skill_roots.clone());
-    roots.retain(|path| path.exists());
-    roots.sort();
-    roots.dedup();
+    roots.extend(
+        plugin_plan
+            .skill_roots
+            .iter()
+            .cloned()
+            .map(agent::SkillRoot::external),
+    );
+    roots.retain(|root| root.kind == agent::SkillRootKind::Managed || root.path.exists());
+    roots.sort_by(|left, right| left.path.cmp(&right.path));
+    roots.dedup_by(|left, right| left.path == right.path);
     roots
 }
 
@@ -217,29 +223,33 @@ pub fn build_plugin_activation_plan(
     agent::build_plugin_activation_plan(workspace_root, &resolver)
 }
 
-fn default_skill_roots(workspace_root: &Path) -> Vec<PathBuf> {
+fn default_skill_roots(workspace_root: &Path) -> Vec<agent::SkillRoot> {
     let mut roots = Vec::new();
-    push_if_exists(&mut roots, workspace_root.join(".codex/skills"));
+    roots.push(agent::SkillRoot::managed(
+        AgentWorkspaceLayout::new(workspace_root).skills_dir(),
+    ));
     push_if_exists(
         &mut roots,
-        AgentWorkspaceLayout::new(workspace_root).skills_dir(),
+        agent::SkillRoot::external(workspace_root.join(".codex/skills")),
     );
     if let Some(home) = agent_env::home_dir() {
-        push_if_exists(&mut roots, home.join(".codex/skills"));
+        push_if_exists(
+            &mut roots,
+            agent::SkillRoot::external(home.join(".codex/skills")),
+        );
     }
     roots
 }
 
-fn push_if_exists(roots: &mut Vec<PathBuf>, path: PathBuf) {
-    if path.exists() && !roots.iter().any(|candidate| candidate == &path) {
-        roots.push(path);
+fn push_if_exists(roots: &mut Vec<agent::SkillRoot>, root: agent::SkillRoot) {
+    if root.path.exists() && !roots.iter().any(|candidate| candidate.path == root.path) {
+        roots.push(root);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::build_system_preamble;
-    use agent::SkillCatalog;
     use agent::tools::HOST_FEATURE_REQUEST_USER_INPUT;
     use agent::types::ToolVisibilityContext;
     use nanoclaw_config::CoreConfig;
@@ -262,14 +272,9 @@ mod tests {
         .unwrap();
         let profile = CoreConfig::default().resolve_primary_agent().unwrap();
 
-        let preamble = build_system_preamble(
-            dir.path(),
-            &profile,
-            &SkillCatalog::default(),
-            &[],
-            &ToolVisibilityContext::default(),
-        )
-        .join("\n\n");
+        let preamble =
+            build_system_preamble(dir.path(), &profile, &[], &ToolVisibilityContext::default())
+                .join("\n\n");
 
         assert!(preamble.contains("# Workspace Memory Primer"));
         assert!(preamble.contains("## Project instructions (AGENTS.md)"));
@@ -286,14 +291,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let profile = CoreConfig::default().resolve_primary_agent().unwrap();
 
-        let preamble = build_system_preamble(
-            dir.path(),
-            &profile,
-            &SkillCatalog::default(),
-            &[],
-            &ToolVisibilityContext::default(),
-        )
-        .join("\n\n");
+        let preamble =
+            build_system_preamble(dir.path(), &profile, &[], &ToolVisibilityContext::default())
+                .join("\n\n");
 
         assert!(!preamble.contains("# Workspace Memory Primer"));
     }
@@ -303,18 +303,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let profile = CoreConfig::default().resolve_primary_agent().unwrap();
 
-        let hidden = build_system_preamble(
-            dir.path(),
-            &profile,
-            &SkillCatalog::default(),
-            &[],
-            &ToolVisibilityContext::default(),
-        )
-        .join("\n\n");
+        let hidden =
+            build_system_preamble(dir.path(), &profile, &[], &ToolVisibilityContext::default())
+                .join("\n\n");
         let visible = build_system_preamble(
             dir.path(),
             &profile,
-            &SkillCatalog::default(),
             &[],
             &ToolVisibilityContext::default().with_feature(HOST_FEATURE_REQUEST_USER_INPUT),
         )

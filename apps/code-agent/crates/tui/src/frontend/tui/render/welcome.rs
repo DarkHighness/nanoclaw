@@ -66,9 +66,9 @@ fn build_welcome_title_lines(compact: bool) -> Vec<Line<'static>> {
 
 fn build_prompt_line(compact: bool) -> Line<'static> {
     let detail = if compact {
-        "Ask for a change, start with $skill_name, or run /help."
+        "Ask for a change, start with $skill_name or /skill_name, or run /help."
     } else {
-        "Ask for a change, start with $skill_name for an explicit skill, review history, or run /help."
+        "Ask for a change, start with $skill_name or /skill_name for an explicit skill, review history, or run /help."
     };
     Line::from(vec![Span::styled(
         detail,

@@ -17,9 +17,9 @@ Status: Active
 | Phase 7: Code Search | Not Started | No semantic/index-backed `code_search` surface yet. |
 | Phase 8: Browser / Computer Use | Not Started | No first-class browser session tools yet. |
 | Phase 9: Notebook Editing | Not Started | Notebook work still falls back to generic file tooling. |
-| Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; remaining slash commands are operator/session surfaces only. |
+| Cross-cutting: Operator Slash Surface | In Progress | Tool-mirroring slash commands have been pruned; operator/session commands remain, and installed skills are now surfaced as explicit `/skill_name` slash invocations plus `$skill_name` composer directives. |
 | Cross-cutting: Tool Review Surface | In Progress | Typed transcript cells exist, but operator review for running input/output/failure still needs a fuller design pass. |
-| Cross-cutting: Skill Lifecycle & Self-Evolution | Not Started | Skills can be listed/resolved, but there is no verifier-backed skill creation, archival, or promotion loop yet. |
+| Cross-cutting: Skill Lifecycle & Self-Evolution | In Progress | Hermes-style `skills_list`, `skill_view`, and `skill_manage` now exist with managed-vs-external roots, but verifier-backed extraction, provenance update flows, and archival/promotion are still missing. |
 
 ## Goal
 
@@ -155,8 +155,9 @@ The current TUI operator surfaces relevant to this plan are defined in:
 6. Keep model tools and operator commands as separate surfaces.
    Model-visible tools do not automatically get slash commands. Slash commands
    exist for session control, review, history, export, attachments, and
-   runtime supervision. Explicit skill invocation belongs to composer-native
-   `$skill_name` directives, not to tool-mirroring slash commands.
+   runtime supervision. Skills are the deliberate exception: they are exposed
+   as explicit operator invocations through both `/skill_name` and
+   composer-native `$skill_name` directives.
 
 7. Keep one execution model.
    If an object needs its own lifecycle, persistence, or operator controls, it
@@ -600,32 +601,41 @@ Support notebook-native workflows without degrading them into JSON patching.
 
 ### Objective
 
-Bring skills closer to the stronger lifecycle used by Hermes-style agent
-systems and the broader meta-agent roadmap: explicit discovery, creation,
-evaluation, archival, and promotion instead of static skill loading only.
+Bring skills onto the Hermes baseline first: explicit discovery, progressive
+loading, managed-vs-external roots, and typed skill mutation through a single
+skill-management surface. Only after that substrate exists should verifier-
+backed extraction, archival, and promotion workflows be layered on top.
 
 ### User-facing outcome
 
-- The runtime can distinguish:
-  - loaded skills
-  - candidate skills
-  - archived skills
-  - promoted skills
-- Skill improvements can be proposed, reviewed, verified, and promoted without
-  silently mutating the active skill set.
-- Skill invocation stays explicit through `$skill_name`, while operator review
-  can inspect the current loaded catalog and promotion history.
+- The runtime exposes Hermes-style skill tools:
+  - `skills_list`
+  - `skill_view`
+  - `skill_manage`
+- Skills live in a writable managed root plus optional external read-only
+  roots, with managed skills taking precedence on name collisions.
+- Skill invocation is explicit through both `$skill_name` and `/skill_name`,
+  but the model must still discover/inspect skills through `skills_list` and
+  `skill_view` instead of relying on prompt-injected catalogs.
+- Updating a skill emits an explicit follow-up note in tool output instead of
+  mutating the runtime instruction prefix.
 
 ### Planned work
 
-- extend skill metadata with lifecycle state and provenance
-- define a verifier-backed path for reusable skill extraction from successful
-  runs
-- add archive/promotion storage instead of treating the workspace skill roots
-  as the only source of truth
-- align tool-vs-skill guidance with the Hermes split:
-  - use skills for instruction-plus-existing-tool workflows
-  - use tools for capabilities that require typed runtime integration
+- completed:
+  - add managed vs external skill roots plus provenance metadata
+  - add Hermes-style `skills_list`, `skill_view`, and `skill_manage`
+  - remove prompt-manifest/system-preamble catalog injection
+  - surface installed skills in the TUI as `/skill_name` slash commands while
+    keeping `$skill_name` composer directives
+- next:
+  - define verifier-backed extraction of reusable skills from successful runs
+  - record richer provenance, trust, and update/audit state
+  - add archive/promotion storage instead of treating workspace roots as the
+    only source of truth
+  - align tool-vs-skill guidance with the Hermes split:
+    - use skills for instruction-plus-existing-tool workflows
+    - use tools for capabilities that require typed runtime integration
 
 ### Write set
 
@@ -637,8 +647,13 @@ evaluation, archival, and promotion instead of static skill loading only.
 
 ### Exit criteria
 
-- Skill state is no longer just "present on disk or not".
-- Reusable skill evolution is auditable, reversible, and verifier-gated.
+- Hermes baseline is fully in place:
+  - discovery via `skills_list`
+  - progressive loading via `skill_view`
+  - managed mutation via `skill_manage`
+  - stable slash/composer skill invocation without prompt-catalog injection
+- Reusable skill evolution beyond the Hermes baseline is auditable,
+  reversible, and verifier-gated.
 
 ## Cross-Cutting Workstream: Operator Tool Review Surface
 
@@ -732,8 +747,8 @@ Every phase must ship with:
 - Do not add UI-only slash commands as substitutes for missing typed tools.
 - Do not mirror model tools into slash commands unless the operator needs a
   distinct host control surface that the model tool cannot provide.
-- Do not force skills through slash commands when `$skill_name` in the
-  composer is the correct explicit invocation path.
+- Do not force skills through only one interaction surface. Keep both
+  `/skill_name` and `$skill_name` explicit and first-class.
 - Do not encode new state machines as transcript strings.
 - Do not reintroduce slash commands that merely proxy model tools when a typed
   picker action or direct model tool invocation already exists.
@@ -746,4 +761,5 @@ The next highest-value implementation slices are:
 2. Phase 4: split transcript rewind from durable checkpoint restore
 3. cross-cutting: finish the operator tool review surface for concurrent
    running/completed tool cells
-4. cross-cutting: add skill lifecycle state and promotion flow
+4. cross-cutting: extend Hermes-baseline skill management into verifier-backed
+   extraction and promotion flow

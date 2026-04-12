@@ -57,6 +57,11 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
         assets: Vec::new(),
         metadata: BTreeMap::new(),
         extension_metadata: BTreeMap::new(),
+        activation: Default::default(),
+        provenance: skills::SkillProvenance {
+            root: skills::SkillRoot::managed(PathBuf::from("/tmp/skills")),
+            skill_dir: PathBuf::from("/tmp/pdf"),
+        },
     }]);
     let hook_runner = Arc::new(HookRunner::with_services(
         Arc::new(DefaultCommandHookExecutor::default()),

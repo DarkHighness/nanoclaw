@@ -1,8 +1,9 @@
 use super::{
     ComposerCompletionEnterAction, ComposerCompletionHint, SlashCommand, SlashCommandArgumentSpec,
-    command_palette_lines, command_palette_lines_for, composer_completion_hint,
-    cycle_composer_completion, inspector_action_for_slash_name, move_composer_completion_selection,
-    parse_slash_command, resolve_composer_enter_action,
+    command_palette_lines, command_palette_lines_for, command_palette_lines_for_skills,
+    composer_completion_hint, cycle_composer_completion, inspector_action_for_slash_name,
+    move_composer_completion_selection, parse_slash_command, parse_slash_command_with_skills,
+    resolve_composer_enter_action,
 };
 use crate::frontend::tui::state::{InspectorAction, InspectorEntry};
 use crate::interaction::SkillSummary;
@@ -314,6 +315,18 @@ fn command_palette_can_filter_by_query() {
     assert!(!lines.iter().any(|line| line.contains("/export_transcript")));
 }
 
+#[test]
+fn command_palette_includes_dynamic_skills() {
+    let lines = inspector_line_texts(&command_palette_lines_for_skills(None, &sample_skills()));
+
+    assert!(lines.iter().any(|line| line == "## Skills"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("/openai-docs [prompt]  Use official OpenAI docs"))
+    );
+}
+
 fn inspector_line_texts(lines: &[InspectorEntry]) -> Vec<String> {
     lines
         .iter()
@@ -352,6 +365,20 @@ fn parses_help_query_tail() {
 }
 
 #[test]
+fn parses_skill_slash_command_against_loaded_skills() {
+    match parse_slash_command_with_skills(
+        "/docs summarize the latest API changes",
+        &sample_skills(),
+    ) {
+        SlashCommand::InvokeSkill { skill_name, prompt } => {
+            assert_eq!(skill_name, "openai-docs");
+            assert_eq!(prompt.as_deref(), Some("summarize the latest API changes"));
+        }
+        _ => panic!("unexpected command"),
+    }
+}
+
+#[test]
 fn slash_command_hint_matches_prefix() {
     let ComposerCompletionHint::Slash(hint) =
         composer_completion_hint("/sess", 0, &sample_skills()).expect("hint")
@@ -359,10 +386,10 @@ fn slash_command_hint_matches_prefix() {
         panic!("expected slash hint");
     };
 
-    assert_eq!(hint.selected.name, "sessions");
+    assert_eq!(hint.selected.name(), "sessions");
     assert_eq!(hint.selected_match_index, 0);
-    assert!(hint.matches.iter().any(|spec| spec.name == "sessions"));
-    assert!(hint.matches.iter().any(|spec| spec.name == "session"));
+    assert!(hint.matches.iter().any(|spec| spec.name() == "sessions"));
+    assert!(hint.matches.iter().any(|spec| spec.name() == "session"));
     assert!(hint.arguments.is_none());
 }
 
@@ -374,9 +401,9 @@ fn slash_command_hint_matches_exit_alias_prefix() {
         panic!("expected slash hint");
     };
 
-    assert_eq!(hint.selected.name, "exit");
+    assert_eq!(hint.selected.name(), "exit");
     assert!(hint.exact);
-    assert!(hint.matches.iter().any(|spec| spec.name == "exit"));
+    assert!(hint.matches.iter().any(|spec| spec.name() == "exit"));
 }
 
 #[test]
@@ -459,10 +486,11 @@ fn slash_command_hint_browses_all_commands_from_empty_slash() {
         panic!("expected slash hint");
     };
 
-    assert_eq!(hint.selected.name, "help");
+    assert_eq!(hint.selected.name(), "help");
     assert_eq!(hint.selected_match_index, 0);
     assert!(hint.matches.len() > 10);
-    assert!(hint.matches.iter().any(|spec| spec.name == "live_tasks"));
+    assert!(hint.matches.iter().any(|spec| spec.name() == "live_tasks"));
+    assert!(hint.matches.iter().any(|spec| spec.name() == "openai-docs"));
 }
 
 #[test]
@@ -496,7 +524,7 @@ fn exact_required_command_is_prioritized_in_hint() {
         panic!("expected slash hint");
     };
 
-    assert_eq!(hint.selected.name, "session");
+    assert_eq!(hint.selected.name(), "session");
     assert!(hint.exact);
 }
 
@@ -510,6 +538,49 @@ fn slash_enter_action_accepts_required_argument_command_before_running() {
             input: "/session ".to_string(),
             index: 0,
         }
+    );
+}
+
+#[test]
+fn slash_skill_hint_matches_alias_prefix_and_uses_canonical_name() {
+    let ComposerCompletionHint::Slash(hint) =
+        composer_completion_hint("/docs", 0, &sample_skills()).expect("hint")
+    else {
+        panic!("expected slash hint");
+    };
+
+    assert_eq!(hint.selected.name(), "openai-docs");
+    assert!(hint.exact);
+    assert_eq!(hint.selected_match_index, 0);
+}
+
+#[test]
+fn slash_skill_completion_inserts_canonical_skill_invocation() {
+    let (input, index) =
+        cycle_composer_completion("/f", 0, false, &sample_skills()).expect("completion");
+
+    assert_eq!(input, "/frontend-design ");
+    assert_eq!(index, 0);
+}
+
+#[test]
+fn slash_skill_enter_action_completes_before_prompt_tail() {
+    let action = resolve_composer_enter_action("/open", 0, &sample_skills()).expect("action");
+
+    assert_eq!(
+        action,
+        ComposerCompletionEnterAction::Complete {
+            input: "/openai-docs ".to_string(),
+            index: 0,
+        }
+    );
+}
+
+#[test]
+fn slash_skill_enter_action_yields_to_prompt_submission_after_tail() {
+    assert!(
+        resolve_composer_enter_action("/openai-docs summarize the models", 0, &sample_skills())
+            .is_none()
     );
 }
 

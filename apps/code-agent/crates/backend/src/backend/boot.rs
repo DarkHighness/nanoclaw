@@ -41,7 +41,7 @@ use agent::tools::{
 };
 use agent::types::{HookHandler, HookRegistration};
 use agent::{
-    AgentRuntime, AgentRuntimeBuilder, SandboxPolicy, Skill, SkillCatalog, ToolExecutionContext,
+    AgentRuntime, AgentRuntimeBuilder, SandboxPolicy, SkillCatalog, ToolExecutionContext,
     ToolRegistry,
 };
 use agent_env::EnvMap;
@@ -60,7 +60,6 @@ struct RuntimeBuildResult {
     monitor_manager: Arc<dyn agent::tools::MonitorManager>,
     store: Arc<dyn store::SessionStore>,
     skill_catalog: SkillCatalog,
-    skills: Vec<Skill>,
     plugin_instructions: Vec<String>,
     mcp_servers: Vec<ConnectedMcpServer>,
     mcp_server_configs: Vec<McpServerConfig>,
@@ -232,7 +231,6 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
             instructions: build_system_preamble(
                 base_tool_context.workspace_root.as_path(),
                 &profile,
-                &self.skill_catalog,
                 &self.plugin_instructions,
                 &base_tool_context.model_visibility,
             ),
@@ -356,8 +354,7 @@ where
         monitor_manager,
         store,
         skill_catalog,
-        skills,
-        plugin_instructions,
+        plugin_instructions: _plugin_instructions,
         mcp_servers,
         mcp_server_configs,
         runtime_hook_state,
@@ -456,10 +453,7 @@ where
             startup_diagnostics,
             statusline: options.statusline.clone(),
         },
-        options.primary_profile.clone(),
         skill_catalog,
-        plugin_instructions,
-        skills,
         memory_backend,
         session_memory_refresh_state,
     );
@@ -561,8 +555,9 @@ where
             .iter()
             .map(|root| {
                 let label = root
+                    .path
                     .strip_prefix(workspace_root)
-                    .unwrap_or(root.as_path())
+                    .unwrap_or(root.path.as_path())
                     .display()
                     .to_string();
                 BootProgressItem::new(BootProgressItemKind::SkillRoot, label)
@@ -573,7 +568,7 @@ where
     let skill_catalog = agent::skills::load_skill_roots(&skill_roots)
         .await
         .context("failed to load skill roots")?;
-    let skills = skill_catalog.all().to_vec();
+    let skills = skill_catalog.all();
     progress(BootProgressUpdate {
         stage: BootProgressStage::Skills,
         status: BootProgressStatus::Completed,
@@ -792,7 +787,6 @@ where
     let instructions = build_system_preamble(
         workspace_root,
         &options.primary_profile,
-        &skill_catalog,
         &plugin_instructions,
         &tool_context.model_visibility,
     );
@@ -883,7 +877,6 @@ where
         subagent_executor,
         monitor_manager,
         store,
-        skills,
         skill_catalog,
         plugin_instructions,
         mcp_servers: connected_mcp_servers,

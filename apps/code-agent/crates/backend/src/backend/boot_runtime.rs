@@ -13,9 +13,10 @@ use agent::{
     CodeSymbolSearchTool, EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool,
     ManagedCodeIntelBackend, ManagedCodeIntelOptions, ManagedPolicyProcessExecutor,
     MonitorListTool, MonitorStartTool, MonitorStopTool, PatchFilesTool, ReadTool,
-    RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillTool,
-    ToolCallId, ToolDiscoverTool, ToolExecutionContext, ToolRegistry, ToolResult, WebFetchTool,
-    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
+    RequestPermissionsTool, RequestUserInputTool, SandboxPolicy, SkillCatalog, SkillManageTool,
+    SkillViewTool, SkillsListTool, ToolCallId, ToolDiscoverTool, ToolExecutionContext,
+    ToolRegistry, ToolResult, WebFetchTool, WebSearchBackendsTool, WebSearchTool,
+    WorkspaceTextCodeIntelBackend, WriteStdinTool, WriteTool,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -590,7 +591,9 @@ fn build_builtin_tools(
         code_intel_backend.clone(),
     ));
     tools.register(ToolDiscoverTool::new(discovery_registry));
-    tools.register(SkillTool::new(skill_catalog));
+    tools.register(SkillsListTool::new(skill_catalog.clone()));
+    tools.register(SkillViewTool::new(skill_catalog.clone()));
+    tools.register(SkillManageTool::new(skill_catalog));
     tools.register(RequestUserInputTool::new());
     tools.register(RequestPermissionsTool::new());
     tools

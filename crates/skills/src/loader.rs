@@ -1,5 +1,5 @@
 use crate::frontmatter::SkillFrontmatter;
-use crate::{Result, SkillError};
+use crate::{Result, Skill, SkillActivation, SkillCatalog, SkillError, SkillProvenance, SkillRoot};
 use futures::{StreamExt, TryStreamExt, stream};
 use regex::Regex;
 use std::collections::BTreeMap;
@@ -8,30 +8,7 @@ use tokio::fs;
 
 const SKILL_LOAD_CONCURRENCY_LIMIT: usize = 8;
 
-#[derive(Clone, Debug)]
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    pub aliases: Vec<String>,
-    pub body: String,
-    pub root_dir: PathBuf,
-    pub tags: Vec<String>,
-    pub hooks: Vec<types::HookRegistration>,
-    pub references: Vec<PathBuf>,
-    pub scripts: Vec<PathBuf>,
-    pub assets: Vec<PathBuf>,
-    pub metadata: BTreeMap<String, serde_yaml::Value>,
-    pub extension_metadata: BTreeMap<String, serde_yaml::Value>,
-}
-
-impl Skill {
-    #[must_use]
-    pub fn system_instruction(&self) -> String {
-        self.body.trim().to_string()
-    }
-}
-
-pub async fn load_skill_from_dir(dir: impl AsRef<Path>) -> Result<Skill> {
+pub async fn load_skill_from_dir(dir: impl AsRef<Path>, root: &SkillRoot) -> Result<Skill> {
     let dir = dir.as_ref();
     let skill_path = dir.join("SKILL.md");
     let skill_toml_path = dir.join("skill.toml");
@@ -67,38 +44,56 @@ pub async fn load_skill_from_dir(dir: impl AsRef<Path>) -> Result<Skill> {
         assets: collect_child_paths(dir.join("assets")).await?,
         metadata: frontmatter.extra,
         extension_metadata: frontmatter.agent_core.extra,
+        activation: SkillActivation {
+            platforms: frontmatter.platforms,
+            requires_tools: frontmatter.requires_tools,
+            fallback_for_tools: frontmatter.fallback_for_tools,
+        },
+        provenance: SkillProvenance {
+            root: root.clone(),
+            skill_dir: dir.to_path_buf(),
+        },
     })
 }
 
-pub async fn load_skill_roots(roots: &[PathBuf]) -> Result<crate::SkillCatalog> {
+pub async fn load_skill_roots(roots: &[SkillRoot]) -> Result<SkillCatalog> {
     let mut skill_dirs = Vec::new();
     for root in roots {
-        if !root.exists() {
+        if !root.path.exists() {
             continue;
         }
-        let mut entries = fs::read_dir(root)
+        let mut entries = fs::read_dir(&root.path)
             .await
-            .map_err(|source| SkillError::read_path(root.display().to_string(), source))?;
+            .map_err(|source| SkillError::read_path(root.path.display().to_string(), source))?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if entry.file_type().await?.is_dir() && path.join("SKILL.md").exists() {
-                skill_dirs.push(path);
+                skill_dirs.push((root.clone(), path));
             }
         }
     }
-    skill_dirs.sort();
-    skill_dirs.dedup();
+    skill_dirs.sort_by(|left, right| left.1.cmp(&right.1));
+    skill_dirs.dedup_by(|left, right| left.1 == right.1);
 
     let tasks = skill_dirs
         .into_iter()
         .enumerate()
-        .map(|(index, path)| async move {
-            let skill = load_skill_from_dir(&path).await?;
+        .map(|(index, (root, path))| async move {
+            let skill = load_skill_from_dir(&path, &root).await?;
             Ok::<_, SkillError>((index, skill))
         })
         .collect::<Vec<_>>();
-    let skills = run_indexed_tasks_ordered(tasks, SKILL_LOAD_CONCURRENCY_LIMIT).await?;
-    Ok(crate::SkillCatalog::new(skills))
+    let loaded = run_indexed_tasks_ordered(tasks, SKILL_LOAD_CONCURRENCY_LIMIT).await?;
+    let mut seen_names = BTreeMap::new();
+    let mut skills = Vec::new();
+    for skill in loaded {
+        if seen_names.contains_key(&skill.name) {
+            continue;
+        }
+        seen_names.insert(skill.name.clone(), ());
+        skills.push(skill);
+    }
+    Ok(SkillCatalog::from_parts(roots.to_vec(), skills))
 }
 
 async fn run_indexed_tasks_ordered<T, E, Fut>(
@@ -182,6 +177,7 @@ async fn collect_child_paths(dir: PathBuf) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::{load_skill_from_dir, load_skill_roots, run_indexed_tasks_ordered};
+    use crate::SkillRoot;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
@@ -217,7 +213,9 @@ Do PDF things.
             .await
             .unwrap();
 
-        let skill = load_skill_from_dir(&skill_dir).await.unwrap();
+        let skill = load_skill_from_dir(&skill_dir, &SkillRoot::managed(dir.path().join("skills")))
+            .await
+            .unwrap();
         assert_eq!(skill.name, "pdf");
         assert_eq!(skill.aliases, vec!["acrobat".to_string()]);
         assert_eq!(skill.references.len(), 1);
@@ -225,7 +223,7 @@ Do PDF things.
     }
 
     #[tokio::test]
-    async fn registry_builds_stable_prompt_manifest() {
+    async fn registry_resolves_aliases_from_managed_root() {
         let dir = tempdir().unwrap();
         let skill_dir = dir.path().join("skills").join("pdf");
         fs::create_dir_all(&skill_dir).await.unwrap();
@@ -242,14 +240,12 @@ Use for PDF work.
         )
         .await
         .unwrap();
-        let registry = load_skill_roots(&[dir.path().join("skills")])
+        let registry = load_skill_roots(&[SkillRoot::managed(dir.path().join("skills"))])
             .await
             .unwrap();
-        let manifest = registry.prompt_manifest().unwrap();
-        assert!(manifest.contains("Available workspace skills are listed below."));
-        assert!(manifest.contains("- pdf: Use for PDF tasks"));
-        assert!(manifest.contains("aliases=acrobat"));
-        assert!(manifest.contains("path="));
+        let skill = registry.resolve("acrobat").unwrap();
+        assert_eq!(skill.name, "pdf");
+        assert!(skill.provenance.root.writable());
     }
 
     #[tokio::test]
@@ -305,7 +301,9 @@ Use for high-signal reviews.
         .await
         .unwrap();
 
-        let skill = load_skill_from_dir(&skill_dir).await.unwrap();
+        let skill = load_skill_from_dir(&skill_dir, &SkillRoot::managed(dir.path().join("skills")))
+            .await
+            .unwrap();
         assert_eq!(skill.name, "review");
         assert_eq!(skill.description, "Use for review tasks");
         assert_eq!(skill.aliases, vec!["rvw".to_string()]);
@@ -333,7 +331,9 @@ Legacy body.
         .await
         .unwrap();
 
-        let skill = load_skill_from_dir(&skill_dir).await.unwrap();
+        let skill = load_skill_from_dir(&skill_dir, &SkillRoot::managed(dir.path().join("skills")))
+            .await
+            .unwrap();
         assert_eq!(skill.name, "fallback");
         assert_eq!(skill.description, "legacy metadata source");
         assert_eq!(skill.aliases, vec!["old".to_string()]);

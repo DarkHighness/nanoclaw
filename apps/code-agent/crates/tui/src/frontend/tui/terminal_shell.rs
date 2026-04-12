@@ -77,6 +77,7 @@ impl CodeAgentTui {
             let _ = state.expire_toast_if_due();
         });
         self.sync_runtime_control_state();
+        self.sync_skill_summaries();
         let permission_request_prompt = self.permission_request_prompt();
         let user_input_prompt = self.user_input_prompt();
         self.sync_user_input_prompt(user_input_prompt.as_ref());
@@ -459,6 +460,13 @@ impl CodeAgentTui {
                     return Ok(TerminalLoopControl::Continue);
                 }
             }
+        }
+        if snapshot.input.starts_with('/')
+            && let SlashCommand::InvokeSkill { skill_name, prompt } =
+                parse_slash_command_with_skills(&snapshot.input, &snapshot.session.skills)
+        {
+            self.apply_skill_slash_submit(skill_name, prompt).await;
+            return Ok(TerminalLoopControl::Continue);
         }
         if let Some(action) = plain_input_submit_action(
             &snapshot.input,
