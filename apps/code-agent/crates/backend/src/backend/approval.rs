@@ -492,6 +492,28 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::BrowserClose => {
+            let mut preview = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("close browser {browser_id}"))
+                    .unwrap_or_else(|| "close current browser".to_string()),
+            ];
+            if arguments
+                .get("fire_unload")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                preview.push("run unload handlers".to_string());
+            }
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview,
+            };
+        }
         ToolRenderKind::MonitorStart => {
             let command = arguments.get("cmd").and_then(Value::as_str);
             if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
@@ -963,6 +985,41 @@ mod tests {
                 "document.title".to_string(),
                 "window.location.href".to_string(),
                 "await promise".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn approval_prompt_extracts_browser_close_context() {
+        let prompt = approval_prompt_from_request(&ToolApprovalRequest {
+            call: ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-browser-close".into(),
+                tool_name: "browser_close".into(),
+                arguments: json!({
+                    "browser_id": "browser_123",
+                    "fire_unload": true
+                }),
+                origin: ToolOrigin::Local,
+            },
+            spec: ToolSpec::function(
+                "browser_close",
+                "close browser",
+                json!({"type":"object"}),
+                ToolOutputMode::Text,
+                ToolOrigin::Local,
+                ToolSource::Builtin,
+            ),
+            reasons: vec!["browser automation requires review".to_string()],
+        });
+
+        assert_eq!(prompt.tool_name, "browser_close");
+        assert_eq!(prompt.content.kind, ApprovalContentKind::Arguments);
+        assert_eq!(
+            prompt.content.preview,
+            vec![
+                "close browser browser_123".to_string(),
+                "run unload handlers".to_string(),
             ]
         );
     }

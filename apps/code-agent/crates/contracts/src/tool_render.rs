@@ -24,6 +24,7 @@ pub enum ToolRenderKind {
     BrowserClick,
     BrowserType,
     BrowserEval,
+    BrowserClose,
     MonitorStart,
     MonitorList,
     MonitorStop,
@@ -56,6 +57,7 @@ impl ToolRenderKind {
             "browser_click" => Self::BrowserClick,
             "browser_type" => Self::BrowserType,
             "browser_eval" => Self::BrowserEval,
+            "browser_close" => Self::BrowserClose,
             "monitor_start" => Self::MonitorStart,
             "monitor_list" => Self::MonitorList,
             "monitor_stop" => Self::MonitorStop,
@@ -722,6 +724,25 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
             }
             return lines;
         }
+        ToolRenderKind::BrowserClose => {
+            let mut lines = vec![
+                arguments
+                    .get("browser_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|browser_id| format!("Close browser {browser_id}"))
+                    .unwrap_or_else(|| "Close current browser".to_string()),
+            ];
+            if arguments
+                .get("fire_unload")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                lines.push("run unload handlers".to_string());
+            }
+            return lines;
+        }
         ToolRenderKind::MonitorStart => {
             let command = arguments.get("cmd").and_then(Value::as_str);
             if let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) {
@@ -1318,6 +1339,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         | ToolRenderKind::BrowserClick
         | ToolRenderKind::BrowserType
         | ToolRenderKind::BrowserEval
+        | ToolRenderKind::BrowserClose
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
         | ToolRenderKind::WorktreeEnter
@@ -1419,6 +1441,11 @@ pub fn tool_output_details(
         }
         ToolRenderKind::BrowserEval => {
             if let Some(details) = browser_eval_output_details(structured) {
+                return details;
+            }
+        }
+        ToolRenderKind::BrowserClose => {
+            if let Some(details) = browser_close_output_details(structured) {
                 return details;
             }
         }
@@ -2094,6 +2121,30 @@ fn browser_eval_output_details(structured: Option<&Value>) -> Option<Vec<ToolDet
     }) && !state_detail.contains("updated")
     {
         *state_detail = format!("{state_detail} · updated");
+    }
+    Some(details)
+}
+
+fn browser_close_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let _browser = structured.get("browser")?;
+    let mut details = browser_open_output_details(Some(structured))?;
+    details.insert(
+        1,
+        ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Effect,
+            value: "closed session".to_string(),
+        },
+    );
+    if structured
+        .get("fire_unload")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        details.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Note,
+            value: "ran unload handlers".to_string(),
+        });
     }
     Some(details)
 }
@@ -3536,6 +3587,16 @@ mod tests {
                 "await promise"
             ]
         );
+        assert_eq!(
+            tool_arguments_preview_lines(
+                "browser_close",
+                &json!({
+                    "browser_id": "browser_123",
+                    "fire_unload": true
+                })
+            ),
+            vec!["Close browser browser_123", "run unload handlers"]
+        );
     }
 
     #[test]
@@ -3785,6 +3846,48 @@ mod tests {
             browser_eval_rendered
                 .iter()
                 .any(|line| line == "    Script Length 14")
+        );
+
+        let browser_close_rendered = tool_output_detail_lines(
+            "browser_close",
+            "",
+            Some(&json!({
+                "browser": {
+                    "browser_id": "browser_123",
+                    "status": "closed",
+                    "current_url": "https://example.com/app",
+                    "headless": true,
+                    "title": "Example App",
+                    "viewport": {"width": 1280, "height": 720}
+                },
+                "fire_unload": true
+            })),
+        );
+        assert_eq!(browser_close_rendered[0], "  └ Session browser_123");
+        assert!(
+            browser_close_rendered
+                .iter()
+                .any(|line| line == "  └ Effect closed session")
+        );
+        assert!(
+            browser_close_rendered
+                .iter()
+                .any(|line| line == "  └ Context https://example.com/app")
+        );
+        assert!(
+            browser_close_rendered
+                .iter()
+                .any(|line| line == "  └ State closed · headless · 1280x720")
+        );
+        assert!(
+            browser_close_rendered
+                .iter()
+                .any(|line| line == "  └ Result Example App")
+        );
+        assert!(
+            browser_close_rendered
+                .iter()
+                .any(|line| line == "  └ Note ran unload handlers")
         );
 
         let cron_list_rendered = tool_output_detail_lines(

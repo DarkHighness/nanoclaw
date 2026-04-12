@@ -1,8 +1,8 @@
 use crate::backend::SessionEventStream;
 use crate::ui::SessionEvent;
 use agent::tools::{
-    BrowserClickRequest, BrowserEvalRequest, BrowserManager, BrowserOpenRequest,
-    BrowserRuntimeContext, BrowserSnapshotElement, BrowserSnapshotElementKind,
+    BrowserClickRequest, BrowserCloseRequest, BrowserEvalRequest, BrowserManager,
+    BrowserOpenRequest, BrowserRuntimeContext, BrowserSnapshotElement, BrowserSnapshotElementKind,
     BrowserSnapshotRecord, BrowserSnapshotRequest, BrowserTypeRequest, Result as ToolResult,
     ToolError,
 };
@@ -26,6 +26,7 @@ trait BrowserHandle: Send + Sync {
     ) -> ToolResult<BrowserInteractionOutcome>;
     fn type_text(&self, request: &BrowserTypeRequest) -> ToolResult<BrowserInteractionOutcome>;
     fn eval(&self, request: &BrowserEvalRequest) -> ToolResult<BrowserEvalOutcome>;
+    fn close(&self, fire_unload: bool) -> ToolResult<()>;
 }
 
 struct BrowserLaunch {
@@ -163,6 +164,13 @@ impl SessionBrowserManager {
             .lock()
             .expect("browser registry lock")
             .insert(state.summary().browser_id.clone(), state);
+    }
+
+    fn remove_browser(&self, browser_id: &BrowserId) {
+        self.browsers
+            .lock()
+            .expect("browser registry lock")
+            .remove(browser_id);
     }
 
     async fn apply_interaction_outcome(
@@ -331,6 +339,33 @@ impl BrowserManager for SessionBrowserManager {
             .apply_interaction_outcome(&runtime, state, evaluated.browser)
             .await?;
         Ok((summary, evaluated.result))
+    }
+
+    async fn close_browser(
+        &self,
+        runtime: BrowserRuntimeContext,
+        request: BrowserCloseRequest,
+    ) -> ToolResult<BrowserSummaryRecord> {
+        let state = self.resolve_browser_state(&runtime, request.browser_id.as_ref())?;
+        let browser_id = state.summary().browser_id.clone();
+        let handle = state._handle.clone();
+        tokio::task::spawn_blocking(move || handle.close(request.fire_unload))
+            .await
+            .map_err(|error| {
+                ToolError::invalid_state(format!("failed to join browser task: {error}"))
+            })??;
+
+        // Closing the session must also detach it from the live registry so
+        // later browser tools cannot accidentally reuse a stale Chromium tab.
+        self.remove_browser(&browser_id);
+        let closed_at = unix_timestamp_s();
+        let summary = state.update_summary(|summary| {
+            summary.status = BrowserStatus::Closed;
+            summary.updated_at_unix_s = Some(closed_at);
+            summary.closed_at_unix_s = Some(closed_at);
+        });
+        self.publish_updated(&runtime, summary.clone()).await?;
+        Ok(summary)
     }
 }
 
@@ -533,6 +568,12 @@ impl BrowserHandle for HeadlessChromeBrowserHandle {
             result: result
                 .value
                 .unwrap_or_else(|| json!("<non-serializable browser eval result>")),
+        })
+    }
+
+    fn close(&self, fire_unload: bool) -> ToolResult<()> {
+        self._tab.close(fire_unload).map(|_| ()).map_err(|error| {
+            ToolError::invalid_state(format!("failed to close browser tab: {error}"))
         })
     }
 }
@@ -777,6 +818,10 @@ mod tests {
                     "await_promise": request.await_promise,
                 }),
             })
+        }
+
+        fn close(&self, _fire_unload: bool) -> ToolResult<()> {
+            Ok(())
         }
     }
 
@@ -1134,5 +1179,86 @@ mod tests {
                 if persisted_summary.browser_id == summary.browser_id
                 && persisted_summary.current_url == "https://example.com/eval?await=true"
         )));
+    }
+
+    #[tokio::test]
+    async fn close_browser_updates_summary_and_removes_browser_from_registry() {
+        let store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let events = SessionEventStream::default();
+        let backend = Arc::new(FakeBrowserBackend::default());
+        let manager = SessionBrowserManager::with_backend(store.clone(), events.clone(), backend);
+        let runtime = BrowserRuntimeContext {
+            session_id: Some(agent::types::SessionId::from("session-1")),
+            agent_session_id: Some(agent::types::AgentSessionId::from("agent-session-1")),
+            turn_id: Some(agent::types::TurnId::from("turn-1")),
+            parent_agent_id: Some(agent::types::AgentId::from("agent-1")),
+            task_id: Some(agent::types::TaskId::from("task-1")),
+        };
+        let summary = manager
+            .open_browser(
+                runtime.clone(),
+                BrowserOpenRequest {
+                    url: "https://example.com".to_string(),
+                    headless: true,
+                    viewport: None,
+                },
+            )
+            .await
+            .expect("browser should open");
+        let _ = events.drain();
+
+        let closed = manager
+            .close_browser(
+                runtime.clone(),
+                BrowserCloseRequest {
+                    browser_id: Some(summary.browser_id.clone()),
+                    fire_unload: true,
+                },
+            )
+            .await
+            .expect("browser close should update the typed summary");
+
+        assert_eq!(closed.browser_id, summary.browser_id);
+        assert_eq!(closed.status, BrowserStatus::Closed);
+        assert!(closed.updated_at_unix_s.is_some());
+        assert!(closed.closed_at_unix_s.is_some());
+
+        let published = events.drain();
+        assert!(matches!(
+            published.as_slice(),
+            [SessionEvent::BrowserUpdated { summary: published_summary }]
+                if published_summary.browser_id == summary.browser_id
+                && published_summary.status == BrowserStatus::Closed
+        ));
+
+        let persisted = store
+            .events(&agent::types::SessionId::from("session-1"))
+            .await
+            .expect("session events should load");
+        assert!(persisted.iter().any(|event| matches!(
+            &event.event,
+            SessionEventKind::BrowserUpdated { summary: persisted_summary }
+                if persisted_summary.browser_id == summary.browser_id
+                && persisted_summary.status == BrowserStatus::Closed
+        )));
+
+        let error = manager
+            .snapshot_browser(
+                runtime,
+                BrowserSnapshotRequest {
+                    browser_id: Some(summary.browser_id.clone()),
+                    include_html: false,
+                    max_text_lines: 4,
+                    max_elements: 4,
+                    max_html_chars: 128,
+                },
+            )
+            .await
+            .expect_err("closed browser should not remain addressable");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("browser {} is not open", summary.browser_id))
+        );
     }
 }

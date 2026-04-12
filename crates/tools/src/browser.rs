@@ -17,6 +17,7 @@ const BROWSER_SNAPSHOT_TOOL_NAME: &str = "browser_snapshot";
 const BROWSER_CLICK_TOOL_NAME: &str = "browser_click";
 const BROWSER_TYPE_TOOL_NAME: &str = "browser_type";
 const BROWSER_EVAL_TOOL_NAME: &str = "browser_eval";
+const BROWSER_CLOSE_TOOL_NAME: &str = "browser_close";
 const DEFAULT_BROWSER_TEXT_LINES: usize = 12;
 const DEFAULT_BROWSER_ELEMENT_COUNT: usize = 8;
 const DEFAULT_BROWSER_HTML_CHARS: usize = 2048;
@@ -101,6 +102,12 @@ pub struct BrowserEvalRequest {
     pub await_promise: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserCloseRequest {
+    pub browser_id: Option<BrowserId>,
+    pub fire_unload: bool,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserSnapshotElementKind {
@@ -168,6 +175,12 @@ pub trait BrowserManager: Send + Sync {
         runtime: BrowserRuntimeContext,
         request: BrowserEvalRequest,
     ) -> Result<(BrowserSummaryRecord, Value)>;
+
+    async fn close_browser(
+        &self,
+        runtime: BrowserRuntimeContext,
+        request: BrowserCloseRequest,
+    ) -> Result<BrowserSummaryRecord>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -225,6 +238,14 @@ pub struct BrowserEvalToolInput {
     pub await_promise: Option<bool>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct BrowserCloseToolInput {
+    #[serde(default)]
+    pub browser_id: Option<BrowserId>,
+    #[serde(default)]
+    pub fire_unload: Option<bool>,
+}
+
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 struct BrowserOpenToolOutput {
     browser: BrowserSummaryRecord,
@@ -255,6 +276,12 @@ struct BrowserEvalToolOutput {
     await_promise: bool,
 }
 
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+struct BrowserCloseToolOutput {
+    browser: BrowserSummaryRecord,
+    fire_unload: bool,
+}
+
 #[derive(Clone)]
 pub struct BrowserOpenTool {
     manager: Arc<dyn BrowserManager>,
@@ -277,6 +304,11 @@ pub struct BrowserTypeTool {
 
 #[derive(Clone)]
 pub struct BrowserEvalTool {
+    manager: Arc<dyn BrowserManager>,
+}
+
+#[derive(Clone)]
+pub struct BrowserCloseTool {
     manager: Arc<dyn BrowserManager>,
 }
 
@@ -309,6 +341,13 @@ impl BrowserTypeTool {
 }
 
 impl BrowserEvalTool {
+    #[must_use]
+    pub fn new(manager: Arc<dyn BrowserManager>) -> Self {
+        Self { manager }
+    }
+}
+
+impl BrowserCloseTool {
     #[must_use]
     pub fn new(manager: Arc<dyn BrowserManager>) -> Self {
         Self { manager }
@@ -614,6 +653,57 @@ impl Tool for BrowserEvalTool {
     }
 }
 
+#[async_trait]
+impl Tool for BrowserCloseTool {
+    fn spec(&self) -> ToolSpec {
+        builtin_tool_spec(
+            BROWSER_CLOSE_TOOL_NAME,
+            "Close an open browser session and persist the typed browser summary as closed so later browser tools stop targeting the stale session.",
+            serde_json::to_value(schema_for!(BrowserCloseToolInput)).expect("browser_close schema"),
+            ToolOutputMode::Text,
+            tool_approval_profile(false, true, false, true).with_network(true),
+        )
+        .with_output_schema(
+            serde_json::to_value(schema_for!(BrowserCloseToolOutput))
+                .expect("browser_close output schema"),
+        )
+        .with_availability(ToolAvailability {
+            feature_flags: vec![HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()],
+            provider_allowlist: vec!["openai".to_string()],
+            model_allowlist: vec!["gpt-5*".to_string()],
+            ..ToolAvailability::default()
+        })
+    }
+
+    async fn execute(
+        &self,
+        call_id: ToolCallId,
+        arguments: Value,
+        ctx: &ToolExecutionContext,
+    ) -> Result<ToolResult> {
+        let external_call_id = types::CallId::from(&call_id);
+        let input: BrowserCloseToolInput = serde_json::from_value(arguments)?;
+        let request = BrowserCloseRequest {
+            browser_id: input.browser_id,
+            fire_unload: input.fire_unload.unwrap_or(false),
+        };
+        let browser = self
+            .manager
+            .close_browser(BrowserRuntimeContext::from(ctx), request.clone())
+            .await?;
+        Ok(ToolResult::text(
+            call_id,
+            BROWSER_CLOSE_TOOL_NAME,
+            render_browser_close(&browser),
+        )
+        .with_structured_content(json!(BrowserCloseToolOutput {
+            browser,
+            fire_unload: request.fire_unload,
+        }))
+        .with_call_id(external_call_id))
+    }
+}
+
 fn render_browser_summary(browser: &BrowserSummaryRecord) -> String {
     let mut lines = vec![format!("opened browser {}", browser.browser_id)];
     lines.push(format!("url {}", browser.current_url));
@@ -721,6 +811,21 @@ fn render_browser_eval(browser: &BrowserSummaryRecord, result: &Value) -> String
     lines.join("\n")
 }
 
+fn render_browser_close(browser: &BrowserSummaryRecord) -> String {
+    let mut lines = vec![format!("closed browser {}", browser.browser_id)];
+    lines.push(format!("url {}", browser.current_url));
+    lines.push(format!("status {}", browser.status));
+    if let Some(title) = browser
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("title {title}"));
+    }
+    lines.join("\n")
+}
+
 fn clamp_snapshot_limit(candidate: Option<usize>, default: usize, max: usize) -> usize {
     candidate.unwrap_or(default).clamp(1, max)
 }
@@ -728,7 +833,8 @@ fn clamp_snapshot_limit(candidate: Option<usize>, default: usize, max: usize) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserClickTool, BrowserEvalTool, BrowserOpenTool, BrowserSnapshotTool, BrowserTypeTool,
+        BrowserClickTool, BrowserCloseTool, BrowserEvalTool, BrowserOpenTool, BrowserSnapshotTool,
+        BrowserTypeTool,
     };
     use crate::registry::Tool;
     use serde_json::Value;
@@ -823,6 +929,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn browser_close_spec_exposes_feature_and_model_constraints() {
+        let spec = BrowserCloseTool::new(std::sync::Arc::new(FailingManager)).spec();
+        assert_eq!(spec.name.as_str(), "browser_close");
+        assert_eq!(
+            spec.availability.feature_flags,
+            vec![crate::HOST_FEATURE_HOST_PROCESS_SURFACES.to_string()]
+        );
+        assert_eq!(
+            spec.availability.provider_allowlist,
+            vec!["openai".to_string()]
+        );
+        assert_eq!(
+            spec.availability.model_allowlist,
+            vec!["gpt-5*".to_string()]
+        );
+    }
+
     struct FailingManager;
 
     #[async_trait::async_trait]
@@ -864,6 +988,14 @@ mod tests {
             _runtime: super::BrowserRuntimeContext,
             _request: super::BrowserEvalRequest,
         ) -> crate::Result<(BrowserSummaryRecord, Value)> {
+            unreachable!("spec test does not execute the tool")
+        }
+
+        async fn close_browser(
+            &self,
+            _runtime: super::BrowserRuntimeContext,
+            _request: super::BrowserCloseRequest,
+        ) -> crate::Result<BrowserSummaryRecord> {
             unreachable!("spec test does not execute the tool")
         }
     }

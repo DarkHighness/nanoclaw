@@ -13,7 +13,8 @@ use agent::tools::{
 };
 #[cfg(feature = "browser-tools")]
 use agent::{
-    BrowserClickTool, BrowserEvalTool, BrowserOpenTool, BrowserSnapshotTool, BrowserTypeTool,
+    BrowserClickTool, BrowserCloseTool, BrowserEvalTool, BrowserOpenTool, BrowserSnapshotTool,
+    BrowserTypeTool,
 };
 use agent::{
     CodeDiagnosticsTool, CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool, CodeSearchTool,
@@ -570,7 +571,8 @@ pub fn register_browser_tools(tools: &mut ToolRegistry, browser_manager: Arc<dyn
     tools.register(BrowserSnapshotTool::new(browser_manager.clone()));
     tools.register(BrowserClickTool::new(browser_manager.clone()));
     tools.register(BrowserTypeTool::new(browser_manager.clone()));
-    tools.register(BrowserEvalTool::new(browser_manager));
+    tools.register(BrowserEvalTool::new(browser_manager.clone()));
+    tools.register(BrowserCloseTool::new(browser_manager));
 }
 
 #[cfg(feature = "automation-tools")]

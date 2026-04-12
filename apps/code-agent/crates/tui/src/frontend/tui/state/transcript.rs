@@ -454,6 +454,9 @@ fn tool_headline_prefix(
         ToolRenderKind::BrowserEval => {
             lifecycle_headline_text(status, "Evaluating browser", "Evaluated browser")
         }
+        ToolRenderKind::BrowserClose => {
+            lifecycle_headline_text(status, "Closing browser", "Closed browser")
+        }
         ToolRenderKind::SendInput => {
             lifecycle_headline_text(status, "Sending follow-up", "Sent follow-up")
         }
@@ -526,6 +529,7 @@ fn tool_headline_subject_kind(
         | ToolRenderKind::BrowserClick
         | ToolRenderKind::BrowserType
         | ToolRenderKind::BrowserEval
+        | ToolRenderKind::BrowserClose
         | ToolRenderKind::MonitorStart
         | ToolRenderKind::MonitorList
         | ToolRenderKind::MonitorStop
