@@ -1729,6 +1729,70 @@ fn transcript_motion_preserves_theme_span_accents() {
 }
 
 #[test]
+fn transcript_user_prompts_do_not_receive_motion_chrome() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.push_transcript(TranscriptEntry::UserPrompt("ship it".to_string()));
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .all(|line| { line.spans.iter().all(|span| span.style.bg.is_none()) })
+    );
+}
+
+#[test]
+fn transcript_assistant_typewriter_only_styles_the_visible_tail() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    let index = state.push_transcript(TranscriptEntry::AssistantMessage("hello world".to_string()));
+    let motion = state
+        .transcript_motion
+        .get_mut(index)
+        .expect("expected transcript motion state");
+    motion.revealed_chars = 5;
+
+    let rendered = build_transcript_lines(&state);
+    let line = rendered
+        .iter()
+        .find(|line| line_text_for(line).contains("hello"))
+        .expect("expected partially rendered assistant line");
+
+    let body_spans = line.spans.iter().skip(2).collect::<Vec<_>>();
+    assert!(body_spans.iter().any(|span| span.style.bg.is_some()));
+    assert!(body_spans.iter().any(|span| span.style.bg.is_none()));
+}
+
+#[test]
+fn transcript_assistant_typewriter_does_not_flash_after_completion() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    let index = state.push_transcript(TranscriptEntry::AssistantMessage("hello world".to_string()));
+    let motion = state
+        .transcript_motion
+        .get_mut(index)
+        .expect("expected transcript motion state");
+    motion.revealed_chars = motion.target_chars;
+    motion.settled_at = Some(Instant::now());
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .all(|line| { line.spans.iter().all(|span| span.style.bg.is_none()) })
+    );
+}
+
+#[test]
 fn transcript_keeps_fenced_block_label_as_first_visible_line() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,

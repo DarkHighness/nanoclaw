@@ -186,7 +186,7 @@ pub(crate) struct ActiveToolCell {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TranscriptCellMotionKind {
-    IntroFade,
+    Static,
     Typewriter,
 }
 
@@ -205,13 +205,13 @@ impl TranscriptCellMotionState {
     const TYPEWRITER_MS_PER_CHAR: u128 = 18;
 
     fn new(entry: &TranscriptEntry, now: Instant, animate: bool) -> Self {
-        let kind = if matches!(entry, TranscriptEntry::AssistantMessage(_)) {
+        let kind = if animate && matches!(entry, TranscriptEntry::AssistantMessage(_)) {
             TranscriptCellMotionKind::Typewriter
         } else {
-            TranscriptCellMotionKind::IntroFade
+            TranscriptCellMotionKind::Static
         };
         let target_chars = entry.body().chars().count();
-        if !animate {
+        if kind == TranscriptCellMotionKind::Static {
             return Self {
                 kind,
                 inserted_at: now,
@@ -222,42 +222,29 @@ impl TranscriptCellMotionState {
                 target_chars,
             };
         }
-        let revealed_chars = match kind {
-            TranscriptCellMotionKind::IntroFade => target_chars,
-            TranscriptCellMotionKind::Typewriter => 0,
-        };
         Self {
             kind,
             inserted_at: now,
             last_tick_at: now,
             settled_at: None,
             reveal_carry_ms: 0,
-            revealed_chars,
+            revealed_chars: 0,
             target_chars,
         }
     }
 
     fn refresh_target(&mut self, entry: &TranscriptEntry, now: Instant, animate: bool) {
-        self.kind = if matches!(entry, TranscriptEntry::AssistantMessage(_)) {
+        self.kind = if animate && matches!(entry, TranscriptEntry::AssistantMessage(_)) {
             TranscriptCellMotionKind::Typewriter
         } else {
-            TranscriptCellMotionKind::IntroFade
+            TranscriptCellMotionKind::Static
         };
         self.target_chars = entry.body().chars().count();
-        if !animate {
+        if self.kind == TranscriptCellMotionKind::Static {
             self.revealed_chars = self.target_chars;
             self.reveal_carry_ms = 0;
             self.settled_at = Some(now);
             self.last_tick_at = now;
-            return;
-        }
-        if self.kind == TranscriptCellMotionKind::IntroFade {
-            self.revealed_chars = self.target_chars;
-            self.reveal_carry_ms = 0;
-            self.last_tick_at = now;
-            if self.settled_at.is_none() {
-                self.settled_at = Some(now);
-            }
             return;
         }
 
@@ -274,9 +261,9 @@ impl TranscriptCellMotionState {
             return;
         }
 
-        if self.kind != TranscriptCellMotionKind::Typewriter {
+        if self.kind == TranscriptCellMotionKind::Static {
             self.last_tick_at = now;
-            self.settled_at.get_or_insert(self.inserted_at);
+            self.settled_at.get_or_insert(now);
             return;
         }
 
@@ -307,7 +294,7 @@ impl TranscriptCellMotionState {
 
     pub(crate) fn visible_chars(&self) -> usize {
         match self.kind {
-            TranscriptCellMotionKind::IntroFade => self.target_chars,
+            TranscriptCellMotionKind::Static => self.target_chars,
             TranscriptCellMotionKind::Typewriter => self.revealed_chars.min(self.target_chars),
         }
     }

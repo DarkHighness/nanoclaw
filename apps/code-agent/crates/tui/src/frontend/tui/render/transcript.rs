@@ -31,7 +31,7 @@ const WELCOME_SIDE_PADDING: u16 = 4;
 const TRANSCRIPT_CELL_GAP_LINES: usize = 1;
 const TRANSCRIPT_TURN_GAP_LINES: usize = 1;
 const TRANSCRIPT_TOP_PADDING: u16 = 1;
-const TRANSCRIPT_INTRO_FADE_MS: u128 = 260;
+const TYPEWRITER_SHIMMER_TRAIL_CHARS: usize = 4;
 
 pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     frame.render_widget(
@@ -322,10 +322,10 @@ fn format_transcript_cell_with_mode(
         );
     }
     compose_rendered_transcript_cell(
-        render_transcript_body(entry, marker, kind, animation_frame, motion),
+        render_transcript_body(entry, marker, kind, animation_frame, motion, now),
         selected,
         accent,
-        motion,
+        None,
         now,
     )
 }
@@ -373,7 +373,7 @@ fn compose_rendered_transcript_cell(
         lines.push(Line::from(Span::raw("")));
     }
     if let Some(motion) = motion {
-        apply_transcript_motion_chrome(&mut lines, motion, now);
+        apply_transcript_motion_chrome(&mut lines, Some(motion), now);
     }
     if selected {
         apply_selected_transcript_cell_chrome(&mut lines, accent);
@@ -397,6 +397,7 @@ fn render_transcript_body(
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
     motion: Option<&TranscriptCellMotionState>,
+    now: Instant,
 ) -> RenderedTranscriptCell {
     if matches!(
         kind,
@@ -408,6 +409,7 @@ fn render_transcript_body(
             kind,
         ));
         prefix_transcript_marker(&mut cell.body, marker, accent, kind);
+        apply_transcript_motion_chrome(&mut cell.body, motion, now);
         return cell;
     }
 
@@ -441,11 +443,16 @@ fn motion_trimmed_entry_body(
 
 fn apply_transcript_motion_chrome(
     lines: &mut [Line<'static>],
-    motion: &TranscriptCellMotionState,
+    motion: Option<&TranscriptCellMotionState>,
     now: Instant,
 ) {
-    let intensity = transcript_motion_intro_intensity(motion, now);
-    if intensity <= 0.0 {
+    let Some(motion) = motion else {
+        return;
+    };
+    if motion.kind != TranscriptCellMotionKind::Typewriter
+        || motion.visible_chars() == 0
+        || motion.visible_chars() >= motion.target_chars
+    {
         return;
     }
 
@@ -453,45 +460,78 @@ fn apply_transcript_motion_chrome(
     let bg = blend_color(
         palette().transcript_surface(),
         palette().elevated_surface(),
-        (0.18 + pulse * 0.18) * intensity,
+        0.18 + pulse * 0.16,
     );
-    let dim = intensity >= 0.38;
-
-    for line in lines.iter_mut() {
-        for span in &mut line.spans {
-            let mut style = span.style.bg(bg);
-            // Keep the resolved foreground from the active theme instead of
-            // blending every span toward a fixed fallback color. This preserves
-            // theme-specific syntax and markdown accents while still giving the
-            // newly arrived text a brief dim/shimmer entrance.
-            if dim && !span.content.trim().is_empty() {
-                style = style.add_modifier(ratatui::style::Modifier::DIM);
-            }
-            span.style = style;
+    let mut remaining = TYPEWRITER_SHIMMER_TRAIL_CHARS.min(motion.visible_chars());
+    for line in lines.iter_mut().rev() {
+        if remaining == 0 {
+            break;
         }
-    }
-}
-
-fn transcript_motion_intro_intensity(motion: &TranscriptCellMotionState, now: Instant) -> f32 {
-    if motion.kind == TranscriptCellMotionKind::Typewriter
-        && motion.visible_chars() < motion.target_chars
-    {
-        return 1.0;
-    }
-
-    let started_at = motion.settled_at.unwrap_or(motion.inserted_at);
-    let elapsed = now.duration_since(started_at).as_millis();
-    if elapsed >= TRANSCRIPT_INTRO_FADE_MS {
-        0.0
-    } else {
-        1.0 - (elapsed as f32 / TRANSCRIPT_INTRO_FADE_MS as f32)
+        remaining = apply_tail_shimmer_to_line(line, remaining, bg);
     }
 }
 
 fn transcript_motion_pulse(motion: &TranscriptCellMotionState, now: Instant) -> f32 {
-    let anchor = motion.settled_at.unwrap_or(motion.inserted_at);
+    let anchor = motion.inserted_at;
     let phase = now.duration_since(anchor).as_millis() as f32 / 180.0;
     0.72 + 0.28 * ((phase * TAU).sin().abs())
+}
+
+fn apply_tail_shimmer_to_line(
+    line: &mut Line<'static>,
+    remaining: usize,
+    bg: ratatui::style::Color,
+) -> usize {
+    if remaining == 0 || !line_has_visible_content(line) {
+        return remaining;
+    }
+
+    let protected_spans = protected_transcript_prefix_span_count(line);
+    let mut left = remaining;
+    let mut index = line.spans.len();
+    while index > protected_spans && left > 0 {
+        index -= 1;
+        let span = line.spans[index].clone();
+        let span_width = span.content.chars().count();
+        if span_width == 0 {
+            continue;
+        }
+        let take = span_width.min(left);
+        let keep = span_width - take;
+        let prefix = span.content.chars().take(keep).collect::<String>();
+        let suffix = span.content.chars().skip(keep).collect::<String>();
+        let mut replacement = Vec::new();
+        if !prefix.is_empty() {
+            replacement.push(Span::styled(prefix, span.style));
+        }
+        if !suffix.is_empty() {
+            replacement.push(Span::styled(
+                suffix,
+                span.style
+                    .bg(bg)
+                    .add_modifier(ratatui::style::Modifier::DIM),
+            ));
+        }
+        line.spans.splice(index..=index, replacement);
+        left -= take;
+    }
+    left
+}
+
+fn protected_transcript_prefix_span_count(line: &Line<'static>) -> usize {
+    if line.spans.len() >= 2
+        && line.spans[1].content.as_ref() == " "
+        && matches!(
+            line.spans[0].content.as_ref(),
+            "•" | "›" | "✔" | "!" | "⚠" | "✖"
+        )
+    {
+        return 2;
+    }
+    if !line.spans.is_empty() && line.spans[0].content.as_ref() == "  " {
+        return 1;
+    }
+    0
 }
 
 fn blend_color(
