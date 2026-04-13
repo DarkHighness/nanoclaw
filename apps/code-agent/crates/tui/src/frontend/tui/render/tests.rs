@@ -1,7 +1,6 @@
 use super::chrome::{
-    approval_preview_lines, build_approval_text, build_composer_header_line, build_composer_line,
-    build_composer_text, build_user_input_text, composer_cursor_position, composer_height,
-    should_render_side_rail,
+    approval_preview_lines, build_approval_text, build_composer_line, build_composer_text,
+    build_user_input_text, composer_cursor_position, composer_height, should_render_side_rail,
 };
 use super::history_rollback_overlay::{
     build_history_rollback_list_text, build_history_rollback_preview_text,
@@ -442,92 +441,6 @@ fn composer_line_describes_armed_history_rollback() {
 }
 
 #[test]
-fn composer_header_defaults_to_ready_badge() {
-    let state = TuiState::default();
-
-    let line = build_composer_header_line(&state, None);
-
-    assert!(line_text_for(&line).contains("[compose ready]"));
-}
-
-#[test]
-fn composer_header_surfaces_queue_and_attachments() {
-    let mut state = TuiState::default();
-    state.pending_controls = vec![PendingControlSummary {
-        id: "cmd_1".to_string(),
-        kind: PendingControlKind::Prompt,
-        preview: "write a regression test".to_string(),
-        reason: None,
-    }];
-    state.draft_attachments = vec![ComposerDraftAttachmentState {
-        placeholder: None,
-        kind: ComposerDraftAttachmentKind::RemoteImage {
-            requested_url: "https://example.com/assets/failure.png".to_string(),
-            part: MessagePart::ImageUrl {
-                url: "https://example.com/assets/failure.png".to_string(),
-                mime_type: Some("image/png".to_string()),
-            },
-        },
-    }];
-
-    let line = build_composer_header_line(&state, None);
-    let text = line_text_for(&line);
-
-    assert!(text.contains("[compose ready]"));
-    assert!(text.contains("[attachments 1]"));
-    assert!(text.contains("[queue 1 staged]"));
-}
-
-#[test]
-fn composer_header_reflects_user_input_mode() {
-    let prompt = crate::interaction::UserInputPrompt {
-        prompt_id: "prompt_1".to_string(),
-        questions: vec![
-            UserInputQuestion {
-                id: "scope_choice".to_string(),
-                header: "Scope".to_string(),
-                question: "Which scope should I target?".to_string(),
-                options: vec![UserInputOption {
-                    label: "Runtime".to_string(),
-                    description: "Touches substrate code.".to_string(),
-                }],
-            },
-            UserInputQuestion {
-                id: "risk_choice".to_string(),
-                header: "Risk".to_string(),
-                question: "Should I keep the change narrow?".to_string(),
-                options: vec![UserInputOption {
-                    label: "Yes".to_string(),
-                    description: "Avoid broader cleanup.".to_string(),
-                }],
-            },
-        ],
-    };
-    let flow = crate::frontend::tui::ActiveUserInputState {
-        prompt_id: prompt.prompt_id.clone(),
-        current_question: 1,
-        answers: BTreeMap::from([(
-            "scope_choice".to_string(),
-            UserInputAnswer {
-                answers: vec!["Runtime".to_string()],
-            },
-        )]),
-        collecting_other_note: false,
-    };
-    let user_input = UserInputView {
-        prompt: &prompt,
-        flow: Some(&flow),
-        input: "",
-    };
-
-    let line = build_composer_header_line(&TuiState::default(), Some(&user_input));
-    let text = line_text_for(&line);
-
-    assert!(text.contains("[respond question 2/2]"));
-    assert!(text.contains("[prompt 1 answered]"));
-}
-
-#[test]
 fn history_rollback_overlay_renders_selection_list_and_preview() {
     let mut state = TuiState::default();
     let _ = state.open_history_rollback_overlay(vec![
@@ -908,7 +821,7 @@ fn multiline_composer_text_keeps_followup_lines_and_shortcuts_visible() {
     assert_eq!(lines[0], "› edit queued steer · first line");
     assert_eq!(lines[1], "│ second line");
     assert!(lines[2].contains("enter/tab save"));
-    assert_eq!(composer_height(80, &state, None), 4);
+    assert_eq!(composer_height(80, &state, None), 3);
 }
 
 #[test]
@@ -920,12 +833,12 @@ fn single_line_composer_grows_when_input_wraps_the_available_width() {
     let default_lines = text_lines(&text);
     assert_eq!(default_lines.len(), 2);
 
-    assert_eq!(composer_height(80, &state, None), 3);
-    assert!(composer_height(36, &state, None) > 3);
+    assert_eq!(composer_height(80, &state, None), 2);
+    assert!(composer_height(36, &state, None) > 2);
 }
 
 #[test]
-fn composer_cursor_position_reserves_top_padding() {
+fn composer_cursor_position_starts_on_the_first_input_row() {
     let state = TuiState::default();
     let position = composer_cursor_position(
         Rect::new(0, 20, 80, composer_height(80, &state, None)),
@@ -933,7 +846,7 @@ fn composer_cursor_position_reserves_top_padding() {
         None,
     );
 
-    assert_eq!(position.y, 21);
+    assert_eq!(position.y, 20);
 }
 
 #[test]
