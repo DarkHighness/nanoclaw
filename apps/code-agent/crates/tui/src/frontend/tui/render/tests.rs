@@ -2625,6 +2625,31 @@ fn footer_context_renders_configured_status_items() {
 }
 
 #[test]
+fn footer_status_badge_switches_to_command_mode() {
+    let mut state = TuiState::default();
+    state.input = "/help sessions".to_string();
+    state.status = "Opened command palette".to_string();
+
+    let footer = format_footer_context(&state);
+    let text = line_text_for(&footer);
+
+    assert!(text.contains("[• Command]"));
+    assert!(!text.contains("Opened command palette"));
+}
+
+#[test]
+fn footer_status_badge_uses_structured_picker_state() {
+    let mut state = TuiState::default();
+    state.open_statusline_picker();
+
+    let footer = format_footer_context(&state);
+    let text = line_text_for(&footer);
+
+    assert!(text.contains("[• Status]"));
+    assert!(!text.contains("Opened"));
+}
+
+#[test]
 fn main_pane_viewport_height_reserves_global_turn_title_space_when_enabled() {
     let state = TuiState::default();
     let area = Rect::new(0, 0, 120, 30);

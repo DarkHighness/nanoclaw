@@ -1,4 +1,4 @@
-use super::super::state::{ToastTone, TuiState, TurnPhase, preview_text};
+use super::super::state::{MainPaneMode, ToastTone, TuiState, TurnPhase, preview_text};
 use super::theme::palette;
 use crate::statusline::StatusLineContextWindowStyle;
 use chrono::Local;
@@ -73,11 +73,7 @@ pub(super) fn render_toast_band(
 
 pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
     let config = &state.session.statusline;
-    let status = if state.status.is_empty() {
-        "Ready"
-    } else {
-        state.status.as_str()
-    };
+    let status = compact_status_label(state);
 
     let mut spans = Vec::new();
     if config.status {
@@ -92,7 +88,7 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    preview_text(status, 32),
+                    status,
                     Style::default()
                         .fg(palette().text)
                         .add_modifier(Modifier::BOLD),
@@ -249,6 +245,83 @@ pub(super) fn status_color(state: &TuiState) -> Color {
         TurnPhase::Working => palette().user,
         TurnPhase::WaitingApproval => palette().warn,
         TurnPhase::Failed => palette().error,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusBadge {
+    Ready,
+    Working,
+    Approval,
+    Failed,
+    Command,
+    Rollback,
+    Queue,
+    Editing,
+    Status,
+    Thinking,
+    Theme,
+    Review,
+    View,
+}
+
+impl StatusBadge {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ready => "Ready",
+            Self::Working => "Working",
+            Self::Approval => "Approval",
+            Self::Failed => "Failed",
+            Self::Command => "Command",
+            Self::Rollback => "Rollback",
+            Self::Queue => "Queue",
+            Self::Editing => "Editing",
+            Self::Status => "Status",
+            Self::Thinking => "Thinking",
+            Self::Theme => "Theme",
+            Self::Review => "Review",
+            Self::View => "View",
+        }
+    }
+}
+
+fn compact_status_label(state: &TuiState) -> String {
+    status_badge(state).label().to_string()
+}
+
+fn status_badge(state: &TuiState) -> StatusBadge {
+    if state.history_rollback_overlay().is_some() || state.history_rollback_is_primed() {
+        return StatusBadge::Rollback;
+    }
+    if state.pending_control_picker.is_some() {
+        return StatusBadge::Queue;
+    }
+    if state.editing_pending_control.is_some() {
+        return StatusBadge::Editing;
+    }
+    if state.statusline_picker.is_some() {
+        return StatusBadge::Status;
+    }
+    if state.thinking_effort_picker.is_some() {
+        return StatusBadge::Thinking;
+    }
+    if state.theme_picker.is_some() {
+        return StatusBadge::Theme;
+    }
+    if state.tool_review_overlay().is_some() {
+        return StatusBadge::Review;
+    }
+    if state.main_pane == MainPaneMode::View {
+        return StatusBadge::View;
+    }
+    if !state.input.trim().is_empty() && state.input.starts_with('/') {
+        return StatusBadge::Command;
+    }
+    match state.turn_phase {
+        TurnPhase::Working => StatusBadge::Working,
+        TurnPhase::WaitingApproval => StatusBadge::Approval,
+        TurnPhase::Failed => StatusBadge::Failed,
+        TurnPhase::Idle => StatusBadge::Ready,
     }
 }
 
