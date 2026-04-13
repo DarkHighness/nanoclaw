@@ -173,6 +173,74 @@ fn transcript_content_area_reserves_top_breathing_room() {
 }
 
 #[test]
+fn transcript_vertical_scroll_accounts_for_wrapped_cell_height() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        follow_transcript: false,
+        transcript_scroll: 2,
+        ..TuiState::default()
+    };
+    state.session.display.top_turn_title = false;
+    state.transcript = vec![TranscriptEntry::AssistantMessage(
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu".to_string(),
+    )];
+
+    let backend = TestBackend::new(16, 4);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::transcript::render_transcript(frame, frame.area(), &state))
+        .expect("draw succeeds");
+
+    let buffer = terminal.backend().buffer();
+    let rows = (1..buffer.area.height)
+        .map(|y| buffer_row_text(buffer, y))
+        .filter(|row| !row.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    assert!(
+        rows.iter().all(|row| !row.contains("alpha")),
+        "expected wrapped scroll to move past the first visual line, rows={rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("theta") || row.contains("iota") || row.contains("kappa")),
+        "expected later wrapped content to become visible, rows={rows:?}"
+    );
+}
+
+#[test]
+fn transcript_horizontal_scroll_disables_wrap_truncation() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        follow_transcript: false,
+        transcript_horizontal_scroll: 8,
+        ..TuiState::default()
+    };
+    state.session.display.top_turn_title = false;
+    state.transcript = vec![TranscriptEntry::AssistantMessage(
+        "alpha beta gamma delta epsilon".to_string(),
+    )];
+
+    let backend = TestBackend::new(16, 4);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::transcript::render_transcript(frame, frame.area(), &state))
+        .expect("draw succeeds");
+
+    let buffer = terminal.backend().buffer();
+    let first_visible = buffer_row_text(buffer, 1);
+
+    assert!(
+        !first_visible.contains("alpha"),
+        "expected horizontal scroll to move past the leading text, row={first_visible:?}"
+    );
+    assert!(
+        first_visible.contains("gamma") || first_visible.contains("delta"),
+        "expected a later slice of the line after horizontal scroll, row={first_visible:?}"
+    );
+}
+
+#[test]
 fn transcript_separates_assistant_and_tool_entries_with_breathing_room() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
@@ -2161,6 +2229,14 @@ fn line_text_for(line: &ratatui::text::Line<'_>) -> String {
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>()
+}
+
+fn buffer_row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+    let mut text = String::new();
+    for x in 0..buffer.area.width {
+        text.push_str(buffer[(x, y)].symbol());
+    }
+    text
 }
 
 fn transcript_entry(line: &str) -> TranscriptEntry {

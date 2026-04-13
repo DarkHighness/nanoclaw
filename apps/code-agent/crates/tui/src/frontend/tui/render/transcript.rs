@@ -25,6 +25,7 @@ use ratatui::widgets::{Block, Paragraph, Wrap};
 use std::f32::consts::TAU;
 use std::time::Duration;
 use std::time::Instant;
+use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 const WELCOME_SIDE_PADDING: u16 = 4;
@@ -58,12 +59,13 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
     // and short dividers. Keep spacing in the cell renderer instead.
     let content_area = transcript_content_area(area);
     let lines = build_transcript_lines_for_width(state, content_area.width);
-    let scroll = shared::clamp_scroll(state.transcript_scroll, lines.len(), content_area.height);
-    let transcript = Paragraph::new(Text::from(lines))
-        .scroll((scroll, state.transcript_horizontal_scroll))
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(palette().text).bg(palette().main_bg));
+    let wrap_enabled = transcript_wrap_enabled(state);
+    let scroll = shared::clamp_scroll(
+        state.transcript_scroll,
+        rendered_transcript_line_count(&lines, content_area.width, wrap_enabled),
+        content_area.height,
+    );
+    let transcript = build_transcript_paragraph(lines, state, scroll, wrap_enabled);
     frame.render_widget(transcript, content_area);
 }
 
@@ -261,6 +263,7 @@ fn transcript_turn_starts_for_width(
     let mut total_lines = 0usize;
     let mut turn_starts = Vec::new();
     let frame_time = Instant::now();
+    let wrap_enabled = transcript_wrap_enabled(state);
     let mut pending_controls_embedded = false;
     let tool_timeline_animation = state
         .turn_running
@@ -268,9 +271,11 @@ fn transcript_turn_starts_for_width(
 
     if should_render_transcript_context(&state.inspector_title) && !state.inspector.is_empty() {
         total_lines += 2;
-        total_lines += build_inspector_text(&state.inspector_title, &state.inspector, None)
-            .lines
-            .len();
+        total_lines += rendered_transcript_line_count(
+            &build_inspector_text(&state.inspector_title, &state.inspector, None).lines,
+            transcript_width,
+            wrap_enabled,
+        );
         total_lines += 1;
     }
 
@@ -292,7 +297,7 @@ fn transcript_turn_starts_for_width(
                 turn_starts.push((total_lines, preview_text(entry.body(), 72)));
             }
 
-            total_lines += format_transcript_cell_with_mode(
+            let cell_lines = format_transcript_cell_with_mode(
                 entry,
                 state.show_tool_details,
                 (state.turn_running && index + 1 == state.transcript.len())
@@ -301,8 +306,9 @@ fn transcript_turn_starts_for_width(
                 selected,
                 state.transcript_motion_state(index),
                 frame_time,
-            )
-            .len();
+            );
+            total_lines +=
+                rendered_transcript_line_count(&cell_lines, transcript_width, wrap_enabled);
         }
     }
 
@@ -316,7 +322,7 @@ fn transcript_turn_starts_for_width(
                 state.tool_selection.as_ref(),
                 Some(ToolSelectionTarget::LiveCell(selected)) if selected == &active.cell_id
             );
-            total_lines += format_transcript_cell_with_mode(
+            let cell_lines = format_transcript_cell_with_mode(
                 &active_entry,
                 state.show_tool_details,
                 state
@@ -326,20 +332,22 @@ fn transcript_turn_starts_for_width(
                 selected,
                 None,
                 frame_time,
-            )
-            .len();
+            );
+            total_lines +=
+                rendered_transcript_line_count(&cell_lines, transcript_width, wrap_enabled);
             if index + 1 < state.active_tool_cells.len() {
                 total_lines += 1;
             }
         }
         if let Some(embedded) = pending_control_embedded_lines(state, tool_timeline_animation) {
             pending_controls_embedded = true;
-            total_lines += embedded.len();
+            total_lines +=
+                rendered_transcript_line_count(&embedded, transcript_width, wrap_enabled);
         } else if let Some(bridge) =
             pending_control_picker_embedded_lines(state, tool_timeline_animation)
         {
             pending_controls_embedded = true;
-            total_lines += bridge.len();
+            total_lines += rendered_transcript_line_count(&bridge, transcript_width, wrap_enabled);
         }
     }
 
@@ -349,15 +357,16 @@ fn transcript_turn_starts_for_width(
         }
         for (index, active) in state.active_monitors.iter().enumerate() {
             let active_entry = TranscriptEntry::ShellSummary(active.entry.clone());
-            total_lines += format_transcript_cell_with_mode(
+            let cell_lines = format_transcript_cell_with_mode(
                 &active_entry,
                 state.show_tool_details,
                 Some(animation_frame_ms(active.started_at, frame_time)),
                 false,
                 None,
                 frame_time,
-            )
-            .len();
+            );
+            total_lines +=
+                rendered_transcript_line_count(&cell_lines, transcript_width, wrap_enabled);
             if index + 1 < state.active_monitors.len() {
                 total_lines += 1;
             }
@@ -371,7 +380,7 @@ fn transcript_turn_starts_for_width(
             if total_lines > 0 {
                 total_lines += 1;
             }
-            total_lines += format_transcript_cell_with_mode(
+            let cell_lines = format_transcript_cell_with_mode(
                 &entry,
                 true,
                 state
@@ -381,8 +390,9 @@ fn transcript_turn_starts_for_width(
                 false,
                 None,
                 frame_time,
-            )
-            .len();
+            );
+            total_lines +=
+                rendered_transcript_line_count(&cell_lines, transcript_width, wrap_enabled);
         }
     }
 
@@ -394,10 +404,104 @@ fn transcript_turn_starts_for_width(
         if long_running_worked_divider(state, transcript_width).is_some() {
             total_lines += 2;
         }
-        total_lines += progress_lines.len();
+        total_lines +=
+            rendered_transcript_line_count(&progress_lines, transcript_width, wrap_enabled);
     }
 
     (turn_starts, total_lines)
+}
+
+fn transcript_wrap_enabled(state: &TuiState) -> bool {
+    state.transcript_horizontal_scroll == 0
+}
+
+fn build_transcript_paragraph(
+    lines: Vec<Line<'static>>,
+    state: &TuiState,
+    scroll: u16,
+    wrap_enabled: bool,
+) -> Paragraph<'static> {
+    let paragraph = Paragraph::new(Text::from(lines))
+        .scroll((scroll, state.transcript_horizontal_scroll))
+        .alignment(Alignment::Left)
+        .style(Style::default().fg(palette().text).bg(palette().main_bg));
+    if wrap_enabled {
+        paragraph.wrap(Wrap { trim: false })
+    } else {
+        paragraph
+    }
+}
+
+fn rendered_transcript_line_count(
+    lines: &[Line<'static>],
+    width: u16,
+    wrap_enabled: bool,
+) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    if !wrap_enabled {
+        return lines.len();
+    }
+    lines
+        .iter()
+        .map(|line| wrapped_transcript_line_count(line, width))
+        .sum()
+}
+
+fn wrapped_transcript_line_count(line: &Line<'static>, width: u16) -> usize {
+    if line.spans.is_empty() {
+        return 1;
+    }
+
+    let mut rendered_lines = 0usize;
+    let mut current_width = 0u16;
+    let mut pending_word_width = 0u16;
+    let mut pending_whitespace_width = 0u16;
+    let mut has_content = false;
+    let mut non_whitespace_previous = false;
+
+    for ch in line.spans.iter().flat_map(|span| span.content.chars()) {
+        let symbol_width = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+        if symbol_width > width {
+            continue;
+        }
+        let is_whitespace = ch.is_whitespace();
+        let word_boundary = non_whitespace_previous && is_whitespace;
+        let line_start_overflow = current_width == 0
+            && pending_word_width + pending_whitespace_width + symbol_width > width;
+
+        if word_boundary || line_start_overflow {
+            current_width = current_width
+                .saturating_add(pending_whitespace_width)
+                .saturating_add(pending_word_width);
+            pending_whitespace_width = 0;
+            pending_word_width = 0;
+        }
+
+        let line_full = current_width >= width;
+        let pending_overflow = symbol_width > 0
+            && current_width + pending_whitespace_width + pending_word_width >= width;
+        if line_full || pending_overflow {
+            rendered_lines += 1;
+            current_width = 0;
+        }
+
+        if is_whitespace {
+            pending_whitespace_width = pending_whitespace_width.saturating_add(symbol_width);
+        } else {
+            pending_word_width = pending_word_width.saturating_add(symbol_width);
+        }
+
+        has_content = true;
+        non_whitespace_previous = !is_whitespace;
+    }
+
+    if !has_content {
+        return 1;
+    }
+
+    rendered_lines + usize::from(current_width + pending_whitespace_width + pending_word_width > 0)
 }
 
 fn should_render_transcript_context(title: &str) -> bool {
