@@ -4,8 +4,9 @@
 //! code-agent-specific host settings layered on top of the shared core config
 //! surface.
 
-pub use code_agent_contracts::{motion, statusline, theme};
+pub use code_agent_contracts::{display, motion, statusline, theme};
 
+use crate::display::TuiDisplayConfig;
 use crate::motion::{TuiMotionConfig, TuiMotionField};
 use crate::statusline::StatusLineConfig;
 use crate::theme::{ThemeCatalog, load_theme_catalog};
@@ -40,6 +41,7 @@ pub struct CodeAgentConfig {
     pub lsp_auto_install: bool,
     pub lsp_install_root: Option<PathBuf>,
     pub approval_policy: CodeAgentApprovalPolicyConfig,
+    pub display: TuiDisplayConfig,
     pub statusline: StatusLineConfig,
     pub motion: TuiMotionConfig,
     pub theme_catalog: ThemeCatalog,
@@ -168,6 +170,7 @@ struct CodeAgentApprovalMcpBoundaryMatcherConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 struct CodeAgentTuiConfig {
+    display: TuiDisplayConfig,
     statusline: StatusLineConfig,
     motion: TuiMotionConfig,
     theme: Option<String>,
@@ -217,6 +220,7 @@ impl CodeAgentConfig {
                 .as_deref()
                 .map(|value| resolve_path(workspace_root, value)),
             approval_policy: normalize_approval_policy(app.approval)?,
+            display: app.tui.display,
             statusline: app.tui.statusline,
             motion: app.tui.motion,
             theme_catalog: load_theme_catalog(

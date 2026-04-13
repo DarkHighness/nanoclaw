@@ -38,6 +38,7 @@ impl CodeAgentTui {
                 startup_diagnostics: snapshot.startup_diagnostics.clone(),
                 queued_commands: 0,
                 token_ledger: Default::default(),
+                display: snapshot.display.clone(),
                 statusline: snapshot.statusline.clone(),
                 motion: snapshot.motion.clone(),
             },
@@ -84,6 +85,7 @@ impl CodeAgentTui {
             state.session.permission_mode = snapshot.permission_mode;
             state.session.host_process_surfaces_allowed = snapshot.host_process_surfaces_allowed;
             state.session.startup_diagnostics = snapshot.startup_diagnostics.clone();
+            state.session.display = snapshot.display.clone();
             state.session.statusline = snapshot.statusline.clone();
             state.session.motion = snapshot.motion.clone();
         });
@@ -97,10 +99,12 @@ impl CodeAgentTui {
         let aborted_operator_task = self.abort_operator_task();
         let previous = self.ui_state.snapshot();
         let show_tool_details = previous.show_tool_details;
+        let display = previous.session.display.clone();
         let statusline = previous.session.statusline.clone();
         let motion = previous.session.motion.clone();
         let mut startup = self.startup_state_from_snapshot(&outcome.startup);
         startup.show_tool_details = show_tool_details;
+        startup.session.display = display;
         startup.session.statusline = statusline;
         startup.session.motion = motion;
         startup.session.queued_commands = 0;

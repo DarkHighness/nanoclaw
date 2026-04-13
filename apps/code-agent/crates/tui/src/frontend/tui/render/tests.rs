@@ -8,10 +8,12 @@ use super::history_rollback_overlay::{
 };
 use super::main_pane_viewport_height;
 use super::picker::build_composer_hint_text;
+use super::shell::build_top_title_line;
 use super::statusline::{format_footer_context, format_toast_line, toast_height};
 use super::theme::palette;
 use super::tool_review_overlay::{build_tool_review_list_text, build_tool_review_preview_text};
 use super::transcript::TranscriptEntryKind;
+use super::transcript::active_turn_title_for_viewport;
 use super::transcript::build_transcript_lines;
 use super::transcript::build_transcript_lines_for_width;
 use super::transcript::transcript_content_area;
@@ -667,6 +669,9 @@ fn welcome_lines_keep_the_start_screen_sparse() {
         line_text_for(line)
             .contains("Describe the next change in plain language, call a named skill with $skill_name or /skill_name, inspect task history, or run /help.")
     }));
+    assert!(lines.iter().any(|line| {
+        line_text_for(line).contains("▄▄     ▄▄▄    ▄▄       ▄▄")
+    }));
 }
 
 #[test]
@@ -680,7 +685,7 @@ fn welcome_lines_switch_to_the_compact_logo_on_narrow_viewports() {
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("NANOCLAW / command center") })
+            .any(|line| { line_text_for(line).contains("███  ██ ▄████▄") })
     );
     assert!(lines.iter().any(|line| {
         line_text_for(line)
@@ -691,6 +696,24 @@ fn welcome_lines_switch_to_the_compact_logo_on_narrow_viewports() {
             .iter()
             .any(|line| { line_text_for(line).contains("launch · next actions") })
     );
+}
+
+#[test]
+fn welcome_lines_can_hide_ascii_logo_without_dropping_command_center_copy() {
+    let mut state = TuiState::default();
+    state.session.display.welcome_ascii_logo = false;
+
+    let lines = build_welcome_lines(&state, 140, 28);
+
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("NANOCLAW / command center") })
+    );
+    assert!(!lines.iter().any(|line| {
+        line_text_for(line).contains("▄▄     ▄▄▄    ▄▄       ▄▄")
+            || line_text_for(line).contains("███  ██ ▄████▄")
+    }));
 }
 
 #[test]
@@ -2410,7 +2433,7 @@ fn permission_request_modal_does_not_shrink_main_pane_viewport() {
 
     let viewport = main_pane_viewport_height(area, &state, None, Some(&prompt), None);
 
-    assert_eq!(viewport, 30 - composer_height(&state, None) - 1);
+    assert_eq!(viewport, 30 - composer_height(&state, None) - 2);
 }
 
 #[test]
@@ -2671,8 +2694,19 @@ fn footer_context_renders_configured_status_items() {
 }
 
 #[test]
-fn main_pane_viewport_height_does_not_reserve_top_header_space() {
+fn main_pane_viewport_height_reserves_global_turn_title_space_when_enabled() {
     let state = TuiState::default();
+    let area = Rect::new(0, 0, 120, 30);
+
+    let viewport = main_pane_viewport_height(area, &state, None, None, None);
+
+    assert_eq!(viewport, 30 - composer_height(&state, None) - 2);
+}
+
+#[test]
+fn main_pane_viewport_height_skips_top_title_space_when_disabled() {
+    let mut state = TuiState::default();
+    state.session.display.top_turn_title = false;
     let area = Rect::new(0, 0, 120, 30);
 
     let viewport = main_pane_viewport_height(area, &state, None, None, None);
@@ -2698,7 +2732,45 @@ fn main_pane_viewport_height_does_not_shrink_for_approval_modal() {
 
     let viewport = main_pane_viewport_height(area, &state, Some(&approval), None, None);
 
-    assert_eq!(viewport, 30 - composer_height(&state, None) - 1);
+    assert_eq!(viewport, 30 - composer_height(&state, None) - 2);
+}
+
+#[test]
+fn active_turn_title_tracks_the_visible_history_turn() {
+    let mut state = TuiState::default();
+    state.transcript = vec![
+        transcript_entry("› first prompt"),
+        transcript_entry("• first line\nsecond line\nthird line\nfourth line\nfifth line"),
+        transcript_entry("› second prompt"),
+        transcript_entry("• closing reply"),
+    ];
+
+    let first = active_turn_title_for_viewport(&state, 48, 6).expect("expected first title");
+    assert_eq!(first, "first prompt");
+
+    state.follow_transcript = false;
+    state.transcript_scroll = 6;
+    let second = active_turn_title_for_viewport(&state, 48, 6).expect("expected second title");
+    assert_eq!(second, "second prompt");
+}
+
+#[test]
+fn top_title_line_surfaces_history_turn_prompt() {
+    let mut state = TuiState::default();
+    state.transcript = vec![
+        transcript_entry("› first prompt"),
+        transcript_entry("• first line\nsecond line\nthird line\nfourth line\nfifth line"),
+        transcript_entry("› second prompt"),
+        transcript_entry("• closing reply"),
+    ];
+    state.follow_transcript = false;
+    state.transcript_scroll = 6;
+
+    let line = build_top_title_line(&state, Rect::new(0, 0, 80, 7));
+    let text = line_text_for(&line);
+
+    assert!(text.contains("NANOCLAW / history turn"));
+    assert!(text.contains("started from second prompt"));
 }
 
 #[test]

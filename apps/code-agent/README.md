@@ -200,6 +200,10 @@ The prompt is submitted as the first turn, then the TUI stays open.
 Example app-local TUI settings:
 
 ```toml
+[tui.display]
+welcome_ascii_logo = true
+top_turn_title = true
+
 [tui.statusline]
 status = true
 model = true
@@ -217,6 +221,11 @@ session = false
 transcript_cell_intro = true
 ```
 
+Set `tui.display.welcome_ascii_logo = false` to keep the welcome page in the
+new command-center layout without the ASCII masthead.
+Set `tui.display.top_turn_title = false` to hide the global top bar that tracks
+the current visible turn and its starting prompt while you scroll transcript
+history.
 Set any field to `false` to hide it from the bottom status line.
 Set `tui.motion.transcript_cell_intro = false` to disable the transcript
 typewriter / shimmer entrance animation.

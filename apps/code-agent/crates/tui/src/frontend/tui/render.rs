@@ -29,7 +29,7 @@ use picker::{pending_control_height, render_composer_hint_modal, render_pending_
 use ratatui::layout::{Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Block;
-use shell::{bottom_layout_constraints, render_main_pane};
+use shell::{bottom_layout_constraints, render_main_pane, render_top_title};
 use statusline::{render_status_line, render_toast_band, toast_height};
 use theme::palette;
 use tool_review_overlay::render_tool_review_overlay;
@@ -71,16 +71,27 @@ pub(crate) fn render(
     };
     let toast_height = toast_height(state);
     let composer_height = composer_height(state, user_input);
+    let top_title_height = state.session.display.top_turn_title.then_some(1);
+    let mut constraints = Vec::new();
+    if let Some(height) = top_title_height {
+        constraints.push(ratatui::layout::Constraint::Length(height));
+    }
+    constraints.extend(bottom_layout_constraints(
+        prompt_height,
+        pending_height,
+        toast_height,
+        composer_height,
+    ));
     let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(bottom_layout_constraints(
-            prompt_height,
-            pending_height,
-            toast_height,
-            composer_height,
-        ))
+        .constraints(constraints)
         .split(area);
     let mut next_index = 0;
+    let title_area = top_title_height.map(|_| {
+        let area = vertical[next_index];
+        next_index += 1;
+        area
+    });
     let main_area = vertical[next_index];
     next_index += 1;
     let prompt_area = prompt_height.map(|_| {
@@ -101,6 +112,9 @@ pub(crate) fn render(
     let composer_area = vertical[next_index];
     let status_area = vertical[next_index + 1];
 
+    if let Some(title_area) = title_area {
+        render_top_title(frame, title_area, main_area, state);
+    }
     render_main_pane(frame, main_area, state);
     if let Some(user_input) = user_input {
         render_user_input_band(frame, prompt_area.expect("user input area"), user_input);
@@ -159,17 +173,23 @@ pub(crate) fn main_pane_viewport_height(
     };
     let toast_height = toast_height(state);
     let composer_height = composer_height(state, user_input);
+    let top_title_height = state.session.display.top_turn_title.then_some(1);
+    let mut constraints = Vec::new();
+    if let Some(height) = top_title_height {
+        constraints.push(ratatui::layout::Constraint::Length(height));
+    }
+    constraints.extend(bottom_layout_constraints(
+        prompt_height,
+        pending_height,
+        toast_height,
+        composer_height,
+    ));
     let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(bottom_layout_constraints(
-            prompt_height,
-            pending_height,
-            toast_height,
-            composer_height,
-        ))
+        .constraints(constraints)
         .split(area);
     vertical
-        .first()
+        .get(usize::from(top_title_height.is_some()))
         .map(|rect| rect.height.max(1))
         .unwrap_or(area.height.max(1))
 }

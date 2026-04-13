@@ -1,6 +1,6 @@
 use super::super::state::{
     ToolSelectionTarget, TranscriptCellMotionKind, TranscriptCellMotionState, TranscriptEntry,
-    TranscriptToolEntry, TranscriptToolStatus, TuiState,
+    TranscriptToolEntry, TranscriptToolStatus, TuiState, preview_text,
 };
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
@@ -230,6 +230,174 @@ pub(super) fn build_transcript_lines_for_width(
     }
 
     lines
+}
+
+pub(super) fn active_turn_title_for_viewport(
+    state: &TuiState,
+    transcript_width: u16,
+    transcript_height: u16,
+) -> Option<String> {
+    let (turn_starts, total_lines) = transcript_turn_starts_for_width(state, transcript_width);
+    if turn_starts.is_empty() {
+        return None;
+    }
+    let scroll = shared::clamp_scroll(state.transcript_scroll, total_lines, transcript_height);
+    turn_starts
+        .iter()
+        .rev()
+        .find(|(line_index, _)| *line_index <= usize::from(scroll))
+        .or_else(|| turn_starts.first())
+        .map(|(_, prompt)| prompt.clone())
+}
+
+fn transcript_turn_starts_for_width(
+    state: &TuiState,
+    transcript_width: u16,
+) -> (Vec<(usize, String)>, usize) {
+    // The global top title needs to follow the same turn boundaries the
+    // transcript viewport currently shows, including blank spacer rows and live
+    // timeline cells. Mirror the render-time line accounting here so scroll
+    // position maps back to the correct user prompt anchor.
+    let mut total_lines = 0usize;
+    let mut turn_starts = Vec::new();
+    let frame_time = Instant::now();
+    let mut pending_controls_embedded = false;
+    let tool_timeline_animation = state
+        .turn_running
+        .then(|| animation_frame_ms(state.turn_started_at.unwrap_or(frame_time), frame_time));
+
+    if should_render_transcript_context(&state.inspector_title) && !state.inspector.is_empty() {
+        total_lines += 2;
+        total_lines += build_inspector_text(&state.inspector_title, &state.inspector, None)
+            .lines
+            .len();
+        total_lines += 1;
+    }
+
+    if !state.transcript.is_empty() {
+        for (index, entry) in state.transcript.iter().enumerate() {
+            let selected = matches!(
+                state.tool_selection.as_ref(),
+                Some(ToolSelectionTarget::Transcript(selected)) if *selected == index
+            );
+            if index > 0 {
+                total_lines += TRANSCRIPT_CELL_GAP_LINES;
+                if entry_kind_from_cell(entry) == TranscriptEntryKind::UserPrompt {
+                    turn_starts.push((total_lines, preview_text(entry.body(), 72)));
+                    total_lines += TRANSCRIPT_TURN_GAP_LINES;
+                    total_lines += 1;
+                    total_lines += TRANSCRIPT_TURN_GAP_LINES;
+                }
+            } else if entry_kind_from_cell(entry) == TranscriptEntryKind::UserPrompt {
+                turn_starts.push((total_lines, preview_text(entry.body(), 72)));
+            }
+
+            total_lines += format_transcript_cell_with_mode(
+                entry,
+                state.show_tool_details,
+                (state.turn_running && index + 1 == state.transcript.len())
+                    .then_some(tool_timeline_animation)
+                    .flatten(),
+                selected,
+                state.transcript_motion_state(index),
+                frame_time,
+            )
+            .len();
+        }
+    }
+
+    if !state.active_tool_cells.is_empty() {
+        if total_lines > 0 {
+            total_lines += 1;
+        }
+        for (index, active) in state.active_tool_cells.iter().enumerate() {
+            let active_entry = TranscriptEntry::Tool(active.entry.clone());
+            let selected = matches!(
+                state.tool_selection.as_ref(),
+                Some(ToolSelectionTarget::LiveCell(selected)) if selected == &active.cell_id
+            );
+            total_lines += format_transcript_cell_with_mode(
+                &active_entry,
+                state.show_tool_details,
+                state
+                    .turn_running
+                    .then_some(tool_timeline_animation)
+                    .flatten(),
+                selected,
+                None,
+                frame_time,
+            )
+            .len();
+            if index + 1 < state.active_tool_cells.len() {
+                total_lines += 1;
+            }
+        }
+        if let Some(embedded) = pending_control_embedded_lines(state, tool_timeline_animation) {
+            pending_controls_embedded = true;
+            total_lines += embedded.len();
+        } else if let Some(bridge) =
+            pending_control_picker_embedded_lines(state, tool_timeline_animation)
+        {
+            pending_controls_embedded = true;
+            total_lines += bridge.len();
+        }
+    }
+
+    if !state.active_monitors.is_empty() {
+        if total_lines > 0 {
+            total_lines += 1;
+        }
+        for (index, active) in state.active_monitors.iter().enumerate() {
+            let active_entry = TranscriptEntry::ShellSummary(active.entry.clone());
+            total_lines += format_transcript_cell_with_mode(
+                &active_entry,
+                state.show_tool_details,
+                Some(animation_frame_ms(active.started_at, frame_time)),
+                false,
+                None,
+                frame_time,
+            )
+            .len();
+            if index + 1 < state.active_monitors.len() {
+                total_lines += 1;
+            }
+        }
+    }
+
+    if !pending_controls_embedded {
+        let queued_entry = pending_control_timeline_entry(state)
+            .or_else(|| pending_control_picker_bridge_entry(state));
+        if let Some(entry) = queued_entry {
+            if total_lines > 0 {
+                total_lines += 1;
+            }
+            total_lines += format_transcript_cell_with_mode(
+                &entry,
+                true,
+                state
+                    .turn_running
+                    .then_some(tool_timeline_animation)
+                    .flatten(),
+                false,
+                None,
+                frame_time,
+            )
+            .len();
+        }
+    }
+
+    let progress_lines = live_progress_lines(state);
+    if !progress_lines.is_empty() {
+        if total_lines > 0 {
+            total_lines += 1;
+        }
+        if long_running_worked_divider(state, transcript_width).is_some() {
+            total_lines += 2;
+        }
+        total_lines += progress_lines.len();
+    }
+
+    (turn_starts, total_lines)
 }
 
 fn should_render_transcript_context(title: &str) -> bool {

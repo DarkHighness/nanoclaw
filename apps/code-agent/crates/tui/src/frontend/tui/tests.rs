@@ -10,6 +10,7 @@ use super::{
     external_editor_attachment_status_suffix, live_task_wait_toast_message,
     looks_like_local_image_path, merge_interrupt_steers, plain_input_submit_action,
 };
+use crate::display::TuiDisplayConfig;
 use crate::interaction::SessionPermissionMode;
 use crate::motion::TuiMotionConfig;
 use crate::ui::{HistoryRollbackRound, LiveTaskSummary, LiveTaskWaitOutcome};
@@ -46,6 +47,7 @@ fn startup_inspector_surfaces_backend_boot_snapshot() {
         startup_diagnostics: Default::default(),
         queued_commands: 0,
         token_ledger: Default::default(),
+        display: TuiDisplayConfig::default(),
         statusline: Default::default(),
         motion: TuiMotionConfig::default(),
     });

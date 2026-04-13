@@ -1,4 +1,5 @@
 use super::input_history::PersistedComposerHistoryEntry;
+use crate::display::TuiDisplayConfig;
 use crate::interaction::{
     PendingControlKind, PendingControlSummary, SessionPermissionMode, SkillSummary,
 };
@@ -123,6 +124,7 @@ pub(crate) struct SessionSummary {
     pub(crate) startup_diagnostics: StartupDiagnosticsSnapshot,
     pub(crate) queued_commands: usize,
     pub(crate) token_ledger: TokenLedgerSnapshot,
+    pub(crate) display: TuiDisplayConfig,
     pub(crate) statusline: StatusLineConfig,
     pub(crate) motion: TuiMotionConfig,
 }

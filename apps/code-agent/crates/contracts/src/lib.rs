@@ -1,3 +1,4 @@
+pub mod display;
 pub mod interaction;
 pub mod motion;
 pub mod preview;

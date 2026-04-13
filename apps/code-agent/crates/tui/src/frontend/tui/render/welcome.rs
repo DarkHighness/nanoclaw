@@ -4,6 +4,19 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
+const FULL_LOGO_LINES: [&str; 6] = [
+    "▄▄     ▄▄▄    ▄▄       ▄▄     ▄▄▄    ▄▄▄▄     ▄   ▄▄▄▄   ▄▄▄         ▄▄     ▄▄▄",
+    "██▄   ██▀   ▄█▀▀█▄     ██▄   ██▀   ▄█▀▀████▄  ▀██████▀  ▀██▀       ▄█▀▀█▄  █▀██  ██  ██▀▀",
+    "███▄  ██    ██  ██     ███▄  ██    ██    ██     ██       ██        ██  ██    ██  ██  ██",
+    "██ ▀█▄██    ██▀▀██     ██ ▀█▄██    ██    ██     ██       ██        ██▀▀██    ██  ██  ██",
+    "██   ▀██  ▄ ██  ██     ██   ▀██    ██    ██     ██       ██      ▄ ██  ██    ██▄ ██▄ ██",
+    "▀██▀    ██  ▀██▀  ▀█▄█ ▀██▀    ██     ▀████▀      ▀█████  ████████ ▀██▀  ▀█▄█  ▀████▀███▀",
+];
+const COMPACT_LOGO_LINES: [&str; 3] = [
+    "███  ██ ▄████▄ ███  ██ ▄████▄ ▄█████ ██     ▄████▄ ██     ██",
+    "██ ▀▄██ ██▄▄██ ██ ▀▄██ ██  ██ ██     ██     ██▄▄██ ██ ▄█▄ ██",
+    "██   ██ ██  ██ ██   ██ ▀████▀ ▀█████ ██████ ██  ██  ▀██▀██▀",
+];
 const COMPACT_BREAKPOINT_WIDTH: u16 = 104;
 const COMPACT_BREAKPOINT_HEIGHT: u16 = 24;
 const COMPACT_CONTENT_MAX_WIDTH: u16 = 74;
@@ -20,10 +33,16 @@ pub(super) fn build_welcome_lines(
         viewport_height < COMPACT_BREAKPOINT_HEIGHT || viewport_width < COMPACT_BREAKPOINT_WIDTH;
     let content_width = welcome_content_width(viewport_width, compact);
 
-    // Keep the idle screen oriented around workspace state and next actions
-    // instead of behaving like a splash screen. That mirrors Codex-style shells
-    // where the operator should understand the command center before typing.
     let mut core = build_welcome_title_lines(compact, content_width);
+    if state.session.display.welcome_ascii_logo {
+        let logo_lines = build_logo_lines(compact);
+        let logo_line_count = logo_lines.len();
+        core.splice(0..0, logo_lines);
+        core.insert(logo_line_count, Line::raw(""));
+    }
+    // Keep the idle screen oriented around workspace state and next actions
+    // instead of behaving like a splash screen. The ASCII mark remains an
+    // optional operator preference instead of a required full-screen splash.
     core.push(Line::raw(""));
     core.push(build_divider_line(content_width));
     core.push(Line::raw(""));
@@ -76,6 +95,17 @@ fn build_welcome_title_lines(compact: bool, content_width: usize) -> Vec<Line<'s
             Style::default().fg(palette().muted),
         ),
     ]
+}
+
+fn build_logo_lines(compact: bool) -> Vec<Line<'static>> {
+    if compact {
+        COMPACT_LOGO_LINES
+            .iter()
+            .map(|line| logo_line(line))
+            .collect()
+    } else {
+        FULL_LOGO_LINES.iter().map(|line| logo_line(line)).collect()
+    }
 }
 
 fn build_prompt_line(compact: bool) -> Line<'static> {
@@ -292,6 +322,15 @@ fn build_divider_line(content_width: usize) -> Line<'static> {
     Line::from(Span::styled(
         "─".repeat(content_width.min(96)),
         Style::default().fg(palette().subtle),
+    ))
+}
+
+fn logo_line(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default()
+            .fg(palette().header)
+            .add_modifier(Modifier::BOLD),
     ))
 }
 

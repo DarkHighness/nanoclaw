@@ -1,4 +1,5 @@
 use super::mcp::StartupDiagnosticsSnapshot;
+use crate::display::TuiDisplayConfig;
 use crate::interaction::SessionPermissionMode;
 use crate::motion::TuiMotionConfig;
 use crate::statusline::StatusLineConfig;
@@ -29,6 +30,7 @@ pub struct SessionStartupSnapshot {
     pub permission_mode: SessionPermissionMode,
     pub host_process_surfaces_allowed: bool,
     pub startup_diagnostics: StartupDiagnosticsSnapshot,
+    pub display: TuiDisplayConfig,
     pub statusline: StatusLineConfig,
     pub motion: TuiMotionConfig,
 }

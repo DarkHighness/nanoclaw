@@ -2,6 +2,7 @@ use agent::types::PluginId;
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use code_agent_config::{CodeAgentApprovalPolicyConfig, CodeAgentConfig};
+use code_agent_contracts::display::TuiDisplayConfig;
 use code_agent_contracts::motion::TuiMotionConfig;
 use code_agent_contracts::statusline::StatusLineConfig;
 use code_agent_contracts::theme::ThemeCatalog;
@@ -29,6 +30,7 @@ pub struct AppOptions {
     pub lsp_auto_install: bool,
     pub lsp_install_root: Option<PathBuf>,
     pub approval_policy: CodeAgentApprovalPolicyConfig,
+    pub display: TuiDisplayConfig,
     pub statusline: StatusLineConfig,
     pub motion: TuiMotionConfig,
     pub theme_catalog: ThemeCatalog,
@@ -122,6 +124,7 @@ impl AppOptions {
             lsp_auto_install,
             lsp_install_root,
             approval_policy: workspace_config.approval_policy,
+            display: workspace_config.display,
             statusline: workspace_config.statusline,
             motion: workspace_config.motion,
             theme_catalog: workspace_config.theme_catalog,

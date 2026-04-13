@@ -464,6 +464,7 @@ where
             permission_mode: crate::SessionPermissionMode::Default,
             host_process_surfaces_allowed,
             startup_diagnostics,
+            display: options.display.clone(),
             statusline: options.statusline.clone(),
             motion: options.motion.clone(),
         },
