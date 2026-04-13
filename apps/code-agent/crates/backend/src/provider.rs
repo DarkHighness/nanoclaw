@@ -303,7 +303,12 @@ fn build_backend_settings(
         ),
         openai_responses: matches!(model.provider, ProviderKind::OpenAi).then(|| {
             OpenAiResponsesOptions {
-                chain_previous_response: true,
+                // The host defaults to explicit transcript replay. Only a
+                // narrow subset of provider integrations can safely own
+                // append-only history semantics across resume, rollback, and
+                // visibility surfaces, so provider-managed chaining stays
+                // opt-in instead of silently dropping local context.
+                chain_previous_response: false,
                 store: Some(true),
                 server_compaction: compact_trigger_tokens
                     .map(|compact_threshold| OpenAiServerCompaction { compact_threshold }),
@@ -464,8 +469,8 @@ fn provider_api_key(model: &ResolvedModel, env_map: &EnvMap) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MutableAgentBackend, build_memory_reasoning_service, default_supported_reasoning_efforts,
-        with_reasoning_effort,
+        MutableAgentBackend, agent_backend_capabilities, build_backend_settings,
+        build_memory_reasoning_service, default_supported_reasoning_efforts, with_reasoning_effort,
     };
     use agent::runtime::ModelBackend;
     use agent_env::EnvMap;
@@ -475,6 +480,38 @@ mod tests {
     };
     use serde_json::json;
     use tempfile::tempdir;
+
+    fn sample_agent_profile(provider: ProviderKind, model: &str) -> ResolvedAgentProfile {
+        ResolvedAgentProfile {
+            profile_name: "primary".to_string(),
+            model: ResolvedModel {
+                alias: "default".to_string(),
+                provider,
+                model: model.to_string(),
+                base_url: Some("https://example.invalid/v1".to_string()),
+                context_window_tokens: 400_000,
+                max_output_tokens: 32_000,
+                compact_trigger_tokens: 320_000,
+                compact_preserve_recent_messages: 8,
+                temperature: None,
+                reasoning_effort: Some("medium".to_string()),
+                supported_reasoning_efforts: Vec::new(),
+                additional_params: None,
+                capabilities: ModelCapabilitiesConfig::default(),
+            },
+            global_system_prompt: None,
+            system_prompt: None,
+            reasoning_effort: Some("medium".to_string()),
+            temperature: None,
+            max_output_tokens: 32_000,
+            additional_params: None,
+            sandbox: AgentSandboxMode::WorkspaceWrite,
+            context_window_tokens: 400_000,
+            compact_trigger_tokens: 320_000,
+            compact_preserve_recent_messages: 8,
+            auto_compact: true,
+        }
+    }
 
     #[test]
     fn memory_reasoning_service_falls_back_to_workspace_env_key() {
@@ -542,35 +579,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n").unwrap();
         let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
-        let profile = ResolvedAgentProfile {
-            profile_name: "primary".to_string(),
-            model: ResolvedModel {
-                alias: "default".to_string(),
-                provider: ProviderKind::OpenAi,
-                model: "gpt-5.4".to_string(),
-                base_url: Some("https://example.invalid/v1".to_string()),
-                context_window_tokens: 400_000,
-                max_output_tokens: 32_000,
-                compact_trigger_tokens: 320_000,
-                compact_preserve_recent_messages: 8,
-                temperature: None,
-                reasoning_effort: Some("medium".to_string()),
-                supported_reasoning_efforts: Vec::new(),
-                additional_params: None,
-                capabilities: ModelCapabilitiesConfig::default(),
-            },
-            global_system_prompt: None,
-            system_prompt: None,
-            reasoning_effort: Some("medium".to_string()),
-            temperature: None,
-            max_output_tokens: 32_000,
-            additional_params: None,
-            sandbox: AgentSandboxMode::WorkspaceWrite,
-            context_window_tokens: 400_000,
-            compact_trigger_tokens: 320_000,
-            compact_preserve_recent_messages: 8,
-            auto_compact: true,
-        };
+        let profile = sample_agent_profile(ProviderKind::OpenAi, "gpt-5.4");
 
         let backend = MutableAgentBackend::from_profile(&profile, &env_map).unwrap();
         let update = backend.cycle_reasoning_effort().unwrap();
@@ -585,35 +594,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n").unwrap();
         let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
-        let profile = ResolvedAgentProfile {
-            profile_name: "primary".to_string(),
-            model: ResolvedModel {
-                alias: "default".to_string(),
-                provider: ProviderKind::OpenAi,
-                model: "gpt-5.4".to_string(),
-                base_url: Some("https://example.invalid/v1".to_string()),
-                context_window_tokens: 400_000,
-                max_output_tokens: 32_000,
-                compact_trigger_tokens: 320_000,
-                compact_preserve_recent_messages: 8,
-                temperature: None,
-                reasoning_effort: Some("medium".to_string()),
-                supported_reasoning_efforts: Vec::new(),
-                additional_params: None,
-                capabilities: ModelCapabilitiesConfig::default(),
-            },
-            global_system_prompt: None,
-            system_prompt: None,
-            reasoning_effort: Some("medium".to_string()),
-            temperature: None,
-            max_output_tokens: 32_000,
-            additional_params: None,
-            sandbox: AgentSandboxMode::WorkspaceWrite,
-            context_window_tokens: 400_000,
-            compact_trigger_tokens: 320_000,
-            compact_preserve_recent_messages: 8,
-            auto_compact: true,
-        };
+        let profile = sample_agent_profile(ProviderKind::OpenAi, "gpt-5.4");
 
         let backend = MutableAgentBackend::from_profile(&profile, &env_map).unwrap();
         let visibility = backend.tool_visibility_context();
@@ -621,6 +602,42 @@ mod tests {
         assert_eq!(backend.provider_name(), "openai");
         assert_eq!(visibility.provider.as_deref(), Some("openai"));
         assert_eq!(visibility.model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn host_openai_defaults_to_transcript_replay_over_provider_managed_history() {
+        let profile = sample_agent_profile(ProviderKind::OpenAi, "gpt-5.4");
+
+        let capabilities = agent_backend_capabilities(&profile);
+
+        assert!(!capabilities.provider_managed_history);
+        assert!(capabilities.provider_native_compaction);
+    }
+
+    #[test]
+    fn host_openai_request_options_disable_previous_response_chaining_by_default() {
+        let profile = sample_agent_profile(ProviderKind::OpenAi, "gpt-5.4");
+
+        let (_, request_options) = build_backend_settings(
+            &profile.model,
+            profile.temperature,
+            Some(profile.max_output_tokens),
+            profile.additional_params.clone(),
+            Some(profile.compact_trigger_tokens),
+            profile.reasoning_effort.clone(),
+        );
+
+        let openai_options = request_options
+            .openai_responses
+            .expect("OpenAI host should still configure Responses options");
+        assert!(!openai_options.chain_previous_response);
+        assert_eq!(openai_options.store, Some(true));
+        assert_eq!(
+            openai_options.server_compaction,
+            Some(super::OpenAiServerCompaction {
+                compact_threshold: profile.compact_trigger_tokens,
+            })
+        );
     }
 
     #[test]
