@@ -35,6 +35,18 @@ pub(super) fn render_composer(
         Block::default().style(Style::default().bg(palette().bottom_pane_bg)),
         area,
     );
+    if let Some(header_area) = composer_header_area(area) {
+        // Keep the dock metadata on its own rail so status/context badges do
+        // not steal horizontal space from the editable prompt body.
+        frame.render_widget(
+            Paragraph::new(build_composer_header_line(state, user_input)).style(
+                Style::default()
+                    .fg(palette().muted)
+                    .bg(palette().bottom_pane_bg),
+            ),
+            header_area,
+        );
+    }
     let inner = composer_text_area(area);
     let scroll = composer_scroll(state, user_input, inner.height);
     frame.render_widget(
@@ -75,6 +87,16 @@ pub(super) fn composer_cursor_position(
             .saturating_add(column),
         inner.y.saturating_add(line.saturating_sub(scroll)),
     )
+}
+
+fn composer_header_area(area: Rect) -> Option<Rect> {
+    let inner = bottom_band_inner_area(area);
+    (inner.height > 0).then_some(Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    })
 }
 
 fn composer_text_area(area: Rect) -> Rect {
@@ -288,6 +310,57 @@ pub(super) fn approval_preview_lines(lines: &[String]) -> Vec<String> {
     collapse_preview_lines(lines, 4, PreviewCollapse::Head)
 }
 
+pub(super) fn build_composer_header_line(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    let (label, value, tone) = composer_header_badge(state, user_input);
+    push_composer_badge(&mut spans, label, &value, tone);
+
+    if let Some(user_input) = user_input {
+        push_composer_badge(
+            &mut spans,
+            "prompt",
+            &format!(
+                "{} answered",
+                user_input
+                    .flow
+                    .map(|flow| flow.answers.len())
+                    .unwrap_or(0)
+                    .min(user_input.prompt.questions.len())
+            ),
+            palette().muted,
+        );
+        return Line::from(spans);
+    }
+
+    let attachment_count = state.row_attachment_summaries().len();
+    if attachment_count > 0 {
+        push_composer_badge(
+            &mut spans,
+            "attachments",
+            &attachment_count.to_string(),
+            palette().accent,
+        );
+    }
+
+    if !state.pending_controls.is_empty() && state.pending_control_picker.is_none() {
+        let queue_value = if state.pending_controls.len() == 1 {
+            "1 staged".to_string()
+        } else {
+            format!("{} staged", state.pending_controls.len())
+        };
+        push_composer_badge(&mut spans, "queue", &queue_value, palette().header);
+    }
+
+    if !state.input.is_empty() && state.input.starts_with('/') {
+        push_composer_badge(&mut spans, "mode", "command", palette().accent);
+    }
+
+    Line::from(spans)
+}
+
 pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
     let mut spans = vec![
         Span::styled(
@@ -449,7 +522,7 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
             spans.extend(composer_context_hint_spans(state, hint));
         } else {
             spans.push(Span::styled(
-                "Type a prompt or /help",
+                "Describe the next change or /help",
                 Style::default().fg(palette().subtle),
             ));
         }
@@ -912,7 +985,7 @@ fn build_multiline_input_lines(input: &str, lead: Option<String>) -> Vec<Line<'s
         .map(|(index, segment)| {
             let mut spans = vec![
                 Span::styled(
-                    if index == 0 { "›" } else { " " },
+                    if index == 0 { "›" } else { "│" },
                     Style::default()
                         .fg(palette().accent)
                         .add_modifier(Modifier::BOLD),
@@ -999,6 +1072,107 @@ fn multiline_hint_line(
             Span::styled("esc cancel", Style::default().fg(palette().muted)),
         ])
     })
+}
+
+fn composer_header_badge(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> (&'static str, String, ratatui::style::Color) {
+    if let Some(user_input) = user_input {
+        let collecting_other_note = user_input
+            .flow
+            .is_some_and(|flow| flow.collecting_other_note);
+        let value = if collecting_other_note {
+            "other note".to_string()
+        } else {
+            let current_question = user_input
+                .flow
+                .map(|flow| flow.current_question + 1)
+                .unwrap_or(1)
+                .min(user_input.prompt.questions.len());
+            format!(
+                "question {current_question}/{}",
+                user_input.prompt.questions.len()
+            )
+        };
+        return ("respond", value, palette().accent);
+    }
+
+    if let Some(overlay) = state.history_rollback_overlay() {
+        return (
+            "rollback",
+            format!(
+                "review {}/{}",
+                overlay.selected + 1,
+                overlay.candidates.len()
+            ),
+            palette().warn,
+        );
+    }
+
+    if state.history_rollback_is_primed() {
+        return ("rollback", "armed".to_string(), palette().warn);
+    }
+
+    if let Some(picker) = state.pending_control_picker.as_ref() {
+        return (
+            "queue",
+            pending_control_focus_label(picker.selected, state.pending_controls.len()),
+            palette().accent,
+        );
+    }
+
+    if let Some(editing) = state.editing_pending_control.as_ref() {
+        return (
+            "compose",
+            match editing.kind {
+                PendingControlKind::Prompt => "editing prompt".to_string(),
+                PendingControlKind::Steer => "editing steer".to_string(),
+            },
+            palette().header,
+        );
+    }
+
+    if let Some(ComposerContextHint::LiveTaskFinished { task_id, status }) =
+        state.composer_context_hint.as_ref()
+    {
+        let tone = match status {
+            agent::types::TaskStatus::Completed => palette().assistant,
+            agent::types::TaskStatus::Failed => palette().error,
+            agent::types::TaskStatus::Cancelled => palette().warn,
+            _ => palette().header,
+        };
+        return (
+            "task",
+            format!("{} {}", preview_id(task_id.as_str()), status),
+            tone,
+        );
+    }
+
+    ("compose", "ready".to_string(), palette().assistant)
+}
+
+fn push_composer_badge(
+    spans: &mut Vec<Span<'static>>,
+    label: &str,
+    value: &str,
+    value_color: ratatui::style::Color,
+) {
+    if !spans.is_empty() {
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled("[", Style::default().fg(palette().subtle)));
+    spans.push(Span::styled(
+        format!("{label} "),
+        Style::default().fg(palette().subtle),
+    ));
+    spans.push(Span::styled(
+        value.to_string(),
+        Style::default()
+            .fg(value_color)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled("]", Style::default().fg(palette().subtle)));
 }
 
 fn composer_context_hint_spans(state: &TuiState, hint: &ComposerContextHint) -> Vec<Span<'static>> {
