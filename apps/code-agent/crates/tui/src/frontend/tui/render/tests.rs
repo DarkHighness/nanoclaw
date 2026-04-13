@@ -658,6 +658,14 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     assert!(lines.iter().any(|line| {
         line_text_for(line).contains("▄▄     ▄▄▄    ▄▄       ▄▄")
     }));
+    let divider = lines
+        .iter()
+        .find(|line| line_text_for(line).contains(" · "))
+        .expect("expected centered welcome divider");
+    let divider_text = line_text_for(divider);
+    assert_eq!(divider_text.chars().count(), 65);
+    assert!(divider_text.starts_with("─"));
+    assert!(divider_text.ends_with("─"));
 }
 
 #[test]

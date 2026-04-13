@@ -21,6 +21,8 @@ const COMPACT_BREAKPOINT_WIDTH: u16 = 104;
 const COMPACT_BREAKPOINT_HEIGHT: u16 = 24;
 const COMPACT_CONTENT_MAX_WIDTH: u16 = 74;
 const WIDE_CONTENT_MAX_WIDTH: u16 = 104;
+const WELCOME_DIVIDER_MIN_WIDTH: usize = 28;
+const WELCOME_DIVIDER_MAX_WIDTH: usize = 68;
 const COLUMN_GAP: usize = 5;
 const LABEL_WIDTH: usize = 11;
 
@@ -319,10 +321,19 @@ fn fact_line(
 }
 
 fn build_divider_line(content_width: usize) -> Line<'static> {
-    Line::from(Span::styled(
-        "─".repeat(content_width.min(96)),
-        Style::default().fg(palette().subtle),
-    ))
+    // The welcome divider separates the title cluster from the status panels,
+    // so it should behave like a quiet centered hinge instead of a full-width
+    // transcript rule. A shorter line keeps the screen sparse and lets the
+    // title block stay visually primary.
+    let divider_width = (content_width.saturating_mul(5) / 8)
+        .clamp(WELCOME_DIVIDER_MIN_WIDTH, WELCOME_DIVIDER_MAX_WIDTH);
+    let left = divider_width.saturating_sub(3) / 2;
+    let right = divider_width.saturating_sub(3 + left);
+    Line::from(vec![
+        Span::styled("─".repeat(left), Style::default().fg(palette().subtle)),
+        Span::styled(" · ", Style::default().fg(palette().accent)),
+        Span::styled("─".repeat(right), Style::default().fg(palette().subtle)),
+    ])
 }
 
 fn logo_line(text: &str) -> Line<'static> {
