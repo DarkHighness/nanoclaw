@@ -2,7 +2,7 @@
 
 Date: 2026-04-13
 
-Status: Active
+Status: Complete
 
 ## Goal
 
@@ -22,6 +22,7 @@ This redesign is grounded in three primary inputs:
 - local reference screenshots:
   - `reference/main.png`
   - `reference/image.png`
+  - `reference/queue.png`
 - public Codex CLI screenshots and README presentation:
   - `https://github.com/openai/codex/blob/main/README.md`
   - `https://github.com/openai/codex/raw/main/.github/codex-cli-splash.png`
@@ -86,8 +87,9 @@ The current TUI still has systemic issues:
 | Phase 3: Footer Layout Redesign | Complete | Composer and statusline now sit on the main transcript surface by default, and the composer reserves more breathing room. |
 | Phase 4: Transcript Cell Model | Complete | Transcript rendering now composes explicit `header / body / meta` sections, and selected cells share one restrained focus chrome. |
 | Phase 5: Markdown-First Transcript | Complete | Markdown now renders through assistant content and transcript detail blocks, including shell/tool text sections. |
-| Phase 6: Tool, Review, And Overlay Surfaces | In Progress | Standardize tool cards, approval/review/rollback overlays, and truncation rules. |
-| Phase 7: Tests, Docs, And Stabilization | Pending | Lock the new layout with rendering tests and keep this ledger updated. |
+| Phase 6: Tool, Review, And Overlay Surfaces | Complete | Tool entries now render through typed detail sections, while approval, review, and rollback share one centered overlay family with consistent truncation and preview structure. |
+| Phase 7: Tests, Docs, And Stabilization | Complete | Rendering, state, and completion regressions are covered by TUI tests, and the README plus this ledger now track shipped behavior instead of stale intermediate states. |
+| Phase 8: Transcript Navigation And Queue Control | Complete | Transcript horizontal scroll, provenance-aware completion, wheel-driven transcript scrolling, and queue/steer editing affordances now share one typed interaction model. |
 
 ## Phase 1: Theme And Surface Unification
 
@@ -299,7 +301,7 @@ Acceptance criteria:
 - expanded review surfaces present structured detail instead of generic dumps
 - modal surfaces look like one system instead of separate custom widgets
 
-Shipped So Far:
+Shipped:
 
 - approval, permissions, tool review, and history rollback now share one
   overlay substrate for centered geometry, outer chrome, and inner panel
@@ -307,6 +309,11 @@ Shipped So Far:
 - overlay containers now render on the theme `overlay_surface`, while
   list/preview panes render on the shared elevated panel surface instead of
   mixing footer and bottom-pane colors by subsystem
+- tool transcript entries now render through typed summary and detail blocks
+  instead of leaking raw JSON into the primary timeline
+- file diffs and structured tool payloads now open through the same review
+  surface, so operators inspect sections/files from one stable list+preview
+  layout
 
 ## Phase 7: Tests, Docs, And Stabilization
 
@@ -335,6 +342,83 @@ Acceptance criteria:
 - this document is updated at the end of each phase
 - the README reflects only the shipped TUI behavior
 
+Shipped:
+
+- render tests now lock queue/steer labels, footer affordances, divider width,
+  collapsed tool cells, and modal surface chrome
+- state and completion tests now lock transcript horizontal scroll plus
+  provenance-aware slash/skill completion behavior
+- the README and this plan now describe only the current shipped interaction
+  model instead of older footer-band and slash-history behavior
+
+## Phase 8: Transcript Navigation And Queue Control
+
+Goal:
+
+- let the operator navigate long transcript cells horizontally without abusing
+  the composer cursor
+- prevent command completion and history recall from triggering off recalled
+  slash-prefixed drafts
+- route mouse-wheel scrolling to transcript navigation instead of composer
+  history or completion flows
+- redesign queue and steer presentation around one runtime-owned control model
+  that matches the visual direction in `reference/queue.png`
+
+Write set:
+
+- `apps/code-agent/crates/tui/src/frontend/tui/state.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/state/composer.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/terminal_shell.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/composer.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/commands/completion.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/render/transcript.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/render/picker.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/render/transcript_shell.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/render/chrome.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/render/tests.rs`
+- `apps/code-agent/crates/tui/src/frontend/tui/state/tests.rs`
+- `apps/code-agent/README.md`
+
+Required decisions:
+
+- transcript horizontal navigation must be explicit state, not reused input
+  cursor movement
+- slash command completion must be armed by manual operator input, not inferred
+  from `input.starts_with('/')`
+- history recall must preserve whether a draft came from manual typing, history
+  traversal, or programmatic fill
+- queue and steer visuals must share one summary model across transcript,
+  footer, and picker surfaces
+- steer affordances must reflect real runtime behavior: while a turn is
+  running, `Esc` interrupts and resubmits pending steers, while `Alt+T`
+  re-enters queued content for editing
+
+Acceptance criteria:
+
+- `Left` and `Right` scroll the transcript horizontally when the composer is
+  empty and the transcript owns focus
+- mouse-wheel scrolling never opens command completion or composer history
+- recalled slash-prefixed drafts do not automatically open the command modal
+- manually typed slash-prefixed drafts still open slash completion and keep
+  `Up`/`Down` bound to match selection
+- queue and steer surfaces expose consistent labels, ordering, and action hints
+  across transcript, pending band, and composer
+- `Alt+T` re-opens the latest or selected queued control for editing without
+  relying on slash-command indirection
+
+Shipped:
+
+- transcript horizontal scroll is now explicit TUI state and is driven by
+  `Left` / `Right` when the composer is empty and the transcript owns focus
+- composer input now records typed provenance, so only manual slash or skill
+  prefixes arm completion while recalled drafts stay in history traversal until
+  the operator edits them
+- mouse-wheel events are captured by the TUI and routed to transcript/picker
+  scrolling instead of accidentally opening completion or composer history
+- queue and steer summaries now share one `Queued Follow-ups` presentation
+  across transcript, footer, and picker surfaces, including `Esc send now` and
+  `Alt+T edit` affordances for running steers
+
 ## Execution Order
 
 The implementation should proceed in this order:
@@ -346,6 +430,7 @@ The implementation should proceed in this order:
 5. Phase 5
 6. Phase 6
 7. Phase 7
+8. Phase 8
 
 The order matters because later cell and tool changes depend on a stable theme,
 width, and footer model. Do not skip ahead to tool-surface polish before the

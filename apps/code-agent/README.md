@@ -110,8 +110,8 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent --features memory-embed
 
 This opens a compact `ratatui` screen with a single wide main surface for
 transcript and read-heavy command views, a Codex-style prompt line, a minimal
-context footer, inline approval and user-input bands in the bottom pane, and a
-more neutral dark palette tuned for prompt and slash-command workflows.
+context footer, centered approval/review overlays, and a more neutral dark
+palette tuned for prompt and slash-command workflows.
 
 Installed skills are available through both `$skill_name` in the composer and
 auto-generated `/skill_name` slash commands. The slash surface remains
@@ -377,8 +377,13 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   session-local draft history. `Up` / `Down` recall prompt history only when the
   cursor is already at a buffer boundary; otherwise those keys move vertically
   through multiline drafts and only fall back to the start or end of the draft
-  when there is no adjacent line. `Left`, `Right`, `Home`, and `End` now edit
-  inside the prompt instead of always acting on pane scroll state.
+  when there is no adjacent line. Manual `/...` and `$...` drafts arm command or
+  skill completion, but recalled history drafts with the same prefixes stay in
+  history traversal until the operator edits them. `Left`, `Right`, `Home`, and
+  `End` edit inside the prompt unless the composer is empty and the transcript
+  owns focus, in which case `Left` / `Right` pan the transcript horizontally.
+- Mouse-wheel scrolling now targets the transcript or the active picker/overlay.
+  It no longer opens command completion or composer history implicitly.
 - `Ctrl+K` kills the draft tail from the cursor to end-of-line into a local kill
   buffer, and `Ctrl+Y` yanks it back. The kill buffer retains draft attachments
   such as large-paste payloads, so yanking after a clear or submit restores the
@@ -423,8 +428,14 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   placeholders come back as first-class draft attachments instead of being
   flattened into plain text only.
 - `Alt+Up` opens the pending-control picker from the bottom pane.
-- In the pending-control picker: `Enter` edits the selected item, `Delete`
-  withdraws it, and `Esc` closes the picker.
+- `Alt+T` re-opens the latest queued follow-up for editing. When the
+  pending-control picker is already open, `Alt+T` edits the selected queued
+  item instead.
+- In the pending-control picker: `Enter` or `Alt+T` edits the selected item,
+  `Delete` withdraws it, and `Esc` closes the picker.
+- Pending steer surfaces now use one `Queued Follow-ups` presentation across
+  transcript, footer, and picker views. While a turn is running, queued steers
+  advertise `Esc send now`; otherwise they remain editable queued drafts.
 - `/image <path-or-url>`
 - `/file <path-or-url>`
 - `/detach [index]`
@@ -507,9 +518,8 @@ TODO context is available on wide terminals, the shell adds only a narrow side
 rail for brief context. The palette is intentionally muted rather than
 blue-accented, transcript turns are separated visually, and read-heavy outputs
 such as `/help`, command catalogs, and history lists now open in the main
-pane. The main transcript surface intentionally leaves terminal-native mouse
-selection enabled, so copy workflows still work with the operator's existing
-terminal emulator instead of requiring a host-specific clipboard command.
+pane. Transcript cells can also pan horizontally, which keeps long structured
+tool output readable without stealing cursor control from non-empty drafts.
 
 Tool-heavy transcript entries now default to a collapsed shell summary so the
 main timeline stays readable. `/details` toggles the full tool payload stream

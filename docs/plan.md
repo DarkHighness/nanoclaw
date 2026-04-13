@@ -86,8 +86,8 @@ Intentionally still documented as not yet implemented:
     checkpoint, diagnostics, automation, browser, notebook, and code-search
     tool families
 - `docs/code-agent-tui-redesign-plan.md`
-  - active multi-phase redesign plan for the `code-agent` TUI layout,
-    transcript cell model, markdown rendering, and review surfaces
+  - completed redesign record for the `code-agent` TUI layout, transcript cell
+    model, markdown rendering, queue control, and review surfaces
 - `docs/meta-agent-evolution-plan.md`
   - active 2026 literature-informed plan for a self-improving Meta Agent
     control plane on top of the current subagent/runtime substrate
