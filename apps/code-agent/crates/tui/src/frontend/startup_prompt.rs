@@ -82,12 +82,43 @@ struct StartupPromptLayout {
     footer: Rect,
 }
 
+struct StartupPromptScreen {
+    terminal: Terminal<CrosstermBackend<Stdout>>,
+    active: bool,
+}
+
+impl StartupPromptScreen {
+    fn enter() -> Result<Self> {
+        Ok(Self {
+            terminal: enter_prompt_terminal()?,
+            active: true,
+        })
+    }
+
+    fn terminal_mut(&mut self) -> &mut Terminal<CrosstermBackend<Stdout>> {
+        &mut self.terminal
+    }
+
+    fn leave(mut self) -> Result<()> {
+        self.active = false;
+        leave_prompt_terminal(&mut self.terminal)
+    }
+}
+
+impl Drop for StartupPromptScreen {
+    fn drop(&mut self) {
+        if self.active {
+            best_effort_leave_prompt_terminal(&mut self.terminal);
+        }
+    }
+}
+
 // This prompt runs before the main session exists because the operator's
 // choice changes whether session construction is allowed to fail open.
 pub fn confirm_unsandboxed_startup_screen(notice: &SandboxFallbackNotice) -> Result<bool> {
-    let mut terminal = enter_prompt_terminal()?;
-    let result = run_prompt_loop(&mut terminal, notice);
-    let cleanup = leave_prompt_terminal(&mut terminal);
+    let mut screen = StartupPromptScreen::enter()?;
+    let result = run_prompt_loop(screen.terminal_mut(), notice);
+    let cleanup = screen.leave();
     match (result, cleanup) {
         (Ok(answer), Ok(())) => Ok(answer),
         (Err(error), Ok(())) => Err(error),
@@ -144,6 +175,15 @@ fn leave_prompt_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> R
     screen_result?;
     cursor_result?;
     Ok(())
+}
+
+fn best_effort_leave_prompt_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+    // The startup risk prompt runs before the main session owns terminal
+    // recovery. Restore the host terminal during unwind so panic diagnostics do
+    // not inherit raw mode or the alternate screen.
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
 }
 
 fn render_prompt(

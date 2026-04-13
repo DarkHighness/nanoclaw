@@ -21,6 +21,7 @@ const ITEM_PREVIEW_LIMIT: usize = 6;
 pub struct StartupLoadingScreen {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     state: StartupLoadingState,
+    active: bool,
 }
 
 impl StartupLoadingScreen {
@@ -32,7 +33,11 @@ impl StartupLoadingScreen {
         let mut terminal = enter_loading_terminal()?;
         let state = StartupLoadingState::new(workspace_name, model, reasoning_effort);
         terminal.draw(|frame| render_loading(frame, &state))?;
-        Ok(Self { terminal, state })
+        Ok(Self {
+            terminal,
+            state,
+            active: true,
+        })
     }
 
     pub fn apply(&mut self, update: BootProgressUpdate) -> Result<()> {
@@ -43,7 +48,16 @@ impl StartupLoadingScreen {
     }
 
     pub fn leave(mut self) -> Result<()> {
+        self.active = false;
         leave_loading_terminal(&mut self.terminal)
+    }
+}
+
+impl Drop for StartupLoadingScreen {
+    fn drop(&mut self) {
+        if self.active {
+            best_effort_leave_loading_terminal(&mut self.terminal);
+        }
     }
 }
 
@@ -152,6 +166,15 @@ fn leave_loading_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> 
     screen_result?;
     cursor_result?;
     Ok(())
+}
+
+fn best_effort_leave_loading_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+    // Startup failures can still unwind before `leave()` runs. Restore the
+    // host terminal on drop so panic output lands on a sane screen instead of
+    // being painted into the loading surface.
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
 }
 
 fn render_loading(frame: &mut ratatui::Frame<'_>, state: &StartupLoadingState) {
