@@ -1534,10 +1534,18 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
             .iter()
             .any(|line| line_text_for(line).contains("Working · Running cargo test"))
     );
+    let worked_divider = rendered
+        .iter()
+        .find(|line| line_text_for(line).contains("Worked for 2m 08s"))
+        .expect("expected worked divider");
+    let worked_text = line_text_for(worked_divider);
+    assert!(worked_text.starts_with("─ Worked for 2m 08s ─"));
+    assert_eq!(worked_text.chars().count(), 80);
     assert!(
-        rendered
-            .iter()
-            .any(|line| line_text_for(line).contains("Worked 2m 08s"))
+        worked_text
+            .chars()
+            .skip("─ Worked for 2m 08s ─".chars().count())
+            .all(|ch| ch == '─')
     );
 }
 

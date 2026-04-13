@@ -523,30 +523,47 @@ fn long_running_worked_divider(state: &TuiState, width: u16) -> Option<Line<'sta
     (elapsed >= Duration::from_secs(60)).then(|| {
         labeled_divider(
             width,
-            &format!("Worked {}", format_elapsed_duration(elapsed)),
+            &format!("Worked for {}", format_elapsed_duration(elapsed)),
         )
     })
 }
 
 fn labeled_divider(width: u16, label: &str) -> Line<'static> {
     let width = usize::from(width.max(1));
-    let label = format!(" {label} ");
-    let label_width = UnicodeWidthStr::width(label.as_str());
-    if label_width >= width {
+    let label_width = UnicodeWidthStr::width(label);
+    let divider_prefix_width = label_width + 4;
+    if divider_prefix_width >= width {
         return Line::from(Span::styled(
-            label.chars().take(width).collect::<String>(),
+            clip_text_to_width(&format!("─ {label} ─"), width),
             Style::default().fg(palette().muted),
         ));
     }
 
-    let remaining = width - label_width;
-    let left = remaining / 2;
-    let right = remaining - left;
+    // Codex's worked divider reads as one continuous rule with the summary
+    // anchored to the leading edge instead of a centered section title. That
+    // keeps the line quieter while still making the post-turn boundary legible.
     Line::from(vec![
-        Span::styled("─".repeat(left), Style::default().fg(palette().subtle)),
-        Span::styled(label, Style::default().fg(palette().muted)),
-        Span::styled("─".repeat(right), Style::default().fg(palette().subtle)),
+        Span::styled("─ ", Style::default().fg(palette().subtle)),
+        Span::styled(label.to_string(), Style::default().fg(palette().muted)),
+        Span::styled(
+            format!(" ─{}", "─".repeat(width - divider_prefix_width)),
+            Style::default().fg(palette().subtle),
+        ),
     ])
+}
+
+fn clip_text_to_width(text: &str, width: usize) -> String {
+    let mut clipped = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + char_width > width {
+            break;
+        }
+        clipped.push(ch);
+        used += char_width;
+    }
+    clipped
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
