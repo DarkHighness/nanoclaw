@@ -110,6 +110,7 @@ pub(crate) fn render(
         area
     });
     let composer_area = vertical[next_index];
+    let composer_padding_area = vertical[next_index + 1];
     let status_area = vertical[next_index + 2];
 
     if let Some(title_area) = title_area {
@@ -129,6 +130,12 @@ pub(crate) fn render(
         render_toast_band(frame, toast_area.expect("toast area"), state);
     }
     render_composer(frame, composer_area, state, user_input);
+    // The spacer row belongs to the composer dock, so it must keep the dock
+    // background instead of leaking the main pane fill underneath.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(palette().bottom_pane_bg)),
+        composer_padding_area,
+    );
     render_status_line(frame, status_area, state);
     if let Some(approval) = approval {
         render_approval_modal(frame, area, approval);

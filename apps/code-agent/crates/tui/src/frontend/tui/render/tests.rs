@@ -53,6 +53,8 @@ use crate::tool_render::{
     ToolReviewItem, ToolReviewItemKind, ToolReviewKind,
 };
 use agent::types::{MessageId, MessagePart, TaskId, TaskOrigin, TaskStatus};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -2819,6 +2821,35 @@ fn input_footer_switches_to_queue_hint_and_context_left() {
     assert!(left.contains("Tab to queue message"));
     assert!(left.contains("Enter to send steer"));
     assert_eq!(right, "65% context left");
+}
+
+#[test]
+fn composer_padding_row_keeps_the_composer_background() {
+    let mut state = TuiState::default();
+    state.session.display.top_turn_title = false;
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::render(frame, &state, None, None, None))
+        .expect("draw succeeds");
+
+    let buffer = terminal.backend().buffer();
+    let spacer_y = buffer.area.height.saturating_sub(2);
+    let status_y = buffer.area.height.saturating_sub(1);
+
+    for x in 0..buffer.area.width {
+        assert_eq!(
+            buffer[(x, spacer_y)].bg,
+            palette().bottom_pane_bg,
+            "expected composer padding row to keep dock background at x={x}",
+        );
+        assert_eq!(
+            buffer[(x, status_y)].bg,
+            palette().footer_bg,
+            "expected status row to keep footer background at x={x}",
+        );
+    }
 }
 
 #[test]
