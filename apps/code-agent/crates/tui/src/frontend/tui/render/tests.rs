@@ -718,7 +718,7 @@ fn multiline_composer_text_keeps_followup_lines_and_shortcuts_visible() {
     assert_eq!(lines[0], "› edit queued steer · first line");
     assert_eq!(lines[1], "  second line");
     assert!(lines[2].contains("enter/tab save"));
-    assert_eq!(composer_height(&state, None), 3);
+    assert_eq!(composer_height(&state, None), 4);
 }
 
 #[test]

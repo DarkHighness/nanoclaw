@@ -13,7 +13,7 @@ pub(super) fn render_status_line(
     state: &TuiState,
 ) {
     frame.render_widget(
-        Block::default().style(Style::default().bg(palette().footer_bg)),
+        Block::default().style(Style::default().bg(palette().transcript_surface())),
         area,
     );
     let inner = area.inner(Margin {
@@ -21,7 +21,11 @@ pub(super) fn render_status_line(
         horizontal: 1,
     });
     let status = Paragraph::new(format_footer_context(state))
-        .style(Style::default().fg(palette().text).bg(palette().footer_bg))
+        .style(
+            Style::default()
+                .fg(palette().muted)
+                .bg(palette().transcript_surface()),
+        )
         .wrap(Wrap { trim: true });
     frame.render_widget(status, inner);
 }
@@ -36,7 +40,7 @@ pub(super) fn render_toast_band(
     state: &TuiState,
 ) {
     frame.render_widget(
-        Block::default().style(Style::default().bg(palette().footer_bg)),
+        Block::default().style(Style::default().bg(palette().transcript_surface())),
         area,
     );
     let inner = area.inner(Margin {
@@ -44,7 +48,11 @@ pub(super) fn render_toast_band(
         horizontal: 1,
     });
     let toast = Paragraph::new(format_toast_line(state))
-        .style(Style::default().fg(palette().text).bg(palette().footer_bg))
+        .style(
+            Style::default()
+                .fg(palette().text)
+                .bg(palette().transcript_surface()),
+        )
         .wrap(Wrap { trim: true });
     frame.render_widget(toast, inner);
 }

@@ -83,7 +83,7 @@ The current TUI still has systemic issues:
 | --- | --- | --- |
 | Phase 1: Theme And Surface Unification | Complete | `ThemePalette` now exposes semantic surface helpers and startup loading consumes the active theme instead of a local palette. |
 | Phase 2: Width, Divider, And Spacing Repair | Complete | Transcript width now follows the visible pane geometry directly, and turn dividers no longer inherit artificial side padding. |
-| Phase 3: Footer Layout Redesign | Pending | Redesign composer and statusline as a lighter shared footer without default color bands. |
+| Phase 3: Footer Layout Redesign | Complete | Composer and statusline now sit on the main transcript surface by default, and the composer reserves more breathing room. |
 | Phase 4: Transcript Cell Model | Pending | Replace ad hoc entry rendering with explicit cell sections and clearer selection chrome. |
 | Phase 5: Markdown-First Transcript | Pending | Promote Markdown rendering into the default assistant/system composition path. |
 | Phase 6: Tool, Review, And Overlay Surfaces | Pending | Standardize tool cards, approval/review/rollback overlays, and truncation rules. |
@@ -178,6 +178,15 @@ Acceptance criteria:
 - the lower shell feels less dense and less segmented
 - composer has a stronger default reading/writing area
 - statusline reads as supportive metadata, not as a second main pane
+
+Shipped:
+
+- composer, toast, and statusline now render on the transcript surface instead
+  of painting a dedicated footer band by default
+- composer minimum height increased so the input area no longer collapses too
+  aggressively
+- footer layout tests now implicitly track the new viewport budget through the
+  raised composer floor
 
 ## Phase 4: Transcript Cell Model
 
