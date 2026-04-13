@@ -1,4 +1,4 @@
-use crate::interaction::{PendingControlKind, PendingControlReason};
+use crate::interaction::{PendingControlKind, PendingControlReason, PendingControlSummary};
 use std::cmp::min;
 use unicode_width::UnicodeWidthStr;
 
@@ -53,4 +53,46 @@ pub(super) fn pending_control_focus_label(selected_index: usize, total: usize) -
         (index, count) if index + 1 == count => "latest draft".to_string(),
         (index, count) => format!("item {} of {}", index + 1, count),
     }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PendingControlKindSummary<'a> {
+    pub(super) kind: PendingControlKind,
+    pub(super) latest_index: usize,
+    pub(super) latest: &'a PendingControlSummary,
+    pub(super) count: usize,
+}
+
+pub(super) fn pending_controls_have_kind(
+    controls: &[PendingControlSummary],
+    kind: PendingControlKind,
+) -> bool {
+    controls.iter().any(|control| control.kind == kind)
+}
+
+pub(super) fn pending_control_kind_summaries(
+    controls: &[PendingControlSummary],
+) -> Vec<PendingControlKindSummary<'_>> {
+    // Keep steer summaries ahead of queued prompts because steer is the
+    // actionable live-turn control the operator may need to notice first.
+    [PendingControlKind::Steer, PendingControlKind::Prompt]
+        .into_iter()
+        .filter_map(|kind| {
+            let count = controls
+                .iter()
+                .filter(|control| control.kind == kind)
+                .count();
+            let (latest_index, latest) = controls
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, control)| control.kind == kind)?;
+            Some(PendingControlKindSummary {
+                kind,
+                latest_index,
+                latest,
+                count,
+            })
+        })
+        .collect()
 }

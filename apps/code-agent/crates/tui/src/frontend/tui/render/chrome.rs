@@ -3,6 +3,7 @@ use super::super::approval::ApprovalPrompt;
 use super::super::state::{ComposerContextHint, TuiState, preview_text};
 use super::shared::{
     composer_cursor_width, pending_control_focus_label, pending_control_kind_label,
+    pending_control_kind_summaries, pending_controls_have_kind,
 };
 use super::shell::bottom_band_inner_area;
 use super::theme::palette;
@@ -409,6 +410,35 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
                 "esc close",
                 Style::default().fg(palette().muted),
             ));
+        } else if pending_control_kind_summaries(&state.pending_controls).len() > 1 {
+            spans.push(Span::styled(
+                "steer + queue",
+                Style::default().fg(palette().header),
+            ));
+            spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            spans.push(Span::styled(
+                format!("{} pending", state.pending_controls.len()),
+                Style::default().fg(palette().accent),
+            ));
+            spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            if state.turn_running
+                && pending_controls_have_kind(&state.pending_controls, PendingControlKind::Steer)
+            {
+                spans.push(Span::styled("esc", Style::default().fg(palette().header)));
+                spans.push(Span::styled(
+                    " send now",
+                    Style::default().fg(palette().muted),
+                ));
+                spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            }
+            spans.push(Span::styled("alt+t", Style::default().fg(palette().accent)));
+            spans.push(Span::styled(
+                " edit latest",
+                Style::default().fg(palette().muted),
+            ));
+            spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            spans.push(Span::styled("alt+↑", Style::default().fg(palette().header)));
+            spans.push(Span::styled(" queue", Style::default().fg(palette().muted)));
         } else if let Some(latest) = state.pending_controls.last() {
             let queue_label = match latest.kind {
                 PendingControlKind::Prompt => "queued prompt",

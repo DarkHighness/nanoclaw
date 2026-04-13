@@ -769,6 +769,87 @@ fn composer_line_surfaces_pending_picker_shortcuts() {
 }
 
 #[test]
+fn pending_control_band_surfaces_separate_steer_and_queue_summaries() {
+    let mut state = TuiState {
+        turn_running: true,
+        ..TuiState::default()
+    };
+    state.pending_controls = vec![
+        PendingControlSummary {
+            id: "cmd_1".to_string(),
+            kind: PendingControlKind::Steer,
+            preview: "keep the diff small".to_string(),
+            reason: Some(PendingControlReason::InlineEnter),
+        },
+        PendingControlSummary {
+            id: "cmd_2".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "write a regression test".to_string(),
+            reason: None,
+        },
+    ];
+
+    let text = super::picker::build_pending_control_text(&state);
+
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("Steer Ready"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("keep the diff small"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("Queued Prompt"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("write a regression test"))
+    );
+    assert!(
+        text.lines
+            .iter()
+            .any(|line| line_text_for(line).contains("Esc send now"))
+    );
+}
+
+#[test]
+fn composer_line_surfaces_concurrent_steer_and_queue_controls() {
+    let mut state = TuiState {
+        turn_running: true,
+        ..TuiState::default()
+    };
+    state.pending_controls = vec![
+        PendingControlSummary {
+            id: "cmd_1".to_string(),
+            kind: PendingControlKind::Steer,
+            preview: "keep the diff small".to_string(),
+            reason: Some(PendingControlReason::InlineEnter),
+        },
+        PendingControlSummary {
+            id: "cmd_2".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "write a regression test".to_string(),
+            reason: None,
+        },
+    ];
+
+    let line = build_composer_line(&state);
+    let text = line_text_for(&line);
+
+    assert!(text.contains("steer + queue"));
+    assert!(text.contains("2 pending"));
+    assert!(text.contains("esc send now"));
+    assert!(text.contains("edit latest"));
+    assert!(text.contains("queue"));
+}
+
+#[test]
 fn composer_line_surfaces_live_task_hint_while_turn_running() {
     let mut state = TuiState::default();
     state.turn_running = true;
@@ -1579,6 +1660,38 @@ fn transcript_surfaces_pending_control_timeline_summary() {
         rendered
             .iter()
             .any(|line| line_text_for(line).contains("Working"))
+    );
+}
+
+#[test]
+fn transcript_pending_control_hint_keeps_send_now_when_latest_is_prompt() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        turn_running: true,
+        status: "Working".to_string(),
+        ..TuiState::default()
+    };
+    state.pending_controls = vec![
+        PendingControlSummary {
+            id: "cmd_1".to_string(),
+            kind: PendingControlKind::Steer,
+            preview: "keep the diff small".to_string(),
+            reason: Some(PendingControlReason::InlineEnter),
+        },
+        PendingControlSummary {
+            id: "cmd_2".to_string(),
+            kind: PendingControlKind::Prompt,
+            preview: "write a regression test".to_string(),
+            reason: None,
+        },
+    ];
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Esc send now"))
     );
 }
 

@@ -5,6 +5,7 @@ use super::super::state::{
 };
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
+    pending_controls_have_kind,
 };
 use super::statusline::status_color;
 use super::theme::palette;
@@ -1257,9 +1258,13 @@ fn pending_control_timeline_kind_label(
 }
 
 fn pending_control_action_hint(state: &TuiState) -> Option<String> {
-    let latest = state.pending_controls.last()?;
+    if state.pending_controls.is_empty() {
+        return None;
+    }
     let mut parts = Vec::new();
-    if latest.kind == PendingControlKind::Steer && state.turn_running {
+    if state.turn_running
+        && pending_controls_have_kind(&state.pending_controls, PendingControlKind::Steer)
+    {
         parts.push("Esc send now".to_string());
     }
     parts.push("Alt+T edit latest".to_string());
