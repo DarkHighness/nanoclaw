@@ -538,26 +538,47 @@ fn welcome_lines_keep_the_start_screen_sparse() {
 
     let lines = build_welcome_lines(&state, 140, 28);
 
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("NANOCLAW / command center") })
+    );
     assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("▄▄     ▄▄▄    ▄▄       ▄▄     ▄▄▄")
-    }));
-    assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("▀██▀    ██  ▀██▀  ▀█▄█")
+        line_text_for(line).contains("Focused coding work with one live transcript")
     }));
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("Terminal shell for focused coding work") })
+            .any(|line| { line_text_for(line).contains("workspace · session + runtime") })
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("launch · next actions") })
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("workspace  nanoclaw") })
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("model      gpt-5.4 · high") })
+    );
+    assert!(
+        lines.iter().any(|line| {
+            line_text_for(line).contains("runtime    0 tools · 0 mcp · 0 skills")
+        })
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("Describe the change in plain language") })
     );
     assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("workspace nanoclaw  ·  model gpt-5.4 · high")
-    }));
-    assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("tools 0  ·  mcp 0  ·  skills 0  ·  plugins 0/0")
-    }));
-    assert!(lines.iter().any(|line| {
         line_text_for(line)
-            .contains("Ask for a change, start with $skill_name or /skill_name for an explicit skill, review history, or run /help.")
+            .contains("Describe the next change in plain language, call a named skill with $skill_name or /skill_name, inspect task history, or run /help.")
     }));
 }
 
@@ -569,13 +590,19 @@ fn welcome_lines_switch_to_the_compact_logo_on_narrow_viewports() {
 
     let lines = build_welcome_lines(&state, 80, 28);
 
+    assert!(
+        lines
+            .iter()
+            .any(|line| { line_text_for(line).contains("NANOCLAW / command center") })
+    );
     assert!(lines.iter().any(|line| {
-        line_text_for(line).contains("███  ██ ▄████▄ ███  ██ ▄████▄")
+        line_text_for(line)
+            .contains("Focused coding work with one live transcript and queued follow-ups.")
     }));
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("Terminal shell for coding work") })
+            .any(|line| { line_text_for(line).contains("launch · next actions") })
     );
 }
 
@@ -2544,68 +2571,16 @@ fn footer_context_renders_configured_status_items() {
     state.session.statusline.session = true;
 
     let footer = format_footer_context(&state);
+    let text = line_text_for(&footer);
 
-    assert_eq!(footer.spans[0].content.as_ref(), "•");
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("Ready") })
-    );
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("nanoclaw") })
-    );
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("gpt-5.4 (high)") })
-    );
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("nanoclaw-repo") })
-    );
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("main") })
-    );
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("ctx --") })
-    );
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("in 0") })
-    );
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("out 0") })
-    );
-    assert!(
-        footer
-            .spans
-            .iter()
-            .all(|span| { !span.content.as_ref().contains("queue 0") })
-    );
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| { span.content.as_ref().contains("sid session_123456") })
-    );
+    assert!(text.contains("[• Ready]"));
+    assert!(text.contains("[model gpt-5.4 (high)]"));
+    assert!(text.contains("[workspace nanoclaw]"));
+    assert!(text.contains("[git nanoclaw-repo@main]"));
+    assert!(text.contains("[ctx --]"));
+    assert!(text.contains("[tokens in 0 · out 0]"));
+    assert!(!text.contains("[queue 0]"));
+    assert!(text.contains("[sid session_123456]"));
 }
 
 #[test]
@@ -2648,13 +2623,9 @@ fn footer_context_window_includes_units_and_percent() {
     });
 
     let footer = format_footer_context(&state);
+    let text = line_text_for(&footer);
 
-    assert!(
-        footer
-            .spans
-            .iter()
-            .any(|span| span.content.as_ref().contains("ctx 30k / 400k tok (7%)"))
-    );
+    assert!(text.contains("[ctx 30k / 400k tok (7%)]"));
 }
 
 #[test]

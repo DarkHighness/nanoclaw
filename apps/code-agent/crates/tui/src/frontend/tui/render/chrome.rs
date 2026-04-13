@@ -32,7 +32,7 @@ pub(super) fn render_composer(
     user_input: Option<&UserInputView<'_>>,
 ) {
     frame.render_widget(
-        Block::default().style(Style::default().bg(palette().transcript_surface())),
+        Block::default().style(Style::default().bg(palette().bottom_pane_bg)),
         area,
     );
     let inner = composer_text_area(area);
@@ -43,7 +43,7 @@ pub(super) fn render_composer(
             .style(
                 Style::default()
                     .fg(palette().text)
-                    .bg(palette().transcript_surface()),
+                    .bg(palette().bottom_pane_bg),
             ),
         inner,
     );
