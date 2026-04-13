@@ -230,6 +230,16 @@ impl TuiState {
         Some(selected)
     }
 
+    pub(crate) fn begin_latest_pending_control_edit(&mut self) -> Option<PendingControlSummary> {
+        if self.pending_controls.is_empty() {
+            return None;
+        }
+        self.pending_control_picker = Some(PendingControlPickerState {
+            selected: self.pending_controls.len().saturating_sub(1),
+        });
+        self.begin_pending_control_edit()
+    }
+
     pub(crate) fn clear_pending_control_edit(&mut self) {
         self.editing_pending_control = None;
     }

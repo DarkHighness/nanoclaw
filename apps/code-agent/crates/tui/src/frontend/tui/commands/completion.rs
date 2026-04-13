@@ -1,4 +1,5 @@
 use super::*;
+use crate::frontend::tui::state::ComposerInputProvenance;
 
 #[cfg(test)]
 pub(crate) fn command_palette_lines() -> Vec<InspectorEntry> {
@@ -76,41 +77,47 @@ pub(crate) fn inspector_action_for_slash_spec(spec: &SlashInvocationSpec) -> Ins
 
 pub(crate) fn composer_completion_hint(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     skills: &[SkillSummary],
 ) -> Option<ComposerCompletionHint> {
-    if let Some(hint) = slash_command_hint(input, selected_index, skills) {
+    if let Some(hint) = slash_command_hint(input, provenance, selected_index, skills) {
         return Some(ComposerCompletionHint::Slash(hint));
     }
-    skill_invocation_hint(input, selected_index, skills).map(ComposerCompletionHint::Skill)
+    skill_invocation_hint(input, provenance, selected_index, skills)
+        .map(ComposerCompletionHint::Skill)
 }
 
 pub(crate) fn cycle_composer_completion(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     backwards: bool,
     skills: &[SkillSummary],
 ) -> Option<(String, usize)> {
-    cycle_slash_command(input, selected_index, backwards, skills)
-        .or_else(|| cycle_skill_invocation(input, selected_index, backwards, skills))
+    cycle_slash_command(input, provenance, selected_index, backwards, skills)
+        .or_else(|| cycle_skill_invocation(input, provenance, selected_index, backwards, skills))
 }
 
 pub(crate) fn move_composer_completion_selection(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     backwards: bool,
     skills: &[SkillSummary],
 ) -> Option<usize> {
-    move_slash_command_selection(input, selected_index, backwards, skills)
-        .or_else(|| move_skill_invocation_selection(input, selected_index, backwards, skills))
+    move_slash_command_selection(input, provenance, selected_index, backwards, skills).or_else(
+        || move_skill_invocation_selection(input, provenance, selected_index, backwards, skills),
+    )
 }
 
 pub(crate) fn resolve_composer_enter_action(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     skills: &[SkillSummary],
 ) -> Option<ComposerCompletionEnterAction> {
-    if let Some(action) = resolve_slash_enter_action(input, selected_index, skills) {
+    if let Some(action) = resolve_slash_enter_action(input, provenance, selected_index, skills) {
         return Some(match action {
             SlashCommandEnterAction::Complete { input, index } => {
                 ComposerCompletionEnterAction::Complete { input, index }
@@ -120,14 +127,18 @@ pub(crate) fn resolve_composer_enter_action(
             }
         });
     }
-    resolve_skill_enter_action(input, selected_index, skills)
+    resolve_skill_enter_action(input, provenance, selected_index, skills)
 }
 
 fn slash_command_hint(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     skills: &[SkillSummary],
 ) -> Option<SlashCommandHint> {
+    if !provenance.arms_slash_completion(input) {
+        return None;
+    }
     let (command_token, tail) = split_slash_input(input)?;
     let matches = matching_specs(command_token, skills);
     if let Some(selected) = selected_spec(command_token, tail, selected_index, &matches, skills) {
@@ -150,10 +161,14 @@ fn slash_command_hint(
 
 fn cycle_slash_command(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     backwards: bool,
     skills: &[SkillSummary],
 ) -> Option<(String, usize)> {
+    if !provenance.arms_slash_completion(input) {
+        return None;
+    }
     let (command_token, tail) = split_slash_input(input)?;
     if tail.is_some() {
         return None;
@@ -182,10 +197,14 @@ fn cycle_slash_command(
 
 fn move_slash_command_selection(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     backwards: bool,
     skills: &[SkillSummary],
 ) -> Option<usize> {
+    if !provenance.arms_slash_completion(input) {
+        return None;
+    }
     let (command_token, tail) = split_slash_input(input)?;
     if tail.is_some() {
         return None;
@@ -204,12 +223,16 @@ fn move_slash_command_selection(
 
 fn resolve_slash_enter_action(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     skills: &[SkillSummary],
 ) -> Option<SlashCommandEnterAction> {
+    if !provenance.arms_slash_completion(input) {
+        return None;
+    }
     let (_, tail) = split_slash_input(input)?;
     let tail_has_content = tail.is_some_and(|value| !value.trim().is_empty());
-    let hint = slash_command_hint(input, selected_index, skills)?;
+    let hint = slash_command_hint(input, provenance, selected_index, skills)?;
     if hint.exact {
         if hint
             .arguments
@@ -250,9 +273,13 @@ fn resolve_slash_enter_action(
 
 fn skill_invocation_hint(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     skills: &[SkillSummary],
 ) -> Option<SkillInvocationHint> {
+    if !provenance.arms_skill_completion(input) {
+        return None;
+    }
     let (skill_token, tail) = split_skill_input(input)?;
     if tail.is_some_and(|value| !value.trim().is_empty()) {
         return None;
@@ -272,10 +299,14 @@ fn skill_invocation_hint(
 
 fn cycle_skill_invocation(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     backwards: bool,
     skills: &[SkillSummary],
 ) -> Option<(String, usize)> {
+    if !provenance.arms_skill_completion(input) {
+        return None;
+    }
     let (skill_token, tail) = split_skill_input(input)?;
     if tail.is_some() {
         return None;
@@ -304,10 +335,14 @@ fn cycle_skill_invocation(
 
 fn move_skill_invocation_selection(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     backwards: bool,
     skills: &[SkillSummary],
 ) -> Option<usize> {
+    if !provenance.arms_skill_completion(input) {
+        return None;
+    }
     let (skill_token, tail) = split_skill_input(input)?;
     if tail.is_some() {
         return None;
@@ -326,10 +361,11 @@ fn move_skill_invocation_selection(
 
 fn resolve_skill_enter_action(
     input: &str,
+    provenance: ComposerInputProvenance,
     selected_index: usize,
     skills: &[SkillSummary],
 ) -> Option<ComposerCompletionEnterAction> {
-    let hint = skill_invocation_hint(input, selected_index, skills)?;
+    let hint = skill_invocation_hint(input, provenance, selected_index, skills)?;
     Some(ComposerCompletionEnterAction::Complete {
         input: format!("${} ", hint.selected.name),
         index: hint.selected_match_index,

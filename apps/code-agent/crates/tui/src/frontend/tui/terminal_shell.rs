@@ -14,10 +14,14 @@ impl CodeAgentTui {
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        // Keep terminal-native mouse selection available in the main transcript.
-        // The TUI only uses keyboard navigation here, so capturing mouse events
-        // would mostly disable copy/select without providing meaningful utility.
-        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+        // Capture wheel events so scroll input always targets transcript-style
+        // surfaces instead of falling through as accidental history recall.
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture
+        )?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -39,6 +43,7 @@ impl CodeAgentTui {
         execute!(
             terminal.backend_mut(),
             DisableBracketedPaste,
+            DisableMouseCapture,
             LeaveAlternateScreen
         )?;
         terminal.show_cursor()?;
@@ -124,6 +129,10 @@ impl CodeAgentTui {
                 self.handle_terminal_key(key, terminal, viewport_height)
                     .await
             }
+            Event::Mouse(mouse) => {
+                self.handle_terminal_mouse(mouse, viewport_height).await;
+                Ok(TerminalLoopControl::Continue)
+            }
             _ => Ok(TerminalLoopControl::Continue),
         }
     }
@@ -197,10 +206,14 @@ impl CodeAgentTui {
             KeyCode::Up => self.handle_vertical_navigation(true),
             KeyCode::Down => self.handle_vertical_navigation(false),
             KeyCode::Left => {
-                let _ = self.move_input_cursor_horizontal(true);
+                if !self.handle_transcript_horizontal_navigation(true) {
+                    let _ = self.move_input_cursor_horizontal(true);
+                }
             }
             KeyCode::Right => {
-                let _ = self.move_input_cursor_horizontal(false);
+                if !self.handle_transcript_horizontal_navigation(false) {
+                    let _ = self.move_input_cursor_horizontal(false);
+                }
             }
             KeyCode::PageUp => {
                 self.ui_state
@@ -233,6 +246,9 @@ impl CodeAgentTui {
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.ui_state
                     .mutate(|state| state.scroll_focused_page(viewport_height, true, false));
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::ALT) => {
+                let _ = self.handle_pending_control_edit_shortcut();
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.cycle_model_reasoning_effort();
@@ -308,10 +324,85 @@ impl CodeAgentTui {
         });
     }
 
+    fn handle_transcript_horizontal_navigation(&mut self, backwards: bool) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        if !snapshot.input.is_empty()
+            || snapshot.main_pane != state::MainPaneMode::Transcript
+            || snapshot.history_rollback.is_some()
+            || snapshot.pending_control_picker.is_some()
+            || snapshot.tool_review_overlay().is_some()
+            || snapshot.statusline_picker.is_some()
+            || snapshot.thinking_effort_picker.is_some()
+            || snapshot.theme_picker.is_some()
+        {
+            return false;
+        }
+
+        self.ui_state.mutate(|state| {
+            let _ = state.scroll_transcript_horizontal(if backwards { -4 } else { 4 });
+        });
+        true
+    }
+
+    fn handle_pending_control_edit_shortcut(&mut self) -> bool {
+        let snapshot = self.ui_state.snapshot();
+        if !snapshot.input.is_empty() || snapshot.pending_controls.is_empty() {
+            return false;
+        }
+
+        let mut edited = None;
+        self.ui_state.mutate(|state| {
+            edited = if state.pending_control_picker.is_some() {
+                state.begin_pending_control_edit()
+            } else {
+                state.begin_latest_pending_control_edit()
+            };
+            if let Some(selected) = edited.as_ref() {
+                state.status = format!(
+                    "Editing queued {} {}",
+                    pending_control_kind_label(selected.kind),
+                    preview_id(&selected.id)
+                );
+                state.push_activity(format!(
+                    "editing queued {} {} via alt+t",
+                    pending_control_kind_label(selected.kind),
+                    preview_id(&selected.id)
+                ));
+            }
+        });
+        edited.is_some()
+    }
+
+    async fn handle_terminal_mouse(&mut self, mouse: MouseEvent, viewport_height: u16) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.handle_mouse_scroll(true, viewport_height).await,
+            MouseEventKind::ScrollDown => self.handle_mouse_scroll(false, viewport_height).await,
+            _ => {}
+        }
+    }
+
+    async fn handle_mouse_scroll(&mut self, backwards: bool, viewport_height: u16) {
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.tool_review_overlay().is_some() || snapshot.history_rollback_overlay().is_some()
+        {
+            return;
+        }
+        if snapshot.pending_control_picker.is_some() && snapshot.input.is_empty() {
+            self.ui_state.mutate(|state| {
+                let _ = state.move_pending_control_picker(backwards);
+            });
+            return;
+        }
+        self.ui_state.mutate(|state| {
+            state.scroll_focused_page(viewport_height.max(3), true, backwards);
+        });
+    }
+
     fn composer_completion_modal_active(&self) -> bool {
         let snapshot = self.ui_state.snapshot();
         composer_completion_hint(
             &snapshot.input,
+            snapshot.composer_input_provenance,
             snapshot.composer_completion_index,
             &snapshot.session.skills,
         )
@@ -406,6 +497,7 @@ impl CodeAgentTui {
         }
         if composer_completion_hint(
             &snapshot.input,
+            snapshot.composer_input_provenance,
             snapshot.composer_completion_index,
             &snapshot.session.skills,
         )
@@ -438,13 +530,14 @@ impl CodeAgentTui {
         }
         if let Some(action) = resolve_composer_enter_action(
             &snapshot.input,
+            snapshot.composer_input_provenance,
             snapshot.composer_completion_index,
             &snapshot.session.skills,
         ) {
             match action {
                 ComposerCompletionEnterAction::Complete { input, index } => {
                     self.ui_state.mutate(|state| {
-                        state.replace_input(input);
+                        state.replace_input_from_completion(input);
                         state.composer_completion_index = index;
                     });
                     return Ok(TerminalLoopControl::Continue);

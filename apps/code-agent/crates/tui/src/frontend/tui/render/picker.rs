@@ -2,8 +2,7 @@ use super::super::state::{
     PendingControlEditorState, PendingControlPickerState, TuiState, preview_text,
 };
 use super::shared::{
-    pending_control_focus_label, pending_control_kind_label,
-    pending_control_reason_label as format_pending_control_reason,
+    pending_control_focus_label, pending_control_reason_label as format_pending_control_reason,
 };
 use super::shell::bottom_band_inner_area;
 use super::theme::palette;
@@ -389,7 +388,12 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
     let selected = state.selected_pending_control();
     let pending_count = state.pending_controls.len();
     let mut lines = vec![Line::from(vec![
-        Span::styled("pending", Style::default().fg(palette().header)),
+        Span::styled(
+            "Queued Follow-ups",
+            Style::default()
+                .fg(palette().header)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
             format!(
@@ -405,7 +409,7 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
         },
         if let Some(editing) = editing {
             Span::styled(
-                format!("editing {}", pending_kind_label(editing)),
+                format!("Editing {}", pending_kind_label(editing)),
                 Style::default().fg(palette().accent),
             )
         } else {
@@ -438,25 +442,22 @@ pub(super) fn build_pending_control_text(state: &TuiState) -> Text<'static> {
         }
         if let Some(selected) = state.pending_controls.get(selected_index) {
             lines.extend(build_selected_pending_control_block(
+                state,
                 selected,
                 selected_index,
                 state.pending_controls.len(),
             ));
         }
     } else if let Some(selected) = selected.or_else(|| state.pending_controls.last().cloned()) {
-        lines.push(build_pending_control_row(&selected, true));
-        lines.push(Line::from(Span::styled(
-            "alt+up open queue",
-            Style::default().fg(palette().subtle),
-        )));
+        lines.extend(build_latest_pending_control_block(state, &selected));
     }
 
     Text::from(lines)
 }
 
 fn build_pending_control_row(control: &PendingControlSummary, selected: bool) -> Line<'static> {
-    let marker = if selected { "›" } else { " " };
-    let kind_label = pending_control_kind_label(control.kind);
+    let marker = if selected { "›" } else { "•" };
+    let kind_label = pending_control_summary_label(control);
     let accent = match control.kind {
         PendingControlKind::Prompt => palette().user,
         PendingControlKind::Steer => palette().assistant,
@@ -478,7 +479,7 @@ fn build_pending_control_row(control: &PendingControlSummary, selected: bool) ->
         ),
         Span::raw(" "),
         Span::styled(
-            format!("{kind_label:<6}"),
+            kind_label,
             Style::default()
                 .fg(if selected { accent } else { palette().muted })
                 .add_modifier(if selected {
@@ -511,9 +512,9 @@ fn build_pending_control_row(control: &PendingControlSummary, selected: bool) ->
 }
 
 fn build_pending_control_context_row(control: &PendingControlSummary) -> Line<'static> {
-    let kind_label = pending_control_kind_label(control.kind);
+    let kind_label = pending_control_summary_label(control);
     Line::from(vec![
-        Span::styled("  ", Style::default().fg(palette().subtle)),
+        Span::styled("  • ", Style::default().fg(palette().subtle)),
         Span::styled(kind_label, Style::default().fg(palette().muted)),
         Span::styled(" ", Style::default().fg(palette().subtle)),
         Span::styled(
@@ -524,11 +525,12 @@ fn build_pending_control_context_row(control: &PendingControlSummary) -> Line<'s
 }
 
 fn build_selected_pending_control_block(
+    state: &TuiState,
     control: &PendingControlSummary,
     selected_index: usize,
     total: usize,
 ) -> Vec<Line<'static>> {
-    let kind_label = pending_control_kind_label(control.kind);
+    let kind_label = pending_control_heading_label(control, state.turn_running);
     let accent = match control.kind {
         PendingControlKind::Prompt => palette().user,
         PendingControlKind::Steer => palette().assistant,
@@ -560,6 +562,17 @@ fn build_selected_pending_control_block(
             ),
         ]),
         build_pending_control_detail_row(control, selected_index, total),
+        build_pending_control_picker_hint_line(control),
+    ]
+}
+
+fn build_latest_pending_control_block(
+    state: &TuiState,
+    control: &PendingControlSummary,
+) -> Vec<Line<'static>> {
+    vec![
+        build_pending_control_row(control, true),
+        build_pending_control_latest_hint_line(state, control),
     ]
 }
 
@@ -582,10 +595,72 @@ fn build_pending_control_detail_row(
     Line::from(spans)
 }
 
+fn build_pending_control_picker_hint_line(control: &PendingControlSummary) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("  ", Style::default().fg(palette().subtle)),
+        Span::styled("Alt+T", Style::default().fg(palette().accent)),
+        Span::styled(" edit", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("Del", Style::default().fg(palette().header)),
+        Span::styled(" withdraw", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("Esc", Style::default().fg(palette().header)),
+        Span::styled(" close", Style::default().fg(palette().muted)),
+    ];
+    if control.kind == PendingControlKind::Steer {
+        spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+        spans.push(Span::styled("Enter", Style::default().fg(palette().accent)));
+        spans.push(Span::styled(
+            " edit steer",
+            Style::default().fg(palette().muted),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn build_pending_control_latest_hint_line(
+    state: &TuiState,
+    control: &PendingControlSummary,
+) -> Line<'static> {
+    let mut spans = vec![Span::styled("  ", Style::default().fg(palette().subtle))];
+    if control.kind == PendingControlKind::Steer && state.turn_running {
+        spans.push(Span::styled("Esc", Style::default().fg(palette().header)));
+        spans.push(Span::styled(
+            " send now",
+            Style::default().fg(palette().muted),
+        ));
+        spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+    }
+    spans.push(Span::styled("Alt+T", Style::default().fg(palette().accent)));
+    spans.push(Span::styled(" edit", Style::default().fg(palette().muted)));
+    spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+    spans.push(Span::styled("Alt+↑", Style::default().fg(palette().header)));
+    spans.push(Span::styled(" queue", Style::default().fg(palette().muted)));
+    Line::from(spans)
+}
+
 fn pending_kind_label(editing: &PendingControlEditorState) -> &'static str {
     match editing.kind {
-        PendingControlKind::Prompt => "queued prompt",
-        PendingControlKind::Steer => "queued steer",
+        PendingControlKind::Prompt => "Queued Prompt",
+        PendingControlKind::Steer => "Queued Steer",
+    }
+}
+
+fn pending_control_heading_label(
+    control: &PendingControlSummary,
+    turn_running: bool,
+) -> &'static str {
+    match (control.kind, turn_running) {
+        (PendingControlKind::Prompt, _) => "Queued Prompt",
+        (PendingControlKind::Steer, true) => "Steer Ready",
+        (PendingControlKind::Steer, false) => "Queued Steer",
+    }
+}
+
+fn pending_control_summary_label(control: &PendingControlSummary) -> &'static str {
+    match control.kind {
+        PendingControlKind::Prompt => "prompt",
+        PendingControlKind::Steer => "steer",
     }
 }
 

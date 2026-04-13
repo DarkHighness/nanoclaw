@@ -22,9 +22,10 @@ mod transcript;
 
 pub(crate) use composer::{
     ComposerAttachmentEditSummary, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
-    ComposerDraftState, ComposerHistoryNavigationState, ComposerKillBufferState,
-    ComposerRowAttachmentPreview, ComposerSubmission, composer_draft_from_message,
-    composer_draft_from_messages, composer_draft_from_parts, draft_preview_text,
+    ComposerDraftState, ComposerHistoryNavigationState, ComposerInputProvenance,
+    ComposerKillBufferState, ComposerRowAttachmentPreview, ComposerSubmission,
+    composer_draft_from_message, composer_draft_from_messages, composer_draft_from_parts,
+    draft_preview_text,
 };
 pub(crate) use picker::{
     CollectionPickerState, HistoryRollbackCandidate, HistoryRollbackState,
@@ -318,6 +319,7 @@ pub(crate) struct TuiState {
     pub(crate) local_input_history: Vec<ComposerDraftState>,
     pub(crate) local_command_history: Vec<ComposerDraftState>,
     pub(crate) input_history_navigation: Option<ComposerHistoryNavigationState>,
+    pub(crate) composer_input_provenance: ComposerInputProvenance,
     pub(crate) composer_completion_index: usize,
     pub(crate) composer_context_hint: Option<ComposerContextHint>,
     pub(crate) toast: Option<ToastState>,
@@ -327,6 +329,7 @@ pub(crate) struct TuiState {
     pub(crate) tracked_tasks: Vec<TrackedTaskSummary>,
     pub(crate) tool_selection: Option<ToolSelectionTarget>,
     pub(crate) transcript_scroll: u16,
+    pub(crate) transcript_horizontal_scroll: u16,
     pub(crate) follow_transcript: bool,
     pub(crate) inspector_title: String,
     pub(crate) inspector: Vec<InspectorEntry>,
@@ -556,6 +559,14 @@ impl TuiState {
             }
             MainPaneMode::View => bump_scroll(&mut self.inspector_scroll, delta),
         }
+    }
+
+    pub(crate) fn scroll_transcript_horizontal(&mut self, delta: i16) -> bool {
+        if self.main_pane != MainPaneMode::Transcript {
+            return false;
+        }
+        bump_scroll(&mut self.transcript_horizontal_scroll, delta);
+        true
     }
 
     pub(crate) fn scroll_focused_page(

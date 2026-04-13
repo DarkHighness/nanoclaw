@@ -5,6 +5,7 @@ impl CodeAgentTui {
         let snapshot = self.ui_state.snapshot();
         let Some((input, index)) = cycle_composer_completion(
             &snapshot.input,
+            snapshot.composer_input_provenance,
             snapshot.composer_completion_index,
             backwards,
             &snapshot.session.skills,
@@ -12,7 +13,7 @@ impl CodeAgentTui {
             return false;
         };
         self.ui_state.mutate(|state| {
-            state.replace_input(input);
+            state.replace_input_from_completion(input);
             state.composer_completion_index = index;
         });
         true
@@ -30,6 +31,7 @@ impl CodeAgentTui {
         let snapshot = self.ui_state.snapshot();
         let Some(index) = move_composer_completion_selection(
             &snapshot.input,
+            snapshot.composer_input_provenance,
             snapshot.composer_completion_index,
             backwards,
             &snapshot.session.skills,

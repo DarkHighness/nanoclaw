@@ -53,7 +53,7 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
     let lines = build_transcript_lines_for_width(state, area.width);
     let scroll = shared::clamp_scroll(state.transcript_scroll, lines.len(), area.height);
     let transcript = Paragraph::new(Text::from(lines))
-        .scroll((scroll, 0))
+        .scroll((scroll, state.transcript_horizontal_scroll))
         .alignment(Alignment::Left)
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(palette().text).bg(palette().main_bg));

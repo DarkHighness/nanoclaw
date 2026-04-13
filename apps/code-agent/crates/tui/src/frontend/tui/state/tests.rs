@@ -1,10 +1,11 @@
 use super::{
     ActiveToolCell, ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
-    ComposerKillBufferState, ComposerRowAttachmentPreview, GitPorcelainEntry, GitPorcelainState,
-    HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode, SharedUiState,
-    ToastState, ToastTone, ToolSelectionTarget, TranscriptEntry, TranscriptToolEntry,
-    TranscriptToolStatus, TuiState, composer_draft_from_messages, composer_draft_from_parts,
-    draft_preview_text, git_snapshot, page_scroll_amount,
+    ComposerInputProvenance, ComposerKillBufferState, ComposerRowAttachmentPreview,
+    GitPorcelainEntry, GitPorcelainState, HistoryRollbackCandidate, InspectorAction,
+    InspectorEntry, MainPaneMode, SharedUiState, ToastState, ToastTone, ToolSelectionTarget,
+    TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState,
+    composer_draft_from_messages, composer_draft_from_parts, draft_preview_text, git_snapshot,
+    page_scroll_amount,
 };
 use crate::frontend::tui::input_history::{ComposerHistoryKind, PersistedComposerHistoryEntry};
 use crate::theme::ThemeSummary;
@@ -83,6 +84,23 @@ fn transcript_push_keeps_manual_scroll_position_until_follow_is_restored() {
 
     state.push_transcript("third");
     assert_eq!(state.transcript_scroll, u16::MAX);
+}
+
+#[test]
+fn transcript_horizontal_scroll_tracks_separate_from_vertical_follow_mode() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+
+    assert!(state.scroll_transcript_horizontal(6));
+    assert_eq!(state.transcript_horizontal_scroll, 6);
+
+    state.scroll_focused(-3);
+    assert_eq!(state.transcript_horizontal_scroll, 6);
+
+    assert!(state.scroll_transcript_horizontal(-2));
+    assert_eq!(state.transcript_horizontal_scroll, 4);
 }
 
 #[test]
@@ -674,6 +692,7 @@ fn slash_input_history_recalls_command_entries_without_mixing_prompt_history() {
     let mut state = TuiState {
         input: "/".to_string(),
         input_cursor: 1,
+        composer_input_provenance: ComposerInputProvenance::Manual,
         input_history: vec![SubmittedPromptSnapshot::from_text("regular prompt")],
         command_history: vec![
             SubmittedPromptSnapshot::from_text("/help"),
@@ -684,9 +703,38 @@ fn slash_input_history_recalls_command_entries_without_mixing_prompt_history() {
 
     assert!(state.browse_input_history(true));
     assert_eq!(state.input, "/sessions recent");
+    assert_eq!(
+        state.composer_input_provenance,
+        ComposerInputProvenance::HistoryRecall
+    );
 
     assert!(state.browse_input_history(true));
     assert_eq!(state.input, "/help");
+}
+
+#[test]
+fn history_recalled_slash_input_stays_in_history_recall_provenance() {
+    let mut state = TuiState {
+        input: "/".to_string(),
+        input_cursor: 1,
+        composer_input_provenance: ComposerInputProvenance::Manual,
+        command_history: vec![SubmittedPromptSnapshot::from_text("/help")],
+        ..TuiState::default()
+    };
+
+    assert!(state.browse_input_history(true));
+    assert_eq!(state.input, "/help");
+    assert_eq!(
+        state.composer_input_provenance,
+        ComposerInputProvenance::HistoryRecall
+    );
+
+    state.push_input_char('!');
+    assert_eq!(state.input, "/help!");
+    assert_eq!(
+        state.composer_input_provenance,
+        ComposerInputProvenance::Manual
+    );
 }
 
 #[test]

@@ -1,12 +1,96 @@
 use super::{
     ComposerCompletionEnterAction, ComposerCompletionHint, SLASH_COMMAND_SPECS, SlashCommand,
     SlashCommandArgumentSpec, command_palette_lines, command_palette_lines_for,
-    command_palette_lines_for_skills, composer_completion_hint, cycle_composer_completion,
-    inspector_action_for_slash_name, move_composer_completion_selection, parse_slash_command,
-    parse_slash_command_with_skills, resolve_composer_enter_action,
+    command_palette_lines_for_skills, composer_completion_hint as composer_completion_hint_impl,
+    cycle_composer_completion as cycle_composer_completion_impl, inspector_action_for_slash_name,
+    move_composer_completion_selection as move_composer_completion_selection_impl,
+    parse_slash_command, parse_slash_command_with_skills,
+    resolve_composer_enter_action as resolve_composer_enter_action_impl,
 };
-use crate::frontend::tui::state::{InspectorAction, InspectorEntry};
+use crate::frontend::tui::state::{ComposerInputProvenance, InspectorAction, InspectorEntry};
 use crate::interaction::SkillSummary;
+
+fn composer_completion_hint(
+    input: &str,
+    selected_index: usize,
+    skills: &[SkillSummary],
+) -> Option<ComposerCompletionHint> {
+    composer_completion_hint_impl(
+        input,
+        ComposerInputProvenance::Manual,
+        selected_index,
+        skills,
+    )
+}
+
+fn cycle_composer_completion(
+    input: &str,
+    selected_index: usize,
+    backwards: bool,
+    skills: &[SkillSummary],
+) -> Option<(String, usize)> {
+    cycle_composer_completion_impl(
+        input,
+        ComposerInputProvenance::Manual,
+        selected_index,
+        backwards,
+        skills,
+    )
+}
+
+fn move_composer_completion_selection(
+    input: &str,
+    selected_index: usize,
+    backwards: bool,
+    skills: &[SkillSummary],
+) -> Option<usize> {
+    move_composer_completion_selection_impl(
+        input,
+        ComposerInputProvenance::Manual,
+        selected_index,
+        backwards,
+        skills,
+    )
+}
+
+fn resolve_composer_enter_action(
+    input: &str,
+    selected_index: usize,
+    skills: &[SkillSummary],
+) -> Option<ComposerCompletionEnterAction> {
+    resolve_composer_enter_action_impl(
+        input,
+        ComposerInputProvenance::Manual,
+        selected_index,
+        skills,
+    )
+}
+
+#[test]
+fn recalled_slash_input_does_not_arm_command_completion() {
+    assert!(
+        composer_completion_hint_impl(
+            "/session",
+            ComposerInputProvenance::HistoryRecall,
+            0,
+            &sample_skills(),
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn recalled_skill_input_does_not_arm_skill_completion() {
+    assert!(
+        composer_completion_hint_impl(
+            "$openai-docs",
+            ComposerInputProvenance::HistoryRecall,
+            0,
+            &sample_skills(),
+        )
+        .is_none()
+    );
+}
 
 fn sample_skills() -> Vec<SkillSummary> {
     vec![

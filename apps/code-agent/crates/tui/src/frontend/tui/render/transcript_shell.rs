@@ -1094,9 +1094,12 @@ pub(super) fn pending_control_timeline_entry(state: &TuiState) -> Option<Transcr
         });
     }
     detail_lines.extend(timeline.recent.iter().map(pending_control_timeline_detail));
+    if let Some(hint) = pending_control_action_hint(state) {
+        detail_lines.push(TranscriptShellDetail::Meta(hint));
+    }
     Some(TranscriptEntry::shell_summary_status_details(
         TranscriptShellStatus::Queued,
-        format!("Queued follow-ups · {}", state.pending_controls.len()),
+        format!("Queued Follow-ups · {}", state.pending_controls.len()),
         detail_lines,
     ))
 }
@@ -1117,7 +1120,7 @@ pub(super) fn pending_control_embedded_lines(
 ) -> Option<Vec<Line<'static>>> {
     let timeline = pending_control_timeline(state)?;
     let mut lines = render_shell_summary_body(
-        &format!("Queued follow-ups · {}", state.pending_controls.len()),
+        &format!("Queued Follow-ups · {}", state.pending_controls.len()),
         "•",
         TranscriptEntryKind::ShellSummary,
         animation_frame,
@@ -1147,6 +1150,13 @@ pub(super) fn pending_control_embedded_lines(
             .iter()
             .map(render_pending_control_embedded_detail),
     );
+    if let Some(hint) = pending_control_action_hint(state) {
+        lines.push(Line::from(vec![
+            transcript_continuation_prefix(TranscriptEntryKind::ShellSummary),
+            Span::styled("  └ ", Style::default().fg(palette().subtle)),
+            Span::styled(hint, Style::default().fg(palette().muted)),
+        ]));
+    }
     Some(lines)
 }
 
@@ -1239,11 +1249,22 @@ fn pending_control_timeline_kind_label(
     editing: bool,
 ) -> (&'static str, Color) {
     match (kind, editing) {
-        (PendingControlKind::Prompt, true) => ("editing queued prompt", palette().user),
-        (PendingControlKind::Steer, true) => ("editing queued steer", palette().assistant),
-        (PendingControlKind::Prompt, false) => ("queued prompt", palette().user),
-        (PendingControlKind::Steer, false) => ("pending steer", palette().assistant),
+        (PendingControlKind::Prompt, true) => ("Editing Queued Prompt", palette().user),
+        (PendingControlKind::Steer, true) => ("Editing Queued Steer", palette().assistant),
+        (PendingControlKind::Prompt, false) => ("Queued Prompt", palette().user),
+        (PendingControlKind::Steer, false) => ("Queued Steer", palette().assistant),
     }
+}
+
+fn pending_control_action_hint(state: &TuiState) -> Option<String> {
+    let latest = state.pending_controls.last()?;
+    let mut parts = Vec::new();
+    if latest.kind == PendingControlKind::Steer && state.turn_running {
+        parts.push("Esc send now".to_string());
+    }
+    parts.push("Alt+T edit latest".to_string());
+    parts.push("Alt+↑ queue".to_string());
+    Some(parts.join(" · "))
 }
 
 fn pending_control_timeline(state: &TuiState) -> Option<PendingControlTimeline> {

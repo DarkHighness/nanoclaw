@@ -586,7 +586,7 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
     assert!(
         text.lines
             .iter()
-            .any(|line| line_text_for(line).contains("pending"))
+            .any(|line| line_text_for(line).contains("Queued Follow-ups"))
     );
     assert!(
         text.lines
@@ -601,17 +601,17 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
     assert!(
         text.lines
             .iter()
-            .any(|line| line_text_for(line).contains("› steer · latest draft"))
+            .any(|line| line_text_for(line).contains("› Queued Steer · latest draft"))
     );
     assert!(
         text.lines
             .iter()
-            .any(|line| line_text_for(line) == "  prompt write a regression test")
+            .any(|line| line_text_for(line) == "  • prompt write a regression test")
     );
     assert!(
         text.lines
             .iter()
-            .any(|line| line_text_for(line) == "› steer · latest draft")
+            .any(|line| line_text_for(line) == "› Queued Steer · latest draft")
     );
     let prompt_row = text
         .lines
@@ -646,7 +646,7 @@ fn pending_control_band_surfaces_selected_prompt_and_editing_state() {
     assert!(
         text.lines
             .iter()
-            .any(|line| line_text_for(line).contains("editing queued steer"))
+            .any(|line| line_text_for(line).contains("Editing Queued Steer"))
     );
 }
 
@@ -691,7 +691,7 @@ fn composer_line_surfaces_pending_picker_shortcuts() {
 
     assert!(text.contains("selected steer"));
     assert!(text.contains("latest draft"));
-    assert!(text.contains("enter edit"));
+    assert!(text.contains("enter/alt+t edit"));
     assert!(text.contains("del withdraw"));
     assert!(text.contains("esc close"));
 }
@@ -1296,23 +1296,23 @@ fn transcript_merges_pending_controls_into_the_active_tool_timeline_cell() {
     assert_eq!(running_count, 1);
     let queued_headline = rendered
         .iter()
-        .find(|line| line_text_for(line).contains("Queued follow-ups · 2"))
+        .find(|line| line_text_for(line).contains("Queued Follow-ups · 2"))
         .expect("expected embedded queued follow-ups headline");
     assert!(queued_headline.spans.len() > 3);
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("latest pending steer"))
+            .any(|line| line_text_for(line).contains("latest Queued Steer"))
     );
     let queued_prompt_line = rendered
         .iter()
-        .find(|line| line_text_for(line).contains("  └ older queued prompt"))
+        .find(|line| line_text_for(line).contains("  └ older Queued Prompt"))
         .expect("expected embedded queued prompt continuation");
     assert!(
         queued_prompt_line
             .spans
             .iter()
-            .any(|span| span.content.as_ref() == "queued prompt")
+            .any(|span| span.content.as_ref() == "Queued Prompt")
     );
 }
 
@@ -1437,12 +1437,12 @@ fn transcript_surfaces_pending_control_timeline_summary() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("Queued follow-ups · 2"))
+            .any(|line| line_text_for(line).contains("Queued Follow-ups · 2"))
     );
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("older queued prompt"))
+            .any(|line| line_text_for(line).contains("older Queued Prompt"))
     );
     assert!(
         rendered
@@ -1452,7 +1452,7 @@ fn transcript_surfaces_pending_control_timeline_summary() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("latest pending steer"))
+            .any(|line| line_text_for(line).contains("latest Queued Steer"))
     );
     assert!(
         rendered
@@ -1510,7 +1510,7 @@ fn transcript_collapses_older_pending_controls_into_a_summary_line() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("latest pending steer"))
+            .any(|line| line_text_for(line).contains("latest Queued Steer"))
     );
     assert!(
         rendered
@@ -1557,7 +1557,7 @@ fn transcript_keeps_an_older_editing_pending_control_visible() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("editing queued prompt"))
+            .any(|line| line_text_for(line).contains("Editing Queued Prompt"))
     );
     assert!(
         rendered
@@ -1567,7 +1567,7 @@ fn transcript_keeps_an_older_editing_pending_control_visible() {
     assert!(
         rendered
             .iter()
-            .any(|line| line_text_for(line).contains("latest pending steer"))
+            .any(|line| line_text_for(line).contains("latest Queued Steer"))
     );
     assert!(
         rendered

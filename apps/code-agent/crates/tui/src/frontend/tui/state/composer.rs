@@ -12,6 +12,7 @@ pub(crate) struct ComposerHistoryNavigationState {
     pub(crate) mode: ComposerHistoryBrowseMode,
     pub(crate) index: usize,
     pub(crate) draft: ComposerDraftState,
+    pub(crate) draft_provenance: ComposerInputProvenance,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,6 +20,25 @@ pub(crate) enum ComposerHistoryBrowseMode {
     PromptOnly,
     CommandOnly,
     Combined,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ComposerInputProvenance {
+    #[default]
+    Empty,
+    Manual,
+    HistoryRecall,
+    Programmatic,
+}
+
+impl ComposerInputProvenance {
+    pub(crate) fn arms_slash_completion(self, input: &str) -> bool {
+        self == Self::Manual && input.trim_start().starts_with('/')
+    }
+
+    pub(crate) fn arms_skill_completion(self, input: &str) -> bool {
+        self == Self::Manual && input.trim_start().starts_with('$')
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -672,18 +692,31 @@ impl TuiState {
     }
 
     pub(crate) fn replace_input(&mut self, input: impl Into<String>) {
-        self.replace_input_draft(ComposerDraftState::from_text(input));
+        self.replace_input_draft(
+            ComposerDraftState::from_text(input),
+            ComposerInputProvenance::Programmatic,
+        );
+    }
+
+    pub(crate) fn replace_input_from_completion(&mut self, input: impl Into<String>) {
+        self.replace_input_draft(
+            ComposerDraftState::from_text(input),
+            ComposerInputProvenance::Manual,
+        );
     }
 
     pub(crate) fn replace_input_text_preserving_attachments(&mut self, input: impl Into<String>) {
         let mut draft = self.current_input_draft();
         draft.text = input.into();
         draft.cursor = draft.text.len();
-        self.replace_input_draft(draft.normalized());
+        self.replace_input_draft(draft.normalized(), ComposerInputProvenance::Programmatic);
     }
 
     pub(crate) fn clear_input(&mut self) {
-        self.replace_input_draft(ComposerDraftState::default());
+        self.replace_input_draft(
+            ComposerDraftState::default(),
+            ComposerInputProvenance::Empty,
+        );
     }
 
     pub(crate) fn set_live_task_finished_hint(
@@ -700,7 +733,7 @@ impl TuiState {
     }
 
     pub(crate) fn restore_input_draft(&mut self, draft: ComposerDraftState) {
-        self.replace_input_draft(draft);
+        self.replace_input_draft(draft, ComposerInputProvenance::Programmatic);
     }
 
     pub(crate) fn push_input_char(&mut self, ch: char) {
@@ -710,6 +743,7 @@ impl TuiState {
         self.input_history_navigation = None;
         self.input_vertical_column = None;
         self.reset_composer_completion();
+        self.set_input_provenance(ComposerInputProvenance::Manual);
     }
 
     pub(crate) fn push_input_str(&mut self, text: &str) {
@@ -719,6 +753,7 @@ impl TuiState {
         self.input_history_navigation = None;
         self.input_vertical_column = None;
         self.reset_composer_completion();
+        self.set_input_provenance(ComposerInputProvenance::Manual);
     }
 
     pub(crate) fn append_input_text(&mut self, text: &str) {
@@ -731,6 +766,7 @@ impl TuiState {
         self.input_history_navigation = None;
         self.input_vertical_column = None;
         self.reset_composer_completion();
+        self.set_input_provenance(ComposerInputProvenance::Manual);
     }
 
     pub(crate) fn push_large_paste(&mut self, payload: &str) -> String {
@@ -949,6 +985,7 @@ impl TuiState {
         self.input_history_navigation = None;
         self.input_vertical_column = None;
         self.reset_composer_completion();
+        self.set_input_provenance(ComposerInputProvenance::Manual);
     }
 
     pub(crate) fn kill_input_to_end(&mut self) -> bool {
@@ -970,6 +1007,7 @@ impl TuiState {
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.reset_composer_completion();
+        self.set_input_provenance(ComposerInputProvenance::Manual);
         true
     }
 
@@ -1080,15 +1118,28 @@ impl TuiState {
         }
 
         if backwards {
-            let (next_index, draft) = match self.input_history_navigation.as_ref() {
-                Some(navigation) => (navigation.index.saturating_sub(1), navigation.draft.clone()),
-                None => (history.len() - 1, self.current_input_draft()),
+            let (next_index, draft, draft_provenance) = match self.input_history_navigation.as_ref()
+            {
+                Some(navigation) => (
+                    navigation.index.saturating_sub(1),
+                    navigation.draft.clone(),
+                    navigation.draft_provenance,
+                ),
+                None => (
+                    history.len() - 1,
+                    self.current_input_draft(),
+                    self.composer_input_provenance,
+                ),
             };
-            self.replace_input_draft(history[next_index].clone());
+            self.replace_input_draft(
+                history[next_index].clone(),
+                ComposerInputProvenance::HistoryRecall,
+            );
             self.input_history_navigation = Some(ComposerHistoryNavigationState {
                 mode,
                 index: next_index,
                 draft,
+                draft_provenance,
             });
             return true;
         }
@@ -1097,14 +1148,18 @@ impl TuiState {
             return false;
         };
         if navigation.index + 1 < history.len() {
-            self.replace_input_draft(history[navigation.index + 1].clone());
+            self.replace_input_draft(
+                history[navigation.index + 1].clone(),
+                ComposerInputProvenance::HistoryRecall,
+            );
             self.input_history_navigation = Some(ComposerHistoryNavigationState {
                 mode: navigation.mode,
                 index: navigation.index + 1,
                 draft: navigation.draft,
+                draft_provenance: navigation.draft_provenance,
             });
         } else {
-            self.replace_input_draft(navigation.draft);
+            self.replace_input_draft(navigation.draft, navigation.draft_provenance);
             self.input_history_navigation = None;
         }
         true
@@ -1114,7 +1169,11 @@ impl TuiState {
         self.composer_completion_index = 0;
     }
 
-    fn replace_input_draft(&mut self, draft: ComposerDraftState) {
+    fn replace_input_draft(
+        &mut self,
+        draft: ComposerDraftState,
+        provenance: ComposerInputProvenance,
+    ) {
         let draft = draft.normalized();
         self.input = draft.text;
         self.input_cursor = draft.cursor;
@@ -1123,6 +1182,7 @@ impl TuiState {
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.reset_composer_completion();
+        self.set_input_provenance(provenance);
     }
 
     fn current_input_draft(&self) -> ComposerDraftState {
@@ -1135,7 +1195,10 @@ impl TuiState {
     }
 
     fn history_browse_mode(&self) -> ComposerHistoryBrowseMode {
-        if self.input.trim_start().starts_with('/') {
+        if self
+            .composer_input_provenance
+            .arms_slash_completion(&self.input)
+        {
             ComposerHistoryBrowseMode::CommandOnly
         } else if self.persisted_history_entries.is_empty() {
             ComposerHistoryBrowseMode::PromptOnly
@@ -1296,6 +1359,7 @@ impl TuiState {
         self.input_vertical_column = None;
         let _ = std::mem::take(&mut self.input);
         self.draft_attachments.clear();
+        self.composer_input_provenance = ComposerInputProvenance::Empty;
         submission
     }
 
@@ -1346,7 +1410,16 @@ impl TuiState {
         self.selected_row_attachment = None;
         self.input_history_navigation = None;
         self.reset_composer_completion();
+        self.set_input_provenance(ComposerInputProvenance::Manual);
         summarize_attachment_edit(&before_rows, &self.row_attachment_previews())
+    }
+
+    fn set_input_provenance(&mut self, provenance: ComposerInputProvenance) {
+        self.composer_input_provenance = if self.input.is_empty() {
+            ComposerInputProvenance::Empty
+        } else {
+            provenance
+        };
     }
 
     fn parse_external_editor_text(

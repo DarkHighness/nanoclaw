@@ -62,6 +62,7 @@ pub(crate) fn render(
     let composer_hint = if !approval_active && !permission_request_active && user_input.is_none() {
         composer_completion_hint(
             &state.input,
+            state.composer_input_provenance,
             state.composer_completion_index,
             &state.session.skills,
         )

@@ -379,7 +379,7 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
             }
             spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
             spans.push(Span::styled(
-                "enter edit",
+                "enter/alt+t edit",
                 Style::default().fg(palette().muted),
             ));
             spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
@@ -392,6 +392,35 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
                 "esc close",
                 Style::default().fg(palette().muted),
             ));
+        } else if let Some(latest) = state.pending_controls.last() {
+            let queue_label = match latest.kind {
+                PendingControlKind::Prompt => "queued prompt",
+                PendingControlKind::Steer if state.turn_running => "steer ready",
+                PendingControlKind::Steer => "queued steer",
+            };
+            spans.push(Span::styled(
+                queue_label,
+                Style::default().fg(palette().header),
+            ));
+            spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            spans.push(Span::styled(
+                "latest draft",
+                Style::default().fg(palette().accent),
+            ));
+            spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            if latest.kind == PendingControlKind::Steer && state.turn_running {
+                spans.push(Span::styled("esc", Style::default().fg(palette().header)));
+                spans.push(Span::styled(
+                    " send now",
+                    Style::default().fg(palette().muted),
+                ));
+                spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            }
+            spans.push(Span::styled("alt+t", Style::default().fg(palette().accent)));
+            spans.push(Span::styled(" edit", Style::default().fg(palette().muted)));
+            spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            spans.push(Span::styled("alt+↑", Style::default().fg(palette().header)));
+            spans.push(Span::styled(" queue", Style::default().fg(palette().muted)));
         } else if let Some(hint) = state.composer_context_hint.as_ref() {
             spans.extend(composer_context_hint_spans(state, hint));
         } else {
