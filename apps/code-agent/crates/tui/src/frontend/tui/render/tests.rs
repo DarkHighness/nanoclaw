@@ -1,6 +1,6 @@
 use super::chrome::{
     approval_preview_lines, build_approval_text, build_composer_line, build_composer_text,
-    build_user_input_text, composer_height, should_render_side_rail,
+    build_user_input_text, composer_cursor_position, composer_height, should_render_side_rail,
 };
 use super::history_rollback_overlay::{
     build_history_rollback_list_text, build_history_rollback_preview_text,
@@ -47,6 +47,7 @@ use crate::tool_render::{
 use agent::types::{MessageId, MessagePart, TaskId, TaskOrigin, TaskStatus};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 fn builtin_slash(spec: SlashCommandSpec) -> SlashInvocationSpec {
     SlashInvocationSpec::Builtin(spec)
@@ -749,7 +750,19 @@ fn multiline_composer_text_keeps_followup_lines_and_shortcuts_visible() {
     assert_eq!(lines[0], "› edit queued steer · first line");
     assert_eq!(lines[1], "  second line");
     assert!(lines[2].contains("enter/tab save"));
-    assert_eq!(composer_height(&state, None), 4);
+    assert_eq!(composer_height(&state, None), 5);
+}
+
+#[test]
+fn composer_cursor_position_reserves_top_padding() {
+    let state = TuiState::default();
+    let position = composer_cursor_position(
+        Rect::new(0, 20, 80, composer_height(&state, None)),
+        &state,
+        None,
+    );
+
+    assert_eq!(position.y, 21);
 }
 
 #[test]
@@ -1171,6 +1184,7 @@ fn transcript_renders_compact_live_progress_line() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working (2)".to_string(),
+        turn_started_at: Some(Instant::now() - Duration::from_secs(128)),
         ..TuiState::default()
     };
 
@@ -1180,6 +1194,11 @@ fn transcript_renders_compact_live_progress_line() {
         rendered
             .iter()
             .any(|line| line_text_for(line).contains("Working (2)"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| { line_text_for(line).contains("2m 08s · esc to interrupt") })
     );
     assert!(!rendered.iter().any(|line| {
         line.spans
@@ -1194,6 +1213,7 @@ fn live_progress_hides_queue_count_while_pending_picker_is_open() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
+        turn_started_at: Some(Instant::now() - Duration::from_secs(128)),
         active_tool_cells: vec![active_tool_entry(
             "call-1",
             "exec_command",
@@ -1214,6 +1234,7 @@ fn live_progress_hides_queue_count_while_pending_picker_is_open() {
     let text = line_text_for(&rendered[0]);
 
     assert!(text.contains("Working · Running cargo test"));
+    assert!(text.contains("2m 08s · esc to interrupt"));
     assert!(!text.contains("queued behind current tool"));
 }
 
@@ -1223,6 +1244,7 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
         main_pane: MainPaneMode::Transcript,
         turn_running: true,
         status: "Working".to_string(),
+        turn_started_at: Some(Instant::now() - Duration::from_secs(128)),
         active_tool_cells: vec![active_tool_entry(
             "call-1",
             "exec_command",
@@ -1247,6 +1269,11 @@ fn transcript_hides_progress_line_while_tool_cell_is_active() {
         rendered
             .iter()
             .any(|line| line_text_for(line).contains("Working · Running cargo test"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Worked 2m 08s"))
     );
 }
 

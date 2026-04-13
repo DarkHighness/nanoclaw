@@ -3,7 +3,7 @@ use super::super::state::{
 };
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
-    RenderedTranscriptCell, animation_frame_ms, live_progress_lines,
+    RenderedTranscriptCell, animation_frame_ms, format_elapsed_duration, live_progress_lines,
     pending_control_embedded_lines, pending_control_picker_bridge_entry,
     pending_control_picker_embedded_lines, pending_control_timeline_entry, prefix_tool_marker,
     prefix_transcript_marker, render_collapsed_shell_summary, render_collapsed_tool_entry,
@@ -21,7 +21,9 @@ use ratatui::layout::{Alignment, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+use std::time::Duration;
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 
 const WELCOME_SIDE_PADDING: u16 = 4;
 const TRANSCRIPT_CELL_GAP_LINES: usize = 1;
@@ -194,6 +196,10 @@ pub(super) fn build_transcript_lines_for_width(
         if !lines.is_empty() {
             lines.push(Line::raw(""));
         }
+        if let Some(divider) = long_running_worked_divider(state, transcript_width) {
+            lines.push(divider);
+            lines.push(Line::raw(""));
+        }
         lines.extend(progress_lines);
     }
 
@@ -212,6 +218,37 @@ fn turn_divider(width: u16) -> Line<'static> {
         "─".repeat(width),
         Style::default().fg(palette().subtle),
     ))
+}
+
+fn long_running_worked_divider(state: &TuiState, width: u16) -> Option<Line<'static>> {
+    let elapsed = state.turn_started_at?.elapsed();
+    (elapsed >= Duration::from_secs(60)).then(|| {
+        labeled_divider(
+            width,
+            &format!("Worked {}", format_elapsed_duration(elapsed)),
+        )
+    })
+}
+
+fn labeled_divider(width: u16, label: &str) -> Line<'static> {
+    let width = usize::from(width.max(1));
+    let label = format!(" {label} ");
+    let label_width = UnicodeWidthStr::width(label.as_str());
+    if label_width >= width {
+        return Line::from(Span::styled(
+            label.chars().take(width).collect::<String>(),
+            Style::default().fg(palette().muted),
+        ));
+    }
+
+    let remaining = width - label_width;
+    let left = remaining / 2;
+    let right = remaining - left;
+    Line::from(vec![
+        Span::styled("─".repeat(left), Style::default().fg(palette().subtle)),
+        Span::styled(label, Style::default().fg(palette().muted)),
+        Span::styled("─".repeat(right), Style::default().fg(palette().subtle)),
+    ])
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

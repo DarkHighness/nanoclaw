@@ -18,7 +18,7 @@ use crate::tool_render::{
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const COLLAPSED_SHELL_PREVIEW_DETAIL_LINES: usize = 2;
 const SELECTED_TOOL_PREVIEW_DETAIL_LINES: usize = 5;
@@ -1021,10 +1021,10 @@ fn transcript_marker_style(marker: &str, accent: Color, kind: TranscriptEntryKin
 pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
     if state.turn_running {
         let frame_time = Instant::now();
-        let elapsed_secs = state
+        let elapsed = state
             .turn_started_at
-            .map(|started| started.elapsed().as_secs())
-            .unwrap_or(0);
+            .map(|started| started.elapsed())
+            .unwrap_or_default();
         let status = live_progress_summary(state);
         let mut spans = vec![
             Span::styled(
@@ -1061,7 +1061,7 @@ pub(super) fn live_progress_lines(state: &TuiState) -> Vec<Line<'static>> {
             ));
         }
         spans.push(Span::styled(
-            format!(" ({}s · esc to interrupt)", elapsed_secs),
+            format!(" ({} · esc to interrupt)", format_elapsed_duration(elapsed)),
             Style::default().fg(palette().muted),
         ));
         vec![Line::from(spans)]
@@ -1417,6 +1417,21 @@ fn animated_emphasis_text_spans(
 
 pub(super) fn animation_frame_ms(started_at: Instant, now: Instant) -> u128 {
     now.duration_since(started_at).as_millis()
+}
+
+pub(super) fn format_elapsed_duration(elapsed: Duration) -> String {
+    let total_secs = elapsed.as_secs();
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m {seconds:02}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 fn live_progress_summary(state: &TuiState) -> String {

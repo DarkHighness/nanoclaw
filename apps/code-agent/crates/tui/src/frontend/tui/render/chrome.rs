@@ -20,7 +20,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 
-const MAX_COMPOSER_HEIGHT: u16 = 10;
+const MIN_COMPOSER_BODY_HEIGHT: u16 = 4;
+const MAX_COMPOSER_BODY_HEIGHT: u16 = 10;
+const COMPOSER_TOP_PADDING: u16 = 1;
 
 pub(super) fn render_composer(
     frame: &mut ratatui::Frame<'_>,
@@ -32,7 +34,7 @@ pub(super) fn render_composer(
         Block::default().style(Style::default().bg(palette().transcript_surface())),
         area,
     );
-    let inner = bottom_band_inner_area(area);
+    let inner = composer_text_area(area);
     let scroll = composer_scroll(state, user_input, inner.height);
     frame.render_widget(
         Paragraph::new(build_composer_text(state, user_input))
@@ -47,7 +49,7 @@ pub(super) fn render_composer(
 }
 
 pub(super) fn composer_height(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
-    composer_text_line_count(state, user_input).clamp(4, MAX_COMPOSER_HEIGHT)
+    composer_body_height(state, user_input).saturating_add(COMPOSER_TOP_PADDING)
 }
 
 pub(super) fn composer_cursor_position(
@@ -55,7 +57,7 @@ pub(super) fn composer_cursor_position(
     state: &TuiState,
     user_input: Option<&UserInputView<'_>>,
 ) -> Position {
-    let inner = bottom_band_inner_area(area);
+    let inner = composer_text_area(area);
     let scroll = composer_scroll(state, user_input, inner.height);
     let (base_line, column) = composer_cursor_metrics(&state.input, state.input_cursor);
     let line = base_line.saturating_add(composer_attachment_row_count(state, user_input));
@@ -72,6 +74,19 @@ pub(super) fn composer_cursor_position(
             .saturating_add(column),
         inner.y.saturating_add(line.saturating_sub(scroll)),
     )
+}
+
+fn composer_text_area(area: Rect) -> Rect {
+    let inner = bottom_band_inner_area(area);
+    if inner.height <= COMPOSER_TOP_PADDING {
+        return inner;
+    }
+    Rect {
+        x: inner.x,
+        y: inner.y.saturating_add(COMPOSER_TOP_PADDING),
+        width: inner.width,
+        height: inner.height.saturating_sub(COMPOSER_TOP_PADDING),
+    }
 }
 
 pub(super) fn render_approval_modal(
@@ -790,13 +805,18 @@ fn composer_text_line_count(state: &TuiState, user_input: Option<&UserInputView<
         .min(u16::MAX as usize) as u16
 }
 
+fn composer_body_height(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
+    composer_text_line_count(state, user_input)
+        .clamp(MIN_COMPOSER_BODY_HEIGHT, MAX_COMPOSER_BODY_HEIGHT)
+}
+
 fn composer_scroll(state: &TuiState, user_input: Option<&UserInputView<'_>>, height: u16) -> u16 {
     if !composer_uses_multiline_layout(state, user_input) {
         return 0;
     }
     let (cursor_line, _) = composer_cursor_metrics(&state.input, state.input_cursor);
     let cursor_line = cursor_line.saturating_add(composer_attachment_row_count(state, user_input));
-    let total_lines = composer_text_line_count(state, user_input);
+    let total_lines = composer_body_height(state, user_input);
     let viewport_height = height.max(1);
     let max_scroll = total_lines.saturating_sub(viewport_height);
     cursor_line
