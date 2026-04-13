@@ -127,6 +127,7 @@ impl Drop for ActiveTurnGuard {
 pub struct CodeAgentSession {
     runtime: Arc<AsyncMutex<AgentRuntime>>,
     control_plane: RuntimeControlPlane,
+    checkpoint_manager: Arc<super::SessionCheckpointManager>,
     model_backend: Option<MutableAgentBackend>,
     subagent_executor: Arc<dyn SubagentExecutor>,
     monitor_manager: Arc<dyn MonitorManager>,
@@ -215,6 +216,7 @@ impl CodeAgentSession {
         Self {
             runtime,
             control_plane,
+            checkpoint_manager,
             model_backend,
             subagent_executor,
             monitor_manager,

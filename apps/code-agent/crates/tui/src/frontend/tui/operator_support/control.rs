@@ -44,6 +44,7 @@ pub(crate) fn build_history_rollback_candidates(
                 turn_preview_lines: format_visible_transcript_preview_lines(&round.round_messages),
                 removed_turn_count: round.removed_turn_count,
                 removed_message_count: round.removed_message_count,
+                checkpoint: round.checkpoint.clone(),
             }
         })
         .collect()
@@ -53,11 +54,17 @@ pub(crate) fn history_rollback_status(
     candidate: &state::HistoryRollbackCandidate,
     selected: usize,
     total: usize,
+    restore_mode: CheckpointRestoreMode,
 ) -> String {
+    let effect = match restore_mode {
+        CheckpointRestoreMode::Both if candidate.checkpoint.is_some() => "restore code + rewind",
+        _ => "rewind transcript",
+    };
     format!(
-        "Rollback turn {} of {} · removes {} turn(s) / {} message(s) · {}",
+        "Rollback turn {} of {} · {} {} turn(s) / {} message(s) · {}",
         selected + 1,
         total,
+        effect,
         candidate.removed_turn_count,
         candidate.removed_message_count,
         state::draft_preview_text(&candidate.draft, &candidate.prompt, 40)

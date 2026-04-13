@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::HistoryRollbackOutcome;
+use crate::ui::{CheckpointRestoreOutcome, HistoryRollbackOutcome};
 
 impl CodeAgentTui {
     pub(super) async fn handle_history_rollback_key(&mut self, key: KeyEvent) -> Result<bool> {
@@ -51,6 +51,12 @@ impl CodeAgentTui {
             }
             KeyCode::Enter => {
                 self.confirm_history_rollback().await?;
+            }
+            KeyCode::Tab => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.cycle_history_rollback_restore_mode();
+                });
+                self.refresh_history_rollback_selection_status();
             }
             KeyCode::Char('q') | KeyCode::Backspace | KeyCode::Delete => {
                 self.ui_state.mutate(|state| {
@@ -129,7 +135,12 @@ impl CodeAgentTui {
         let Some(candidate) = overlay.candidates.get(overlay.selected) else {
             return;
         };
-        let status = history_rollback_status(candidate, overlay.selected, overlay.candidates.len());
+        let status = history_rollback_status(
+            candidate,
+            overlay.selected,
+            overlay.candidates.len(),
+            overlay.restore_mode,
+        );
         self.ui_state.mutate(|state| {
             state.status = status;
         });
@@ -145,15 +156,40 @@ impl CodeAgentTui {
         };
         let total = overlay.candidates.len();
         let selected = overlay.selected;
+        let restore_mode = overlay.restore_mode;
 
-        match self
-            .run_ui::<HistoryRollbackOutcome>(UIAsyncCommand::RollbackVisibleHistoryToMessage {
-                message_id: candidate.message_id.to_string(),
-            })
-            .await
-        {
+        let outcome = match restore_mode {
+            CheckpointRestoreMode::Both => {
+                let Some(checkpoint) = candidate.checkpoint.as_ref() else {
+                    self.ui_state.mutate(|state| {
+                        state.status =
+                            "Selected turn has no checkpoint; only transcript rewind is available"
+                                .to_string();
+                    });
+                    return Ok(());
+                };
+                self.run_ui::<CheckpointRestoreOutcome>(UIAsyncCommand::RestoreCheckpoint {
+                    checkpoint_id: checkpoint.checkpoint_id.to_string(),
+                    restore_mode,
+                })
+                .await
+                .map(|result| {
+                    let transcript = result.transcript.clone();
+                    let removed_message_count = result.removed_message_count;
+                    (transcript, removed_message_count, Some(result))
+                })
+            }
+            _ => self
+                .run_ui::<HistoryRollbackOutcome>(UIAsyncCommand::RollbackVisibleHistoryToMessage {
+                    message_id: candidate.message_id.to_string(),
+                })
+                .await
+                .map(|result| (result.transcript, result.removed_message_count, None)),
+        };
+
+        match outcome {
             Ok(outcome) => {
-                let transcript = format_visible_transcript_lines(&outcome.transcript);
+                let transcript = format_visible_transcript_lines(&outcome.0);
                 let preview = state::preview_text(&candidate.prompt, 48);
                 self.ui_state.mutate(move |state| {
                     state.clear_history_rollback();
@@ -162,21 +198,46 @@ impl CodeAgentTui {
                     state.follow_transcript = true;
                     state.transcript_scroll = u16::MAX;
                     state.restore_input_draft(candidate.draft.clone());
-                    state.status = if candidate.draft.text.trim().is_empty()
-                        && candidate.draft.draft_attachments.is_empty()
-                    {
-                        format!(
-                            "Rolled back {} message(s). Selected turn had no text to restore",
-                            outcome.removed_message_count
-                        )
-                    } else {
-                        format!(
-                            "Rolled back {} message(s). Edit the restored prompt and press Enter",
-                            outcome.removed_message_count
-                        )
+                    state.status = match outcome.2.as_ref() {
+                        Some(restore) => {
+                            if candidate.draft.text.trim().is_empty()
+                                && candidate.draft.draft_attachments.is_empty()
+                            {
+                                format!(
+                                    "Restored {} file(s) and rolled back {} message(s). Selected turn had no text to restore",
+                                    restore.restore.restored_file_count,
+                                    outcome.1
+                                )
+                            } else {
+                                format!(
+                                    "Restored {} file(s) and rolled back {} message(s). Edit the restored prompt and press Enter",
+                                    restore.restore.restored_file_count,
+                                    outcome.1
+                                )
+                            }
+                        }
+                        None if candidate.draft.text.trim().is_empty()
+                            && candidate.draft.draft_attachments.is_empty() =>
+                        {
+                            format!(
+                                "Rolled back {} message(s). Selected turn had no text to restore",
+                                outcome.1
+                            )
+                        }
+                        None => {
+                            format!(
+                                "Rolled back {} message(s). Edit the restored prompt and press Enter",
+                                outcome.1
+                            )
+                        }
                     };
                     state.push_activity(format!(
-                        "rolled back history to turn {} of {}: {}",
+                        "{} history to turn {} of {}: {}",
+                        if outcome.2.is_some() {
+                            "restored checkpoint and rolled back"
+                        } else {
+                            "rolled back"
+                        },
                         selected + 1,
                         total,
                         preview

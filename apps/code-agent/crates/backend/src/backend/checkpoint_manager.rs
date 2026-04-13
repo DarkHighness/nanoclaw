@@ -75,6 +75,18 @@ impl SessionCheckpointManager {
             .collect())
     }
 
+    pub async fn lookup_checkpoint(
+        &self,
+        ctx: &ToolExecutionContext,
+        checkpoint_id: &CheckpointId,
+    ) -> ToolResult<CheckpointRecord> {
+        let (session_id, _) = Self::require_attached_runtime(ctx)?;
+        let timeline = self.load_timeline(&session_id).await?;
+        let (_, checkpoint) =
+            Self::resolve_checkpoint_reference(&timeline, checkpoint_id.as_str())?;
+        Ok(checkpoint.clone())
+    }
+
     fn resolve_checkpoint_reference<'a>(
         timeline: &'a [CheckpointTimelineEntry],
         checkpoint_ref: &str,
@@ -326,33 +338,32 @@ impl CheckpointHandler for SessionCheckpointManager {
         checkpoint_id: &CheckpointId,
         mode: CheckpointRestoreMode,
     ) -> ToolResult<CheckpointRestoreRecord> {
-        if mode != CheckpointRestoreMode::CodeOnly {
-            return Err(ToolError::invalid_state(
-                "checkpoint_restore only supports restore_mode=code_only inside model tool execution; transcript rewind remains a host/operator surface",
-            ));
-        }
         let (session_id, _) = Self::require_attached_runtime(ctx)?;
         let timeline = self.load_timeline(&session_id).await?;
         let (checkpoint_index, target_checkpoint) =
             Self::resolve_checkpoint_reference(&timeline, checkpoint_id.as_str())?;
-        let desired = Self::desired_state_for_checkpoint(&timeline, checkpoint_index);
         let mut changed_files = Vec::new();
         let mut restored_files = Vec::new();
-
-        for (path, target_content) in desired {
-            ctx.assert_path_write_allowed(&path)?;
-            let current_content = load_optional_text_file(&path).await?;
-            if current_content == target_content {
-                continue;
+        if matches!(
+            mode,
+            CheckpointRestoreMode::CodeOnly | CheckpointRestoreMode::Both
+        ) {
+            let desired = Self::desired_state_for_checkpoint(&timeline, checkpoint_index);
+            for (path, target_content) in desired {
+                ctx.assert_path_write_allowed(&path)?;
+                let current_content = load_optional_text_file(&path).await?;
+                if current_content == target_content {
+                    continue;
+                }
+                commit_text_file(&path, target_content.as_deref()).await?;
+                restored_files.push(Self::display_path(ctx, &path));
+                changed_files.push(CheckpointFileMutation {
+                    requested_path: Self::display_path(ctx, &path),
+                    resolved_path: path,
+                    before_text: current_content,
+                    after_text: target_content,
+                });
             }
-            commit_text_file(&path, target_content.as_deref()).await?;
-            restored_files.push(Self::display_path(ctx, &path));
-            changed_files.push(CheckpointFileMutation {
-                requested_path: Self::display_path(ctx, &path),
-                resolved_path: path,
-                before_text: current_content,
-                after_text: target_content,
-            });
         }
 
         let restore_checkpoint_id = if changed_files.is_empty() {

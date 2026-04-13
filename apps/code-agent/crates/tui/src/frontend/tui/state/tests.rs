@@ -13,8 +13,9 @@ use crate::tool_render::{
     ToolCommand, ToolCompletionState, ToolDetail, ToolDetailBlockKind, ToolDetailLabel, ToolReview,
     ToolReviewItem, ToolReviewItemKind, ToolReviewKind,
 };
+use crate::ui::HistoryRollbackCheckpoint;
 use agent::types::{
-    Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
+    CheckpointRestoreMode, Message, MessageId, MessagePart, MessageRole, SubmittedPromptAttachment,
     SubmittedPromptAttachmentKind, SubmittedPromptSnapshot,
 };
 use std::time::{Duration, Instant};
@@ -318,6 +319,7 @@ fn history_rollback_overlay_opens_on_latest_candidate_and_wraps_navigation() {
             turn_preview_lines: vec!["› first".into()],
             removed_turn_count: 2,
             removed_message_count: 4,
+            checkpoint: None,
         },
         HistoryRollbackCandidate {
             message_id: MessageId::from("msg-2"),
@@ -326,6 +328,7 @@ fn history_rollback_overlay_opens_on_latest_candidate_and_wraps_navigation() {
             turn_preview_lines: vec!["› second".into()],
             removed_turn_count: 1,
             removed_message_count: 2,
+            checkpoint: None,
         },
     ];
 
@@ -352,6 +355,60 @@ fn history_rollback_overlay_opens_on_latest_candidate_and_wraps_navigation() {
             .map(|candidate| candidate.prompt.as_str()),
         Some("second")
     );
+}
+
+#[test]
+fn history_rollback_overlay_cycles_restore_mode_only_for_checkpointed_turns() {
+    let mut state = TuiState::default();
+    let candidates = vec![
+        HistoryRollbackCandidate {
+            message_id: MessageId::from("msg-1"),
+            prompt: "first".to_string(),
+            draft: ComposerDraftState::from_text("first"),
+            turn_preview_lines: vec!["› first".into()],
+            removed_turn_count: 2,
+            removed_message_count: 4,
+            checkpoint: None,
+        },
+        HistoryRollbackCandidate {
+            message_id: MessageId::from("msg-2"),
+            prompt: "second".to_string(),
+            draft: ComposerDraftState::from_text("second"),
+            turn_preview_lines: vec!["› second".into()],
+            removed_turn_count: 1,
+            removed_message_count: 2,
+            checkpoint: Some(HistoryRollbackCheckpoint {
+                checkpoint_id: "checkpoint_test".into(),
+                summary: "Updated sample.txt".to_string(),
+                changed_file_count: 1,
+            }),
+        },
+    ];
+
+    assert!(state.open_history_rollback_overlay(candidates));
+    assert_eq!(
+        state
+            .history_rollback_overlay()
+            .map(|overlay| overlay.restore_mode),
+        Some(CheckpointRestoreMode::ConversationOnly)
+    );
+
+    assert!(state.cycle_history_rollback_restore_mode());
+    assert_eq!(
+        state
+            .history_rollback_overlay()
+            .map(|overlay| overlay.restore_mode),
+        Some(CheckpointRestoreMode::Both)
+    );
+
+    assert!(state.move_history_rollback_selection(true));
+    assert_eq!(
+        state
+            .history_rollback_overlay()
+            .map(|overlay| overlay.restore_mode),
+        Some(CheckpointRestoreMode::ConversationOnly)
+    );
+    assert!(!state.cycle_history_rollback_restore_mode());
 }
 
 #[test]

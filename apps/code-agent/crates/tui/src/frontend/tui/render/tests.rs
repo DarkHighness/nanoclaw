@@ -447,6 +447,7 @@ fn history_rollback_overlay_renders_selection_list_and_preview() {
             ],
             removed_turn_count: 2,
             removed_message_count: 4,
+            checkpoint: None,
         },
         HistoryRollbackCandidate {
             message_id: MessageId::from("msg-2"),
@@ -458,6 +459,7 @@ fn history_rollback_overlay_renders_selection_list_and_preview() {
             ],
             removed_turn_count: 1,
             removed_message_count: 2,
+            checkpoint: None,
         },
     ]);
 
@@ -509,6 +511,7 @@ fn history_rollback_overlay_uses_attachment_aware_preview_labels() {
         turn_preview_lines: vec![transcript_entry("› restore attachments")],
         removed_turn_count: 1,
         removed_message_count: 1,
+        checkpoint: None,
     }]);
 
     let list = build_history_rollback_list_text(&state);

@@ -15,6 +15,7 @@ use crate::interaction::{
     ApprovalOrigin, PendingControlKind, PermissionProfile, PermissionRequestPrompt,
 };
 use crate::preview::{PreviewCollapse, collapse_preview_lines};
+use agent::types::CheckpointRestoreMode;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -350,7 +351,15 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
             }
             spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
             spans.push(Span::styled(
-                "enter rollback",
+                match overlay.restore_mode {
+                    CheckpointRestoreMode::Both => "enter restore both",
+                    _ => "enter rewind",
+                },
+                Style::default().fg(palette().muted),
+            ));
+            spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));
+            spans.push(Span::styled(
+                "tab mode",
                 Style::default().fg(palette().muted),
             ));
             spans.push(Span::styled(" · ", Style::default().fg(palette().subtle)));

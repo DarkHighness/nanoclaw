@@ -126,6 +126,11 @@ impl Tool for CheckpointRestoreTool {
         let restore_mode = input
             .restore_mode
             .unwrap_or(CheckpointRestoreMode::CodeOnly);
+        if restore_mode != CheckpointRestoreMode::CodeOnly {
+            return Err(ToolError::invalid_state(
+                "checkpoint_restore only supports restore_mode=code_only inside model tool execution; transcript rewind remains a host/operator surface",
+            ));
+        }
         let handler = ctx.checkpoint_handler.as_ref().ok_or_else(|| {
             ToolError::invalid_state(
                 "checkpoint_restore is unavailable without a host checkpoint handler",

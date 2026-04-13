@@ -42,12 +42,14 @@ pub(crate) struct HistoryRollbackCandidate {
     pub(crate) turn_preview_lines: Vec<TranscriptEntry>,
     pub(crate) removed_turn_count: usize,
     pub(crate) removed_message_count: usize,
+    pub(crate) checkpoint: Option<HistoryRollbackCheckpoint>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HistoryRollbackOverlayState {
     pub(crate) selected: usize,
     pub(crate) candidates: Vec<HistoryRollbackCandidate>,
+    pub(crate) restore_mode: CheckpointRestoreMode,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -272,6 +274,7 @@ impl TuiState {
             HistoryRollbackOverlayState {
                 selected: candidates.len().saturating_sub(1),
                 candidates,
+                restore_mode: CheckpointRestoreMode::ConversationOnly,
             },
         ));
         self.tool_review = None;
@@ -403,6 +406,14 @@ impl TuiState {
         } else {
             (overlay.selected + 1) % total
         };
+        if overlay
+            .candidates
+            .get(overlay.selected)
+            .and_then(|candidate| candidate.checkpoint.as_ref())
+            .is_none()
+        {
+            overlay.restore_mode = CheckpointRestoreMode::ConversationOnly;
+        }
         true
     }
 
@@ -418,12 +429,38 @@ impl TuiState {
         } else {
             overlay.candidates.len().saturating_sub(1)
         };
+        if overlay
+            .candidates
+            .get(overlay.selected)
+            .and_then(|candidate| candidate.checkpoint.as_ref())
+            .is_none()
+        {
+            overlay.restore_mode = CheckpointRestoreMode::ConversationOnly;
+        }
         true
     }
 
     pub(crate) fn selected_history_rollback_candidate(&self) -> Option<&HistoryRollbackCandidate> {
         let overlay = self.history_rollback_overlay()?;
         overlay.candidates.get(overlay.selected)
+    }
+
+    pub(crate) fn cycle_history_rollback_restore_mode(&mut self) -> bool {
+        let Some(HistoryRollbackState::Selecting(overlay)) = self.history_rollback.as_mut() else {
+            return false;
+        };
+        let Some(candidate) = overlay.candidates.get(overlay.selected) else {
+            return false;
+        };
+        if candidate.checkpoint.is_none() {
+            overlay.restore_mode = CheckpointRestoreMode::ConversationOnly;
+            return false;
+        }
+        overlay.restore_mode = match overlay.restore_mode {
+            CheckpointRestoreMode::ConversationOnly => CheckpointRestoreMode::Both,
+            _ => CheckpointRestoreMode::ConversationOnly,
+        };
+        true
     }
 
     pub(crate) fn sync_pending_controls(&mut self, controls: Vec<PendingControlSummary>) {

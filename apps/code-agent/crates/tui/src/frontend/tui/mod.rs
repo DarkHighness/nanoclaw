@@ -71,7 +71,9 @@ use agent::RuntimeCommand;
 use agent::tools::{
     ToolExecutionContext, load_tool_image, resolve_tool_path_against_workspace_root,
 };
-use agent::types::{Message, MessagePart, SubmittedPromptSnapshot, message_operator_text};
+use agent::types::{
+    CheckpointRestoreMode, Message, MessagePart, SubmittedPromptSnapshot, message_operator_text,
+};
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use crossterm::event::{

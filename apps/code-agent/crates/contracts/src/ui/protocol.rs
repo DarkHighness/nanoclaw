@@ -6,10 +6,10 @@ use super::{
     },
     monitors::{LiveMonitorControlOutcome, LiveMonitorSummary},
     session::{
-        HistoryRollbackOutcome, HistoryRollbackRound, LoadedAgentSession, LoadedSession,
-        PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-        SessionExportArtifact, SessionOperation, SessionOperationOutcome, SessionStartupSnapshot,
-        SideQuestionOutcome,
+        CheckpointRestoreOutcome, HistoryRollbackOutcome, HistoryRollbackRound, LoadedAgentSession,
+        LoadedSession, PersistedAgentSessionSummary, PersistedSessionSearchMatch,
+        PersistedSessionSummary, SessionExportArtifact, SessionOperation, SessionOperationOutcome,
+        SessionStartupSnapshot, SideQuestionOutcome,
     },
     tasks::{
         LiveTaskAttentionOutcome, LiveTaskControlOutcome, LiveTaskMessageOutcome,
@@ -23,7 +23,7 @@ use crate::interaction::{
     SessionPermissionModeOutcome, SkillSummary, UserInputPrompt, UserInputSubmission,
 };
 use agent::runtime::RuntimeCommand;
-use agent::types::{Message, SubmittedPromptSnapshot};
+use agent::types::{CheckpointRestoreMode, Message, SubmittedPromptSnapshot};
 use std::path::PathBuf;
 
 pub type UIEvent = SessionEvent;
@@ -125,6 +125,10 @@ pub enum UIAsyncCommand {
     RollbackVisibleHistoryToMessage {
         message_id: String,
     },
+    RestoreCheckpoint {
+        checkpoint_id: String,
+        restore_mode: CheckpointRestoreMode,
+    },
     HistoryRollbackRounds,
     CompactNow {
         notes: Option<String>,
@@ -208,6 +212,7 @@ pub enum UIAsyncResult {
     Bool(bool),
     String(String),
     Usize(usize),
+    CheckpointRestoreOutcome(CheckpointRestoreOutcome),
     HistoryRollbackOutcome(HistoryRollbackOutcome),
     HistoryRollbackRounds(Vec<HistoryRollbackRound>),
     SessionOperationOutcome(SessionOperationOutcome),
@@ -317,6 +322,7 @@ impl_ui_async_value!((), Unit);
 impl_ui_async_value!(bool, Bool);
 impl_ui_async_value!(String, String);
 impl_ui_async_value!(usize, Usize);
+impl_ui_async_value!(CheckpointRestoreOutcome, CheckpointRestoreOutcome);
 impl_ui_async_value!(HistoryRollbackOutcome, HistoryRollbackOutcome);
 impl_ui_async_value!(Vec<HistoryRollbackRound>, HistoryRollbackRounds);
 impl_ui_async_value!(SessionOperationOutcome, SessionOperationOutcome);

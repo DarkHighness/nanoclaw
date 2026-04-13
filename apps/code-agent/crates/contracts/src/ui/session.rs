@@ -3,8 +3,8 @@ use crate::interaction::SessionPermissionMode;
 use crate::motion::TuiMotionConfig;
 use crate::statusline::StatusLineConfig;
 use agent::types::{
-    AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, Message, MessageId,
-    SessionEventEnvelope, SessionId, SessionSummaryTokenUsage,
+    AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, CheckpointId, CheckpointRestoreRecord,
+    Message, MessageId, SessionEventEnvelope, SessionId, SessionSummaryTokenUsage,
 };
 use std::path::PathBuf;
 use store::{SessionSummary, SessionTokenUsageReport, TokenUsageRecord};
@@ -62,12 +62,27 @@ pub struct HistoryRollbackOutcome {
     pub removed_message_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryRollbackCheckpoint {
+    pub checkpoint_id: CheckpointId,
+    pub summary: String,
+    pub changed_file_count: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryRollbackRound {
     pub rollback_message_id: MessageId,
     pub prompt_message: Message,
     pub round_messages: Vec<Message>,
     pub removed_turn_count: usize,
+    pub removed_message_count: usize,
+    pub checkpoint: Option<HistoryRollbackCheckpoint>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckpointRestoreOutcome {
+    pub restore: CheckpointRestoreRecord,
+    pub transcript: Vec<Message>,
     pub removed_message_count: usize,
 }
 

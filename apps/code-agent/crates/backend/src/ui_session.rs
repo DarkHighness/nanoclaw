@@ -131,6 +131,14 @@ impl CodeAgentUiSession {
                         .await?,
                 )
             }
+            UIAsyncCommand::RestoreCheckpoint {
+                checkpoint_id,
+                restore_mode,
+            } => UIAsyncResult::CheckpointRestoreOutcome(
+                self.inner
+                    .restore_checkpoint(&checkpoint_id, restore_mode)
+                    .await?,
+            ),
             UIAsyncCommand::HistoryRollbackRounds => {
                 UIAsyncResult::HistoryRollbackRounds(self.inner.history_rollback_rounds().await)
             }

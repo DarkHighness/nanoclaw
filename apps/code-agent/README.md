@@ -18,7 +18,7 @@ It intentionally keeps the host layer thin:
   - `code_search` now returns ranked matches with typed scores and uses managed semantic symbols plus lexical snippet fallback when LSP is available
 - agentic tools: `skills_list`, `skill_view`, `skill_manage`, `request_user_input`, `request_permissions`, `checkpoint_list`, `checkpoint_restore`, `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
   - `checkpoint_list` enumerates durable pre-mutation restore points captured from `write`, `edit`, and `patch_files`
-  - `checkpoint_restore` restores workspace code to a selected checkpoint boundary without relying on git; transcript rewind remains a separate operator surface
+  - `checkpoint_restore` restores workspace code to a selected checkpoint boundary without relying on git; the operator rollback overlay can now toggle between transcript-only rewind and combined code+conversation restore when a turn has a checkpoint
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
   - `send_input interrupt=true` now performs a real child restart instead of queuing behind the active turn, and the TUI/history surfaces distinguish queued follow-ups from interrupt-driven restarts
@@ -381,9 +381,11 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   message; otherwise the composer returns to an idle "what next?" state.
 - While idle with an empty composer, `Esc` arms history rollback. Press `Esc`
   again to open the rollback overlay, `Esc`/`Left` to move to older user turns,
-  `Right` to move forward, `Enter` to confirm, and `q` to cancel. Confirming a
-  rollback removes the selected user turn and everything after it, then restores
-  that user prompt into the composer for editing.
+  `Right` to move forward, `Tab` to toggle code restore when a checkpoint is
+  available, `Enter` to confirm, and `q` to cancel. Confirming a rollback
+  removes the selected user turn and everything after it, restores that user
+  prompt into the composer for editing, and can also restore workspace code to
+  the matching durable checkpoint boundary.
 - The composer now keeps a workspace-persistent text history plus an in-memory
   session-local draft history. `Up` / `Down` recall prompt history only when the
   cursor is already at a buffer boundary; otherwise those keys move vertically

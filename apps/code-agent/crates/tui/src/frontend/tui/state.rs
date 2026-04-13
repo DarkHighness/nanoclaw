@@ -10,8 +10,11 @@ use crate::tool_render::{
     ToolRenderKind, ToolReview, preview_tool_details, serialize_tool_details,
     tool_review_from_details,
 };
-use crate::ui::StartupDiagnosticsSnapshot;
-use agent::types::{SubmittedPromptSnapshot, TaskId, TaskOrigin, TaskStatus, TokenLedgerSnapshot};
+use crate::ui::{HistoryRollbackCheckpoint, StartupDiagnosticsSnapshot};
+use agent::types::{
+    CheckpointRestoreMode, SubmittedPromptSnapshot, TaskId, TaskOrigin, TaskStatus,
+    TokenLedgerSnapshot,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, RwLock};

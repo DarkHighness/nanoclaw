@@ -6,6 +6,7 @@ use super::overlay::{
 use super::shared::clamp_scroll;
 use super::theme::palette;
 use super::transcript::format_transcript_cell;
+use agent::types::CheckpointRestoreMode;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -122,7 +123,24 @@ pub(super) fn build_history_rollback_summary_text(state: &TuiState) -> Text<'sta
             ),
         ]),
         Line::from(vec![Span::styled(
-            "Transcript rollback restores the selected draft and rewinds visible conversation only. Workspace files stay unchanged until a checkpoint restore is applied.",
+            match (
+                overlay.restore_mode,
+                candidate.checkpoint.as_ref(),
+            ) {
+                (CheckpointRestoreMode::Both, Some(checkpoint)) => {
+                    format!(
+                        "Restore mode: rewind visible conversation and restore code from {} ({} file change(s)).",
+                        checkpoint.checkpoint_id, checkpoint.changed_file_count
+                    )
+                }
+                (_, Some(checkpoint)) => {
+                    format!(
+                        "Transcript rollback restores the selected draft and rewinds visible conversation only. Press Tab to include code restore from {}.",
+                        checkpoint.checkpoint_id
+                    )
+                }
+                _ => "Transcript rollback restores the selected draft and rewinds visible conversation only. No durable checkpoint was recorded for this turn, so workspace files stay unchanged.".to_string(),
+            },
             Style::default().fg(palette().muted),
         )]),
     ])
@@ -174,10 +192,19 @@ pub(super) fn build_history_rollback_list_text(state: &TuiState) -> Text<'static
         lines.push(Line::from(vec![
             Span::styled("  Effect ", Style::default().fg(palette().muted)),
             Span::styled(
-                format!(
-                    "rewind transcript {} turn(s) · remove {} message(s)",
-                    candidate.removed_turn_count, candidate.removed_message_count
-                ),
+                match candidate.checkpoint.as_ref() {
+                    Some(checkpoint) => format!(
+                        "rewind transcript {} turn(s) · remove {} message(s) · checkpoint {} ({} file(s))",
+                        candidate.removed_turn_count,
+                        candidate.removed_message_count,
+                        checkpoint.checkpoint_id,
+                        checkpoint.changed_file_count
+                    ),
+                    None => format!(
+                        "rewind transcript {} turn(s) · remove {} message(s)",
+                        candidate.removed_turn_count, candidate.removed_message_count
+                    ),
+                },
                 Style::default().fg(palette().muted),
             ),
         ]));
@@ -223,8 +250,14 @@ fn build_history_rollback_help_text() -> Text<'static> {
         Span::styled("←/→", Style::default().fg(palette().accent)),
         Span::styled(" select turn", Style::default().fg(palette().muted)),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("tab", Style::default().fg(palette().accent)),
+        Span::styled(" toggle code restore", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled("enter", Style::default().fg(palette().accent)),
-        Span::styled(" rewind transcript", Style::default().fg(palette().muted)),
+        Span::styled(
+            " apply selected restore",
+            Style::default().fg(palette().muted),
+        ),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled("q", Style::default().fg(palette().accent)),
         Span::styled(" close", Style::default().fg(palette().muted)),

@@ -279,6 +279,7 @@ fn history_rollback_candidates_track_turn_slice_and_removed_counts() {
             round_messages: vec![first_prompt.clone(), first_answer.clone()],
             removed_turn_count: 2,
             removed_message_count: 4,
+            checkpoint: None,
         },
         HistoryRollbackRound {
             rollback_message_id: second_prompt.message_id.clone(),
@@ -286,6 +287,7 @@ fn history_rollback_candidates_track_turn_slice_and_removed_counts() {
             round_messages: vec![second_prompt.clone(), second_answer.clone()],
             removed_turn_count: 1,
             removed_message_count: 2,
+            checkpoint: None,
         },
     ];
 
@@ -323,6 +325,7 @@ fn history_rollback_candidates_restore_latest_user_prompt_from_request_round_sna
         round_messages: vec![steer, recall, prompt.clone(), reply],
         removed_turn_count: 1,
         removed_message_count: 4,
+        checkpoint: None,
     }];
 
     let candidates = build_history_rollback_candidates(&rounds);
@@ -358,6 +361,7 @@ fn history_rollback_candidates_keep_operator_visible_attachment_summaries() {
         round_messages: vec![prompt],
         removed_turn_count: 1,
         removed_message_count: 1,
+        checkpoint: None,
     }];
 
     let candidates = build_history_rollback_candidates(&rounds);
@@ -401,6 +405,7 @@ fn history_rollback_candidates_restore_text_and_inline_attachments_into_draft() 
         round_messages: vec![prompt],
         removed_turn_count: 1,
         removed_message_count: 1,
+        checkpoint: None,
     }];
 
     let candidates = build_history_rollback_candidates(&rounds);
@@ -441,6 +446,7 @@ fn history_rollback_candidates_restore_large_paste_placeholders_into_draft() {
         round_messages: vec![prompt],
         removed_turn_count: 1,
         removed_message_count: 1,
+        checkpoint: None,
     }];
 
     let candidates = build_history_rollback_candidates(&rounds);

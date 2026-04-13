@@ -26,7 +26,8 @@ use agent::runtime::{
     ModelBackend, PermissionGrantStore, Result as RuntimeResult,
 };
 use agent::tools::{
-    ExecCommandTool, GrantedPermissionResponse, HOST_FEATURE_HOST_PROCESS_SURFACES,
+    CheckpointFileMutation, CheckpointHandler, CheckpointMutationRequest, ExecCommandTool,
+    GrantedPermissionResponse, HOST_FEATURE_HOST_PROCESS_SURFACES,
     HOST_FEATURE_REQUEST_PERMISSIONS, PermissionGrantScope, PermissionRequest,
     PermissionRequestHandler, Result as ToolResult, SubagentExecutor, SubagentInputDelivery,
     SubagentLaunchSpec, SubagentParentContext, ToolError, ToolExecutionContext, ToolRegistry,
@@ -34,11 +35,11 @@ use agent::tools::{
 };
 use agent::types::{
     AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentStatus, AgentTaskSpec,
-    AgentWaitRequest, AgentWaitResponse, CommandHookHandler, DynamicToolSpec, HookEvent,
-    HookHandler, HookRegistration, McpToolBoundary, McpTransportKind, Message, MessageId,
-    MessagePart, ModelEvent, ModelRequest, SessionEventEnvelope, SessionEventKind, SessionId,
-    SubmittedPromptSnapshot, TaskId, TaskOrigin, TaskStatus, ToolAvailability, ToolOrigin,
-    ToolOutputMode, ToolSource, ToolSpec, ToolVisibilityContext,
+    AgentWaitRequest, AgentWaitResponse, CheckpointRestoreMode, CommandHookHandler,
+    DynamicToolSpec, HookEvent, HookHandler, HookRegistration, McpToolBoundary, McpTransportKind,
+    Message, MessageId, MessagePart, MessageRole, ModelEvent, ModelRequest, SessionEventEnvelope,
+    SessionEventKind, SessionId, SubmittedPromptSnapshot, TaskId, TaskOrigin, TaskStatus,
+    ToolAvailability, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec, ToolVisibilityContext,
 };
 use agent::{AgentRuntimeBuilder, RequestPermissionsTool, RuntimeCommand, SkillCatalog};
 use async_trait::async_trait;
@@ -2930,4 +2931,105 @@ fn schedule_live_task_attention_schedules_steer_when_turn_running() {
         ))
     );
     assert_eq!(pending[0].preview, scheduled.preview);
+}
+
+#[test]
+fn restore_checkpoint_both_recovers_code_and_rewinds_visible_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(ScriptedTextBackend::new(vec![
+        "answer one".to_string(),
+        "answer two".to_string(),
+    ]));
+    let runtime_handle = tokio::runtime::Runtime::new().unwrap();
+    let mut runtime = AgentRuntimeBuilder::new(backend, store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        })
+        .skill_catalog(SkillCatalog::default())
+        .build();
+
+    let second_turn = runtime_handle.block_on(async {
+        runtime.run_user_prompt("first task").await.unwrap();
+        runtime.run_user_prompt("second task").await.unwrap()
+    });
+
+    let session = build_session(
+        runtime,
+        Arc::new(NoopSubagentExecutor),
+        store,
+        startup_snapshot(dir.path()),
+    );
+    let file_path = dir.path().join("sample.txt");
+    runtime_handle.block_on(async {
+        tokio::fs::write(&file_path, "before\n").await.unwrap();
+
+        let (session_id, agent_session_id) = {
+            let runtime = session.runtime.lock().await;
+            (runtime.session_id(), runtime.agent_session_id())
+        };
+        let checkpoint_ctx = session
+            .session_tool_context
+            .read()
+            .unwrap()
+            .clone()
+            .with_runtime_scope(
+                session_id,
+                agent_session_id,
+                second_turn.turn_id.clone(),
+                "write",
+                "call-checkpoint-restore-test",
+            );
+        let checkpoint = session
+            .checkpoint_manager
+            .record_mutation(
+                &checkpoint_ctx,
+                CheckpointMutationRequest {
+                    summary: "Updated sample.txt".to_string(),
+                    changed_files: vec![CheckpointFileMutation {
+                        requested_path: "sample.txt".to_string(),
+                        resolved_path: file_path.clone(),
+                        before_text: Some("before\n".to_string()),
+                        after_text: Some("after\n".to_string()),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        tokio::fs::write(&file_path, "after\n").await.unwrap();
+
+        let rounds = session.history_rollback_rounds().await;
+        assert_eq!(rounds.len(), 2);
+        let latest = rounds.last().unwrap();
+        assert_eq!(
+            latest
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.checkpoint_id.clone()),
+            Some(checkpoint.checkpoint_id.clone())
+        );
+
+        let outcome = session
+            .restore_checkpoint(
+                checkpoint.checkpoint_id.as_str(),
+                CheckpointRestoreMode::Both,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.restore.restored_file_count, 1);
+        assert_eq!(outcome.removed_message_count, 2);
+        assert_eq!(
+            tokio::fs::read_to_string(&file_path).await.unwrap(),
+            "before\n"
+        );
+        assert_eq!(outcome.transcript.len(), 2);
+        assert_eq!(outcome.transcript[0].role, MessageRole::User);
+        assert_eq!(outcome.transcript[0].text_content(), "first task");
+        assert_eq!(outcome.transcript[1].role, MessageRole::Assistant);
+        assert_eq!(outcome.transcript[1].text_content(), "answer one");
+    });
 }
