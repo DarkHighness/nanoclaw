@@ -9,7 +9,7 @@ use super::shared::{
 use super::statusline::status_color;
 use super::theme::palette;
 use super::transcript::TranscriptEntryKind;
-use super::transcript_markdown::render_shell_code_block;
+use super::transcript_markdown::{render_markdown_body, render_shell_code_block};
 use super::transcript_markdown_blocks::code_span;
 use super::transcript_markdown_line::render_transcript_body_line;
 use crate::tool_render::{
@@ -485,7 +485,7 @@ fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Lin
                 )],
             ),
         )],
-        ToolDetail::LabeledBlock { label, lines } => render_labeled_tool_block(label, lines),
+        ToolDetail::LabeledBlock { label, lines } => render_labeled_tool_block(label, lines, kind),
         ToolDetail::TextBlock(lines) => render_tool_text_block(lines, kind),
         ToolDetail::NamedBlock {
             label,
@@ -540,26 +540,7 @@ fn render_command_detail(command: &ToolCommand) -> Vec<Line<'static>> {
 }
 
 fn render_shell_text_block(lines: &[String], kind: TranscriptEntryKind) -> Vec<Line<'static>> {
-    lines
-        .iter()
-        .enumerate()
-        .map(|(index, line)| {
-            if index == 0 {
-                detail_line(
-                    false,
-                    vec![Span::styled(
-                        line.clone(),
-                        Style::default().fg(palette().muted),
-                    )],
-                )
-            } else {
-                detail_line(
-                    true,
-                    vec![Span::styled(line.clone(), shell_block_line_style(kind))],
-                )
-            }
-        })
-        .collect()
+    render_markdown_detail_block(&lines.join("\n"), kind)
 }
 
 fn render_named_shell_block(
@@ -633,36 +614,17 @@ fn render_named_tool_block(
     rendered
 }
 
-fn render_labeled_tool_block(label: &ToolDetailLabel, lines: &[String]) -> Vec<Line<'static>> {
-    let mut rendered = Vec::new();
-    if let Some((first, rest)) = lines.split_first() {
-        rendered.push(detail_line(
-            false,
-            labeled_detail_spans(
-                label.as_str(),
-                tool_detail_label_color(*label),
-                vec![Span::styled(
-                    first.clone(),
-                    tool_detail_value_style(*label, first),
-                )],
-            ),
-        ));
-        rendered.extend(rest.iter().map(|line| {
-            detail_line(
-                true,
-                vec![Span::styled(
-                    line.clone(),
-                    Style::default().fg(palette().muted),
-                )],
-            )
-        }));
-    } else {
-        rendered.push(detail_line(
-            false,
-            labeled_detail_spans(label.as_str(), tool_detail_label_color(*label), Vec::new()),
-        ));
-    }
-    rendered
+fn render_labeled_tool_block(
+    label: &ToolDetailLabel,
+    lines: &[String],
+    kind: TranscriptEntryKind,
+) -> Vec<Line<'static>> {
+    render_markdown_labeled_detail_block(
+        label.as_str(),
+        tool_detail_label_color(*label),
+        &lines.join("\n"),
+        kind,
+    )
 }
 
 fn render_tool_status_line(entry: &TranscriptToolEntry) -> Line<'static> {
@@ -795,26 +757,34 @@ fn labeled_detail_spans(
 }
 
 fn render_tool_text_block(lines: &[String], kind: TranscriptEntryKind) -> Vec<Line<'static>> {
-    let mut rendered = Vec::new();
-    if let Some((first, rest)) = lines.split_first() {
-        rendered.push(detail_line(
-            false,
-            labeled_detail_spans(
-                "Output",
-                palette().muted,
-                vec![Span::styled(
-                    first.clone(),
-                    Style::default().fg(shell_block_line_style(kind).fg.unwrap_or(palette().text)),
-                )],
-            ),
-        ));
-        rendered.extend(rest.iter().map(|line| {
-            detail_line(
-                true,
-                vec![Span::styled(line.clone(), shell_block_line_style(kind))],
-            )
-        }));
+    render_markdown_labeled_detail_block("Output", palette().muted, &lines.join("\n"), kind)
+}
+
+fn render_markdown_detail_block(body: &str, kind: TranscriptEntryKind) -> Vec<Line<'static>> {
+    let mut rendered = render_markdown_body(body, kind);
+    if let Some(index) = rendered.iter().position(line_has_visible_content) {
+        let body_spans = rendered[index].spans.clone();
+        rendered[index] = detail_line(false, body_spans);
     }
+    rendered
+}
+
+fn render_markdown_labeled_detail_block(
+    label: &str,
+    label_color: Color,
+    body: &str,
+    kind: TranscriptEntryKind,
+) -> Vec<Line<'static>> {
+    let mut rendered = render_markdown_body(body, kind);
+    let Some(index) = rendered.iter().position(line_has_visible_content) else {
+        return vec![detail_line(
+            false,
+            labeled_detail_spans(label, label_color, Vec::new()),
+        )];
+    };
+
+    let body_spans = rendered[index].spans.clone();
+    rendered[index] = detail_line(false, labeled_detail_spans(label, label_color, body_spans));
     rendered
 }
 
@@ -1031,17 +1001,6 @@ fn shell_block_label_style(kind: TranscriptShellBlockKind) -> Style {
         TranscriptShellBlockKind::Diff => Style::default()
             .fg(palette().user)
             .add_modifier(Modifier::BOLD),
-    }
-}
-
-fn shell_block_line_style(kind: TranscriptEntryKind) -> Style {
-    match kind {
-        TranscriptEntryKind::SuccessSummary => Style::default().fg(palette().text),
-        TranscriptEntryKind::ErrorSummary
-        | TranscriptEntryKind::WarningSummary
-        | TranscriptEntryKind::ShellSummary
-        | TranscriptEntryKind::AssistantMessage
-        | TranscriptEntryKind::UserPrompt => Style::default().fg(palette().muted),
     }
 }
 

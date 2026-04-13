@@ -1701,6 +1701,135 @@ fn transcript_preserves_span_level_syntax_highlighting_for_fenced_code() {
     );
 }
 
+#[test]
+fn transcript_renders_shell_text_blocks_as_markdown_sections() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        show_tool_details: true,
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::shell_summary_details(
+        "Session note",
+        vec![TranscriptShellDetail::TextBlock(vec![
+            "# Findings".to_string(),
+            "- inspect output".to_string(),
+            "> keep the diff readable".to_string(),
+            "```diff".to_string(),
+            "+ added line".to_string(),
+            "```".to_string(),
+        ])],
+    )];
+
+    let rendered = build_transcript_lines(&state);
+    let rendered_text = rendered.iter().map(line_text_for).collect::<Vec<_>>();
+
+    assert!(
+        rendered.iter().any(|line| {
+            let text = line_text_for(line);
+            text.contains("Findings") && text.contains("└")
+        }),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("inspect output")),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("keep the diff readable")),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("··· diff")),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("+ added line")),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered.iter().all(|line| {
+            line.spans
+                .iter()
+                .all(|span| !span.content.as_ref().contains("```"))
+        }),
+        "lines: {rendered_text:?}"
+    );
+}
+
+#[test]
+fn transcript_renders_tool_text_blocks_as_markdown_output() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        show_tool_details: true,
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::tool(
+        TranscriptToolStatus::Finished,
+        "browser_snapshot",
+        vec![ToolDetail::TextBlock(vec![
+            "# Snapshot".to_string(),
+            "- primary button".to_string(),
+            "Use `button.primary`".to_string(),
+            "```diff".to_string(),
+            "+ aria-label".to_string(),
+            "```".to_string(),
+        ])],
+    )];
+
+    let rendered = build_transcript_lines(&state);
+    let rendered_text = rendered.iter().map(line_text_for).collect::<Vec<_>>();
+
+    assert!(
+        rendered.iter().any(|line| {
+            let text = line_text_for(line);
+            text.contains("Output") && text.contains("Snapshot")
+        }),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("primary button")),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref() == "button.primary")
+        }),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("··· diff")),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("+ aria-label")),
+        "lines: {rendered_text:?}"
+    );
+    assert!(
+        rendered.iter().all(|line| {
+            line.spans
+                .iter()
+                .all(|span| !span.content.as_ref().contains("```"))
+        }),
+        "lines: {rendered_text:?}"
+    );
+}
+
 fn line_text_for(line: &ratatui::text::Line<'_>) -> String {
     line.spans
         .iter()

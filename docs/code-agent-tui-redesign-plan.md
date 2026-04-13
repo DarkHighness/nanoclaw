@@ -85,8 +85,8 @@ The current TUI still has systemic issues:
 | Phase 2: Width, Divider, And Spacing Repair | Complete | Transcript width now follows the visible pane geometry directly, and turn dividers no longer inherit artificial side padding. |
 | Phase 3: Footer Layout Redesign | Complete | Composer and statusline now sit on the main transcript surface by default, and the composer reserves more breathing room. |
 | Phase 4: Transcript Cell Model | Complete | Transcript rendering now composes explicit `header / body / meta` sections, and selected cells share one restrained focus chrome. |
-| Phase 5: Markdown-First Transcript | In Progress | Promote Markdown rendering into the default assistant/system composition path. |
-| Phase 6: Tool, Review, And Overlay Surfaces | Pending | Standardize tool cards, approval/review/rollback overlays, and truncation rules. |
+| Phase 5: Markdown-First Transcript | Complete | Markdown now renders through assistant content and transcript detail blocks, including shell/tool text sections. |
+| Phase 6: Tool, Review, And Overlay Surfaces | In Progress | Standardize tool cards, approval/review/rollback overlays, and truncation rules. |
 | Phase 7: Tests, Docs, And Stabilization | Pending | Lock the new layout with rendering tests and keep this ledger updated. |
 
 ## Phase 1: Theme And Surface Unification
@@ -254,6 +254,17 @@ Acceptance criteria:
 - code blocks, lists, and inline code follow the same visual grammar across the
   transcript
 - tool and system cells can embed Markdown sections without special-case hacks
+
+Shipped:
+
+- assistant and user transcript cells continue to use the Markdown renderer as
+  their canonical body path on top of the new cell protocol
+- shell summary `TextBlock` content now renders through the same Markdown path,
+  so headings, quotes, lists, and fenced code behave like first-class transcript
+  content instead of plain string dumps
+- tool `TextBlock` and `LabeledBlock` content now reuse the Markdown renderer,
+  which lets inline code and fenced previews survive inside structured tool
+  sections without inventing a second formatting system
 
 ## Phase 6: Tool, Review, And Overlay Surfaces
 
