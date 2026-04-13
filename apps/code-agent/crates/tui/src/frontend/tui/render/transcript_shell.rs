@@ -23,6 +23,23 @@ use std::time::Instant;
 const COLLAPSED_SHELL_PREVIEW_DETAIL_LINES: usize = 2;
 const SELECTED_TOOL_PREVIEW_DETAIL_LINES: usize = 5;
 
+#[derive(Clone, Debug, Default)]
+pub(super) struct RenderedTranscriptCell {
+    pub(super) header: Vec<Line<'static>>,
+    pub(super) body: Vec<Line<'static>>,
+    pub(super) meta: Vec<Line<'static>>,
+}
+
+impl RenderedTranscriptCell {
+    pub(super) fn with_body(body: Vec<Line<'static>>) -> Self {
+        Self {
+            header: Vec::new(),
+            body,
+            meta: Vec::new(),
+        }
+    }
+}
+
 pub(super) fn should_collapse_shell_details(
     entry: &TranscriptEntry,
     show_tool_details: bool,
@@ -46,7 +63,7 @@ pub(super) fn render_collapsed_tool_entry(
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
     selected: bool,
-) -> Vec<Line<'static>> {
+) -> RenderedTranscriptCell {
     let tool = entry
         .tool_entry()
         .expect("collapsed tool entries require structured tool payloads");
@@ -57,24 +74,14 @@ pub(super) fn render_collapsed_tool_entry(
     };
     let preview = tool.preview_with_detail_lines(preview_line_count);
     let hidden_line_count = hidden_tool_detail_line_count_with_limit(entry, preview_line_count);
-
-    let mut rendered = render_tool_entry(&preview, marker, kind, animation_frame);
+    let mut cell = render_tool_entry_sections(&preview, marker, kind, animation_frame);
     if hidden_line_count > 0 {
-        rendered.push(Line::from(vec![
-            transcript_continuation_prefix(kind),
-            Span::styled(
-                format!(
-                    "{} hidden line{} · /details",
-                    hidden_line_count,
-                    if hidden_line_count == 1 { "" } else { "s" }
-                ),
-                Style::default().fg(palette().subtle),
-            ),
-        ]));
+        cell.meta
+            .push(hidden_detail_hint_line(hidden_line_count, kind));
     }
     let _ = (marker, accent);
-    prefix_tool_marker(&mut rendered, &preview, kind, animation_frame);
-    rendered
+    prefix_tool_marker(&mut cell.header, &preview, kind, animation_frame);
+    cell
 }
 
 pub(super) fn render_collapsed_shell_summary(
@@ -83,29 +90,33 @@ pub(super) fn render_collapsed_shell_summary(
     accent: Color,
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
-) -> Vec<Line<'static>> {
+) -> RenderedTranscriptCell {
     let summary = entry
         .shell_summary()
         .expect("collapsed shell summaries require structured details");
     let preview_summary = summary.preview_with_detail_lines(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES);
     let hidden_line_count = hidden_shell_detail_line_count(entry);
-
-    let mut rendered = render_shell_summary_entry(&preview_summary, marker, kind, animation_frame);
+    let mut cell = render_shell_summary_sections(&preview_summary, marker, kind, animation_frame);
     if hidden_line_count > 0 {
-        rendered.push(Line::from(vec![
-            transcript_continuation_prefix(kind),
-            Span::styled(
-                format!(
-                    "{} hidden line{} · /details",
-                    hidden_line_count,
-                    if hidden_line_count == 1 { "" } else { "s" }
-                ),
-                Style::default().fg(palette().subtle),
-            ),
-        ]));
+        cell.meta
+            .push(hidden_detail_hint_line(hidden_line_count, kind));
     }
-    prefix_transcript_marker(&mut rendered, marker, accent, kind);
-    rendered
+    prefix_transcript_marker(&mut cell.header, marker, accent, kind);
+    cell
+}
+
+fn hidden_detail_hint_line(hidden_line_count: usize, kind: TranscriptEntryKind) -> Line<'static> {
+    Line::from(vec![
+        transcript_continuation_prefix(kind),
+        Span::styled(
+            format!(
+                "{} hidden line{} · /details",
+                hidden_line_count,
+                if hidden_line_count == 1 { "" } else { "s" }
+            ),
+            Style::default().fg(palette().subtle),
+        ),
+    ])
 }
 
 fn hidden_tool_detail_line_count_with_limit(
@@ -186,13 +197,13 @@ pub(super) fn render_shell_summary_body(
     rendered
 }
 
-pub(super) fn render_shell_summary_entry(
+pub(super) fn render_shell_summary_sections(
     summary: &TranscriptShellEntry,
     marker: &str,
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
-) -> Vec<Line<'static>> {
-    let mut rendered = Vec::new();
+) -> RenderedTranscriptCell {
+    let mut header = Vec::new();
     if let Some(animated) = render_animated_shell_status_line(
         summary.status,
         &summary.headline,
@@ -200,9 +211,9 @@ pub(super) fn render_shell_summary_entry(
         kind,
         animation_frame,
     ) {
-        rendered.push(animated);
+        header.push(animated);
     } else if !summary.headline.trim().is_empty() {
-        rendered.push(render_transcript_body_line(
+        header.push(render_transcript_body_line(
             &summary.headline,
             marker,
             kind,
@@ -211,39 +222,52 @@ pub(super) fn render_shell_summary_entry(
         ));
     }
 
+    let mut body = Vec::new();
     for detail in &summary.detail_lines {
-        rendered.extend(render_shell_detail(detail, kind));
+        body.extend(render_shell_detail(detail, kind));
     }
 
-    if rendered.is_empty() {
-        rendered.push(Line::from(Span::raw("")));
+    RenderedTranscriptCell {
+        header,
+        body,
+        meta: Vec::new(),
     }
-
-    rendered
 }
 
-pub(super) fn render_tool_entry(
+pub(super) fn render_tool_entry_sections(
     entry: &TranscriptToolEntry,
     marker: &str,
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
-) -> Vec<Line<'static>> {
-    let mut rendered = Vec::new();
+) -> RenderedTranscriptCell {
+    let mut header = Vec::new();
     if let Some(animated) = render_animated_tool_status_line(entry, marker, kind, animation_frame) {
-        rendered.push(animated);
+        header.push(animated);
     } else if !entry.headline.trim().is_empty() {
-        rendered.push(render_tool_status_line(entry));
+        header.push(render_tool_status_line(entry));
     }
 
+    let mut body = Vec::new();
+    let mut meta = Vec::new();
     for detail in &entry.detail_lines {
-        rendered.extend(render_tool_detail(detail, kind));
+        match detail {
+            ToolDetail::ActionHint {
+                key_hint,
+                label,
+                detail,
+            } => meta.push(detail_line(
+                false,
+                labeled_detail_spans(
+                    "action",
+                    palette().assistant,
+                    tool_action_spans(key_hint, label, detail.as_deref()),
+                ),
+            )),
+            _ => body.extend(render_tool_detail(detail, kind)),
+        }
     }
 
-    if rendered.is_empty() {
-        rendered.push(Line::from(Span::raw("")));
-    }
-
-    rendered
+    RenderedTranscriptCell { header, body, meta }
 }
 
 fn render_animated_shell_status_line(
@@ -462,24 +486,13 @@ fn render_tool_detail(detail: &ToolDetail, kind: TranscriptEntryKind) -> Vec<Lin
             ),
         )],
         ToolDetail::LabeledBlock { label, lines } => render_labeled_tool_block(label, lines),
-        ToolDetail::ActionHint {
-            key_hint,
-            label,
-            detail,
-        } => vec![detail_line(
-            false,
-            labeled_detail_spans(
-                "action",
-                palette().assistant,
-                tool_action_spans(key_hint, label, detail.as_deref()),
-            ),
-        )],
         ToolDetail::TextBlock(lines) => render_tool_text_block(lines, kind),
         ToolDetail::NamedBlock {
             label,
             kind: block_kind,
             lines,
         } => render_named_tool_block(label, *block_kind, lines),
+        ToolDetail::ActionHint { .. } => Vec::new(),
     }
 }
 

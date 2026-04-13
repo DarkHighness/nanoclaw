@@ -84,8 +84,8 @@ The current TUI still has systemic issues:
 | Phase 1: Theme And Surface Unification | Complete | `ThemePalette` now exposes semantic surface helpers and startup loading consumes the active theme instead of a local palette. |
 | Phase 2: Width, Divider, And Spacing Repair | Complete | Transcript width now follows the visible pane geometry directly, and turn dividers no longer inherit artificial side padding. |
 | Phase 3: Footer Layout Redesign | Complete | Composer and statusline now sit on the main transcript surface by default, and the composer reserves more breathing room. |
-| Phase 4: Transcript Cell Model | Pending | Replace ad hoc entry rendering with explicit cell sections and clearer selection chrome. |
-| Phase 5: Markdown-First Transcript | Pending | Promote Markdown rendering into the default assistant/system composition path. |
+| Phase 4: Transcript Cell Model | Complete | Transcript rendering now composes explicit `header / body / meta` sections, and selected cells share one restrained focus chrome. |
+| Phase 5: Markdown-First Transcript | In Progress | Promote Markdown rendering into the default assistant/system composition path. |
 | Phase 6: Tool, Review, And Overlay Surfaces | Pending | Standardize tool cards, approval/review/rollback overlays, and truncation rules. |
 | Phase 7: Tests, Docs, And Stabilization | Pending | Lock the new layout with rendering tests and keep this ledger updated. |
 
@@ -215,6 +215,16 @@ Acceptance criteria:
 - cell separation relies on spacing and weak separators instead of random
   formatting differences
 - selected cells have a clear but restrained focus treatment
+
+Shipped:
+
+- transcript rendering now composes cells through an explicit
+  `RenderedTranscriptCell { header, body, meta }` contract instead of flattening
+  each entry shape ad hoc
+- collapsed tool and shell summaries now place hidden-line hints and action
+  affordances in the `meta` section instead of mixing them into the main body
+- selected cells now share one elevated-surface treatment with a restrained
+  focus rail, and render tests lock that chrome in place
 
 ## Phase 5: Markdown-First Transcript
 

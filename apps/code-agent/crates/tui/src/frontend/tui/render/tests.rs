@@ -80,11 +80,16 @@ fn key_value_text_preserves_prefixed_summary_blocks() {
         lines[0].spans[2].content.as_ref(),
         "Exported transcript text"
     );
-    assert_eq!(lines[1].spans[0].content.as_ref(), "  └ ");
-    assert_eq!(
-        lines[2].spans[1].content.as_ref(),
-        "Wrote 4 items to /workspace/out.txt"
-    );
+    let raw_line = lines
+        .iter()
+        .find(|line| line_text_for(line).contains("session-1"))
+        .expect("expected summary raw detail");
+    assert_eq!(raw_line.spans[0].content.as_ref(), "  └ ");
+    let continuation = lines
+        .iter()
+        .find(|line| line_text_for(line).contains("Wrote 4 items to /workspace/out.txt"))
+        .expect("expected summary continuation detail");
+    assert_eq!(continuation.spans[0].content.as_ref(), "    ");
 }
 
 #[test]
@@ -93,17 +98,20 @@ fn key_value_text_reuses_transcript_rendering_for_shell_summary_lines() {
         "Reattached session",
         vec![raw_detail("session session-1")],
     )]);
-
-    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "•");
-    assert_eq!(
-        rendered.lines[0].spans[2].content.as_ref(),
-        "Reattached session"
-    );
-    assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "  └ ");
-    assert_eq!(
-        rendered.lines[1].spans[1].content.as_ref(),
-        "session session-1"
-    );
+    let headline = rendered
+        .lines
+        .iter()
+        .find(|line| line_text_for(line).contains("Reattached session"))
+        .expect("expected shell summary headline");
+    assert_eq!(headline.spans[0].content.as_ref(), "•");
+    assert_eq!(headline.spans[2].content.as_ref(), "Reattached session");
+    let detail = rendered
+        .lines
+        .iter()
+        .find(|line| line_text_for(line).contains("session session-1"))
+        .expect("expected shell summary detail");
+    assert_eq!(detail.spans[0].content.as_ref(), "  └ ");
+    assert_eq!(detail.spans[1].content.as_ref(), "session session-1");
 }
 
 #[test]
@@ -355,6 +363,29 @@ fn selected_tool_entry_surfaces_review_action_in_collapsed_mode() {
         let text = line_text_for(line);
         text.contains("review diff") && text.contains("src/lib.rs")
     }));
+}
+
+#[test]
+fn selected_transcript_cells_use_focus_rail_and_elevated_surface() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        tool_selection: Some(ToolSelectionTarget::Transcript(0)),
+        ..TuiState::default()
+    };
+    state.transcript = vec![finished_tool_transcript_entry()];
+
+    let rendered = build_transcript_lines(&state);
+    let first_visible = rendered
+        .iter()
+        .find(|line| !line_text_for(line).trim().is_empty())
+        .expect("expected rendered transcript content");
+
+    assert!(line_text_for(first_visible).starts_with("▌ "));
+    for line in &rendered {
+        for span in &line.spans {
+            assert_eq!(span.style.bg, Some(palette().elevated_surface()));
+        }
+    }
 }
 
 #[test]

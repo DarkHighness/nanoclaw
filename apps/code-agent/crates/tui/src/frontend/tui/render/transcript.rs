@@ -3,11 +3,12 @@ use super::super::state::{
 };
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
-    animation_frame_ms, live_progress_lines, pending_control_embedded_lines,
-    pending_control_picker_bridge_entry, pending_control_picker_embedded_lines,
-    pending_control_timeline_entry, prefix_tool_marker, prefix_transcript_marker,
-    render_collapsed_shell_summary, render_collapsed_tool_entry, render_shell_summary_entry,
-    render_tool_entry, should_collapse_shell_details, should_collapse_tool_details,
+    RenderedTranscriptCell, animation_frame_ms, live_progress_lines,
+    pending_control_embedded_lines, pending_control_picker_bridge_entry,
+    pending_control_picker_embedded_lines, pending_control_timeline_entry, prefix_tool_marker,
+    prefix_transcript_marker, render_collapsed_shell_summary, render_collapsed_tool_entry,
+    render_shell_summary_sections, render_tool_entry_sections, should_collapse_shell_details,
+    should_collapse_tool_details,
 };
 pub(super) use super::transcript_shell::{
     line_has_visible_content, line_to_plain_text, transcript_body_style,
@@ -105,7 +106,7 @@ pub(super) fn build_transcript_lines_for_width(
                     );
                 }
             }
-            let mut cell_lines = format_transcript_cell_with_mode(
+            let cell_lines = format_transcript_cell_with_mode(
                 entry,
                 state.show_tool_details,
                 (state.turn_running && index + 1 == state.transcript.len())
@@ -113,9 +114,6 @@ pub(super) fn build_transcript_lines_for_width(
                     .flatten(),
                 selected,
             );
-            if selected {
-                highlight_transcript_cell(&mut cell_lines);
-            }
             lines.extend(cell_lines);
         }
     }
@@ -241,26 +239,80 @@ fn format_transcript_cell_with_mode(
     let accent = entry_accent(entry, kind);
 
     if should_collapse_tool_details(entry, show_tool_details) {
-        return render_collapsed_tool_entry(entry, marker, accent, kind, animation_frame, selected);
+        return compose_rendered_transcript_cell(
+            render_collapsed_tool_entry(entry, marker, accent, kind, animation_frame, selected),
+            selected,
+            accent,
+        );
     }
     if should_collapse_shell_details(entry, show_tool_details) {
-        return render_collapsed_shell_summary(entry, marker, accent, kind, animation_frame);
+        return compose_rendered_transcript_cell(
+            render_collapsed_shell_summary(entry, marker, accent, kind, animation_frame),
+            selected,
+            accent,
+        );
     }
-    let mut rendered = render_transcript_body(entry, marker, kind, animation_frame);
-    if let Some(tool) = entry.tool_entry() {
-        prefix_tool_marker(&mut rendered, tool, kind, animation_frame);
-    } else {
-        prefix_transcript_marker(&mut rendered, marker, accent, kind);
-    }
-    rendered
+    compose_rendered_transcript_cell(
+        render_transcript_body(entry, marker, kind, animation_frame),
+        selected,
+        accent,
+    )
 }
 
-fn highlight_transcript_cell(lines: &mut [Line<'static>]) {
+fn apply_selected_transcript_cell_chrome(
+    lines: &mut [Line<'static>],
+    accent: ratatui::style::Color,
+) {
+    let selection_bg = palette().elevated_surface();
     for line in lines.iter_mut() {
         for span in &mut line.spans {
-            span.style = span.style.bg(palette().footer_bg);
+            span.style = span.style.bg(selection_bg);
         }
     }
+    if let Some(index) = lines.iter().position(line_has_visible_content) {
+        let mut spans = vec![
+            Span::styled(
+                "▌",
+                Style::default()
+                    .fg(accent)
+                    .bg(selection_bg)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            Span::styled(" ", Style::default().bg(selection_bg)),
+        ];
+        spans.extend(lines[index].spans.clone());
+        lines[index] = Line::from(spans);
+    }
+}
+
+fn compose_rendered_transcript_cell(
+    cell: RenderedTranscriptCell,
+    selected: bool,
+    accent: ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    append_cell_section(&mut lines, cell.header, false);
+    let has_content = !lines.is_empty();
+    append_cell_section(&mut lines, cell.body, has_content);
+    let has_content = !lines.is_empty();
+    append_cell_section(&mut lines, cell.meta, has_content);
+    if lines.is_empty() {
+        lines.push(Line::from(Span::raw("")));
+    }
+    if selected {
+        apply_selected_transcript_cell_chrome(&mut lines, accent);
+    }
+    lines
+}
+
+fn append_cell_section(lines: &mut Vec<Line<'static>>, section: Vec<Line<'static>>, spaced: bool) {
+    if section.is_empty() {
+        return;
+    }
+    if spaced {
+        lines.push(Line::raw(""));
+    }
+    lines.extend(section);
 }
 
 fn render_transcript_body(
@@ -268,22 +320,30 @@ fn render_transcript_body(
     marker: &str,
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
-) -> Vec<Line<'static>> {
+) -> RenderedTranscriptCell {
     if matches!(
         kind,
         TranscriptEntryKind::UserPrompt | TranscriptEntryKind::AssistantMessage
     ) {
-        return render_markdown_body(entry.body(), kind);
+        let accent = entry_accent(entry, kind);
+        let mut cell = RenderedTranscriptCell::with_body(render_markdown_body(entry.body(), kind));
+        prefix_transcript_marker(&mut cell.body, marker, accent, kind);
+        return cell;
     }
 
     if let Some(tool) = entry.tool_entry() {
-        return render_tool_entry(tool, marker, kind, animation_frame);
+        let mut cell = render_tool_entry_sections(tool, marker, kind, animation_frame);
+        prefix_tool_marker(&mut cell.header, tool, kind, animation_frame);
+        return cell;
     }
 
     let summary = entry
         .shell_summary()
         .expect("non-markdown transcript entries should expose shell summary payloads");
-    render_shell_summary_entry(summary, marker, kind, animation_frame)
+    let mut cell = render_shell_summary_sections(summary, marker, kind, animation_frame);
+    let accent = entry_accent(entry, kind);
+    prefix_transcript_marker(&mut cell.header, marker, accent, kind);
+    cell
 }
 
 fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::style::Color {
