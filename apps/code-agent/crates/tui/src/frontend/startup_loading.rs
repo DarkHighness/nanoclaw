@@ -2,6 +2,7 @@ use crate::backend::{
     BootProgressItem, BootProgressItemKind, BootProgressStage, BootProgressStatus,
     BootProgressUpdate,
 };
+use crate::theme::{ThemePalette, active_palette};
 use anyhow::Result;
 use crossterm::execute;
 use crossterm::terminal::{
@@ -14,18 +15,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use std::io::{self, Stdout};
-
-const BG: Color = Color::Rgb(11, 14, 18);
-const FOOTER_BG: Color = Color::Rgb(19, 25, 32);
-const BOTTOM_PANE_BG: Color = Color::Rgb(24, 32, 41);
-const TEXT: Color = Color::Rgb(237, 244, 247);
-const MUTED: Color = Color::Rgb(177, 188, 196);
-const SUBTLE: Color = Color::Rgb(108, 120, 130);
-const ACCENT: Color = Color::Rgb(110, 223, 211);
-const USER: Color = Color::Rgb(228, 190, 115);
-const ASSISTANT: Color = Color::Rgb(143, 221, 178);
-const WARN: Color = Color::Rgb(240, 197, 99);
-const HEADER: Color = Color::Rgb(255, 255, 255);
 
 const ITEM_PREVIEW_LIMIT: usize = 6;
 
@@ -166,12 +155,16 @@ fn leave_loading_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> 
 }
 
 fn render_loading(frame: &mut ratatui::Frame<'_>, state: &StartupLoadingState) {
+    let theme = active_palette();
     let area = frame.area();
-    frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.canvas_surface())),
+        area,
+    );
     let popup = centered_rect(area, 82, 78);
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Block::default().style(Style::default().bg(FOOTER_BG)),
+        Block::default().style(Style::default().bg(theme.overlay_surface())),
         popup,
     );
     let inner = popup.inner(Margin {
@@ -190,36 +183,41 @@ fn render_loading(frame: &mut ratatui::Frame<'_>, state: &StartupLoadingState) {
         .split(inner);
 
     frame.render_widget(
-        Paragraph::new(build_summary_text(state))
+        Paragraph::new(build_summary_text(state, theme))
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(FOOTER_BG)),
+            .style(Style::default().fg(theme.text).bg(theme.overlay_surface())),
         rows[0],
     );
-    render_card(frame, rows[1], build_stage_text(state));
-    render_card(frame, rows[2], build_item_text(state));
-    render_card(frame, rows[3], build_note_text(state));
+    render_card(frame, rows[1], build_stage_text(state, theme), theme);
+    render_card(frame, rows[2], build_item_text(state, theme), theme);
+    render_card(frame, rows[3], build_note_text(state, theme), theme);
     frame.render_widget(
-        Paragraph::new(build_footer_text())
+        Paragraph::new(build_footer_text(theme))
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(MUTED).bg(FOOTER_BG)),
+            .style(Style::default().fg(theme.muted).bg(theme.overlay_surface())),
         rows[4],
     );
 }
 
-fn render_card(frame: &mut ratatui::Frame<'_>, area: Rect, text: Text<'static>) {
+fn render_card(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    text: Text<'static>,
+    theme: ThemePalette,
+) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(SUBTLE))
-            .style(Style::default().bg(BOTTOM_PANE_BG)),
+            .border_style(Style::default().fg(theme.chrome_border()))
+            .style(Style::default().bg(theme.elevated_surface())),
         area,
     );
     frame.render_widget(
         Paragraph::new(text)
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
+            .style(Style::default().fg(theme.text).bg(theme.elevated_surface())),
         area.inner(Margin {
             vertical: 1,
             horizontal: 2,
@@ -227,91 +225,102 @@ fn render_card(frame: &mut ratatui::Frame<'_>, area: Rect, text: Text<'static>) 
     );
 }
 
-fn build_summary_text(state: &StartupLoadingState) -> Text<'static> {
+fn build_summary_text(state: &StartupLoadingState, theme: ThemePalette) -> Text<'static> {
     let completed = state.completed_count();
     let total = BootProgressStage::ALL.len();
     Text::from(vec![
         Line::from(vec![
             Span::styled(
                 "Loading Session",
-                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.header)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(" · ", Style::default().fg(theme.subtle)),
             Span::styled(
                 format!("{}/{} stages", completed, total),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled("workspace", Style::default().fg(SUBTLE)),
+            Span::styled("workspace", Style::default().fg(theme.subtle)),
             Span::raw(" "),
-            Span::styled(state.workspace_name.clone(), Style::default().fg(MUTED)),
-            Span::styled("  ·  ", Style::default().fg(SUBTLE)),
-            Span::styled("model", Style::default().fg(SUBTLE)),
+            Span::styled(
+                state.workspace_name.clone(),
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled("  ·  ", Style::default().fg(theme.subtle)),
+            Span::styled("model", Style::default().fg(theme.subtle)),
             Span::raw(" "),
-            Span::styled(state.model_label.clone(), Style::default().fg(USER)),
+            Span::styled(state.model_label.clone(), Style::default().fg(theme.user)),
         ]),
         Line::from(vec![Span::styled(
             "Skills, MCP, tooling, and persisted session surfaces are being prepared before the welcome screen.",
-            Style::default().fg(MUTED),
+            Style::default().fg(theme.muted),
         )]),
     ])
 }
 
-fn build_stage_text(state: &StartupLoadingState) -> Text<'static> {
-    let mut lines = vec![section_line("Progress", ACCENT), Line::raw("")];
+fn build_stage_text(state: &StartupLoadingState, theme: ThemePalette) -> Text<'static> {
+    let mut lines = vec![section_line("Progress", theme.accent), Line::raw("")];
     for stage in BootProgressStage::ALL {
         let index = stage.position();
         let (marker, marker_style, label_style) = if state.completed[index] {
             (
                 "●",
-                Style::default().fg(ASSISTANT).add_modifier(Modifier::BOLD),
-                Style::default().fg(MUTED),
+                Style::default()
+                    .fg(theme.assistant)
+                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.muted),
             )
         } else if stage == state.current_stage {
             (
                 "◉",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
             )
         } else {
             (
                 "·",
-                Style::default().fg(SUBTLE),
-                Style::default().fg(SUBTLE),
+                Style::default().fg(theme.subtle),
+                Style::default().fg(theme.subtle),
             )
         };
         lines.push(Line::from(vec![
             Span::styled(marker, marker_style),
             Span::raw(" "),
             Span::styled(stage.label().to_string(), label_style),
-            Span::styled("  ", Style::default().fg(SUBTLE)),
+            Span::styled("  ", Style::default().fg(theme.subtle)),
             Span::styled(
                 stage_status_label(stage, state),
-                Style::default().fg(stage_status_color(stage, state)),
+                Style::default().fg(stage_status_color(stage, state, theme)),
             ),
         ]));
     }
     Text::from(lines)
 }
 
-fn build_item_text(state: &StartupLoadingState) -> Text<'static> {
+fn build_item_text(state: &StartupLoadingState, theme: ThemePalette) -> Text<'static> {
     let items = state.visible_stage_items();
     let mut lines = vec![section_line(
         format!("{} Items", state.current_stage.label()),
-        USER,
+        theme.user,
     )];
     if let Some(note) = state.current_note() {
         lines.push(Line::from(vec![Span::styled(
             note.to_string(),
-            Style::default().fg(MUTED),
+            Style::default().fg(theme.muted),
         )]));
     }
     lines.push(Line::raw(""));
     if items.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             "Waiting for concrete items from the current boot stage.",
-            Style::default().fg(SUBTLE),
+            Style::default().fg(theme.subtle),
         )]));
         return Text::from(lines);
     }
@@ -320,44 +329,46 @@ fn build_item_text(state: &StartupLoadingState) -> Text<'static> {
             Span::styled(
                 "• ",
                 Style::default()
-                    .fg(item_kind_color(item.kind))
+                    .fg(item_kind_color(item.kind, theme))
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 item_kind_label(item.kind),
-                Style::default().fg(SUBTLE).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.subtle)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" ", Style::default().fg(SUBTLE)),
-            Span::styled(item.label.clone(), Style::default().fg(TEXT)),
+            Span::styled(" ", Style::default().fg(theme.subtle)),
+            Span::styled(item.label.clone(), Style::default().fg(theme.text)),
         ]));
     }
     if items.len() > ITEM_PREVIEW_LIMIT {
         lines.push(Line::from(vec![Span::styled(
             format!("+ {} more item(s)", items.len() - ITEM_PREVIEW_LIMIT),
-            Style::default().fg(SUBTLE),
+            Style::default().fg(theme.subtle),
         )]));
     }
     Text::from(lines)
 }
 
-fn build_note_text(state: &StartupLoadingState) -> Text<'static> {
-    let mut lines = vec![section_line("Recent Notes", WARN), Line::raw("")];
+fn build_note_text(state: &StartupLoadingState, theme: ThemePalette) -> Text<'static> {
+    let mut lines = vec![section_line("Recent Notes", theme.warn), Line::raw("")];
     for note in &state.recent_notes {
         lines.push(Line::from(vec![
-            Span::styled("• ", Style::default().fg(WARN)),
-            Span::styled(note.clone(), Style::default().fg(MUTED)),
+            Span::styled("• ", Style::default().fg(theme.warn)),
+            Span::styled(note.clone(), Style::default().fg(theme.muted)),
         ]));
     }
     Text::from(lines)
 }
 
-fn build_footer_text() -> Text<'static> {
+fn build_footer_text(theme: ThemePalette) -> Text<'static> {
     Text::from(vec![Line::from(vec![
-        Span::styled("startup", Style::default().fg(SUBTLE)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled("startup", Style::default().fg(theme.subtle)),
+        Span::styled(" · ", Style::default().fg(theme.subtle)),
         Span::styled(
             "The session will enter the normal welcome page as soon as finalization completes.",
-            Style::default().fg(MUTED),
+            Style::default().fg(theme.muted),
         ),
     ])])
 }
@@ -399,14 +410,18 @@ fn stage_status_label(stage: BootProgressStage, state: &StartupLoadingState) -> 
     }
 }
 
-fn stage_status_color(stage: BootProgressStage, state: &StartupLoadingState) -> Color {
+fn stage_status_color(
+    stage: BootProgressStage,
+    state: &StartupLoadingState,
+    theme: ThemePalette,
+) -> Color {
     let index = stage.position();
     if state.completed[index] {
-        ASSISTANT
+        theme.assistant
     } else if stage == state.current_stage {
-        ACCENT
+        theme.accent
     } else {
-        SUBTLE
+        theme.subtle
     }
 }
 
@@ -421,12 +436,12 @@ fn item_kind_label(kind: BootProgressItemKind) -> &'static str {
     }
 }
 
-fn item_kind_color(kind: BootProgressItemKind) -> Color {
+fn item_kind_color(kind: BootProgressItemKind, theme: ThemePalette) -> Color {
     match kind {
-        BootProgressItemKind::Store => USER,
-        BootProgressItemKind::Plugin => WARN,
-        BootProgressItemKind::SkillRoot | BootProgressItemKind::Skill => ACCENT,
-        BootProgressItemKind::McpServer => ASSISTANT,
-        BootProgressItemKind::ToolSurface => HEADER,
+        BootProgressItemKind::Store => theme.user,
+        BootProgressItemKind::Plugin => theme.warn,
+        BootProgressItemKind::SkillRoot | BootProgressItemKind::Skill => theme.accent,
+        BootProgressItemKind::McpServer => theme.assistant,
+        BootProgressItemKind::ToolSurface => theme.header,
     }
 }

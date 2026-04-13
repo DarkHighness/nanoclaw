@@ -32,6 +32,38 @@ pub struct ThemePalette {
     pub header: Color,
 }
 
+impl ThemePalette {
+    #[must_use]
+    pub fn canvas_surface(self) -> Color {
+        self.bg
+    }
+
+    #[must_use]
+    pub fn transcript_surface(self) -> Color {
+        self.main_bg
+    }
+
+    #[must_use]
+    pub fn elevated_surface(self) -> Color {
+        self.bottom_pane_bg
+    }
+
+    #[must_use]
+    pub fn overlay_surface(self) -> Color {
+        self.footer_bg
+    }
+
+    #[must_use]
+    pub fn chrome_border(self) -> Color {
+        self.subtle
+    }
+
+    #[must_use]
+    pub fn emphasis_border(self) -> Color {
+        self.border_active
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThemeDefinition {
     pub id: String,
@@ -301,7 +333,9 @@ struct ThemeFileEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::{ThemeCatalog, load_theme_catalog, parse_theme_catalog, set_active_theme};
+    use super::{
+        ThemeCatalog, active_palette, load_theme_catalog, parse_theme_catalog, set_active_theme,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -411,5 +445,16 @@ header = "#17120d"
         super::install_theme_catalog(catalog);
         let error = set_active_theme("missing").unwrap_err();
         assert!(error.to_string().contains("unknown theme `missing`"));
+    }
+
+    #[test]
+    fn palette_surface_helpers_preserve_catalog_backed_colors() {
+        let palette = active_palette();
+        assert_eq!(palette.canvas_surface(), palette.bg);
+        assert_eq!(palette.transcript_surface(), palette.main_bg);
+        assert_eq!(palette.elevated_surface(), palette.bottom_pane_bg);
+        assert_eq!(palette.overlay_surface(), palette.footer_bg);
+        assert_eq!(palette.chrome_border(), palette.subtle);
+        assert_eq!(palette.emphasis_border(), palette.border_active);
     }
 }
