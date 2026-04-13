@@ -3,9 +3,9 @@ use super::{
     ComposerInputProvenance, ComposerKillBufferState, ComposerRowAttachmentPreview,
     GitPorcelainEntry, GitPorcelainState, HistoryRollbackCandidate, InspectorAction,
     InspectorEntry, MainPaneMode, SharedUiState, ToastState, ToastTone, ToolSelectionTarget,
-    TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState,
-    composer_draft_from_messages, composer_draft_from_parts, draft_preview_text, git_snapshot,
-    page_scroll_amount,
+    TranscriptCellMotionState, TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus,
+    TuiState, composer_draft_from_messages, composer_draft_from_parts, draft_preview_text,
+    git_snapshot, page_scroll_amount,
 };
 use crate::frontend::tui::input_history::{ComposerHistoryKind, PersistedComposerHistoryEntry};
 use crate::theme::ThemeSummary;
@@ -306,6 +306,37 @@ fn transcript_page_scroll_uses_viewport_height() {
 
     state.scroll_focused_page(20, false, false);
     assert_eq!(state.transcript_scroll, 49);
+}
+
+#[test]
+fn transcript_motion_accelerates_when_streaming_backlog_builds() {
+    let start = Instant::now();
+    let initial = TranscriptEntry::AssistantMessage("seed".to_string());
+    let mut motion = TranscriptCellMotionState::new(&initial, start, true);
+
+    motion.advance(start + Duration::from_millis(18), true);
+    assert_eq!(motion.visible_chars(), 1);
+
+    let backlog_entry = TranscriptEntry::AssistantMessage("x".repeat(160));
+    let backlog_at = start + Duration::from_millis(18);
+    motion.refresh_target(&backlog_entry, backlog_at, true);
+    motion.advance(backlog_at + Duration::from_millis(18), true);
+
+    assert!(motion.visible_chars() >= 5);
+    assert!(motion.visible_chars() < motion.target_chars);
+}
+
+#[test]
+fn transcript_motion_returns_to_base_cadence_near_the_visible_tail() {
+    let start = Instant::now();
+    let entry = TranscriptEntry::AssistantMessage("x".repeat(160));
+    let mut motion = TranscriptCellMotionState::new(&entry, start, true);
+    motion.revealed_chars = motion.target_chars - 12;
+    motion.last_tick_at = start;
+
+    motion.advance(start + Duration::from_millis(18), true);
+
+    assert_eq!(motion.visible_chars(), motion.target_chars - 11);
 }
 
 #[test]

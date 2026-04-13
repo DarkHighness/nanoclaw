@@ -208,6 +208,9 @@ pub(crate) struct TranscriptCellMotionState {
 
 impl TranscriptCellMotionState {
     const TYPEWRITER_MS_PER_CHAR: u128 = 18;
+    const TYPEWRITER_MIN_MS_PER_CHAR: u128 = 3;
+    const TYPEWRITER_SPEEDUP_WINDOW_CHARS: usize = 48;
+    const TYPEWRITER_MAX_SPEEDUP: usize = 6;
 
     fn new(entry: &TranscriptEntry, now: Instant, animate: bool) -> Self {
         let kind = if animate && matches!(entry, TranscriptEntry::AssistantMessage(_)) {
@@ -282,11 +285,12 @@ impl TranscriptCellMotionState {
         let elapsed_ms = now.duration_since(self.last_tick_at).as_millis();
         self.last_tick_at = now;
         self.reveal_carry_ms = self.reveal_carry_ms.saturating_add(elapsed_ms);
-        let step = (self.reveal_carry_ms / Self::TYPEWRITER_MS_PER_CHAR) as usize;
+        let ms_per_char = self.adaptive_typewriter_ms_per_char();
+        let step = (self.reveal_carry_ms / ms_per_char) as usize;
         if step == 0 {
             return;
         }
-        self.reveal_carry_ms %= Self::TYPEWRITER_MS_PER_CHAR;
+        self.reveal_carry_ms %= ms_per_char;
         self.revealed_chars = self
             .revealed_chars
             .saturating_add(step)
@@ -302,6 +306,20 @@ impl TranscriptCellMotionState {
             TranscriptCellMotionKind::Static => self.target_chars,
             TranscriptCellMotionKind::Typewriter => self.revealed_chars.min(self.target_chars),
         }
+    }
+
+    fn adaptive_typewriter_ms_per_char(&self) -> u128 {
+        let remaining = self.target_chars.saturating_sub(self.revealed_chars);
+        if remaining == 0 {
+            return Self::TYPEWRITER_MS_PER_CHAR;
+        }
+
+        // Let large streamed bursts catch up quickly so the transcript does not
+        // spend seconds replaying backlog, then fall back to the base cadence
+        // once the visible tail is short enough to read comfortably.
+        let speedup = (1 + remaining / Self::TYPEWRITER_SPEEDUP_WINDOW_CHARS)
+            .clamp(1, Self::TYPEWRITER_MAX_SPEEDUP) as u128;
+        (Self::TYPEWRITER_MS_PER_CHAR / speedup).max(Self::TYPEWRITER_MIN_MS_PER_CHAR)
     }
 }
 
