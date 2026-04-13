@@ -66,6 +66,7 @@ pub(super) fn bottom_layout_constraints(
     }
     constraints.push(Constraint::Length(composer_height.max(1)));
     constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(1));
     constraints
 }
 

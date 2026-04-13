@@ -1,7 +1,8 @@
 use super::super::state::{ToastTone, TuiState, TurnPhase, preview_text};
 use super::theme::palette;
+use crate::statusline::StatusLineContextWindowStyle;
 use chrono::Local;
-use ratatui::layout::Margin;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
@@ -19,6 +20,28 @@ pub(super) fn render_status_line(
         vertical: 0,
         horizontal: 2,
     });
+    if should_render_input_footer(state) {
+        let right = format_input_footer_context(state);
+        let sections = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(1),
+                Constraint::Length(footer_line_width(&right).saturating_add(1)),
+            ])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(format_input_footer_hint(state))
+                .style(Style::default().fg(palette().muted).bg(palette().footer_bg)),
+            sections[0],
+        );
+        frame.render_widget(
+            Paragraph::new(right)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(palette().muted).bg(palette().footer_bg)),
+            sections[1],
+        );
+        return;
+    }
     let status = Paragraph::new(format_footer_context(state))
         .style(Style::default().fg(palette().muted).bg(palette().footer_bg))
         .wrap(Wrap { trim: true });
@@ -128,13 +151,18 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         );
     }
 
-    push_labeled_badge(
-        &mut spans,
-        config.context_window,
-        "ctx",
-        format_context_window_label(state),
-        Style::default().fg(context_window_color(state)),
-    );
+    if config.context_window {
+        match config.context_window_style {
+            StatusLineContextWindowStyle::Summary => push_labeled_badge(
+                &mut spans,
+                true,
+                "ctx",
+                format_context_window_label(state),
+                Style::default().fg(context_window_color(state)),
+            ),
+            StatusLineContextWindowStyle::Meter => push_context_meter_segment(&mut spans, state),
+        }
+    }
 
     if config.input_tokens && config.output_tokens {
         push_labeled_badge(
@@ -259,6 +287,36 @@ fn format_model_label(state: &TuiState) -> String {
     }
 }
 
+pub(super) fn should_render_input_footer(state: &TuiState) -> bool {
+    !state.input.trim().is_empty()
+        && !state.input.starts_with('/')
+        && state.editing_pending_control.is_none()
+        && state.pending_control_picker.is_none()
+}
+
+pub(super) fn format_input_footer_hint(state: &TuiState) -> Line<'static> {
+    let action = if state.turn_running {
+        "Enter to send steer"
+    } else {
+        "Enter to send"
+    };
+    Line::from(vec![
+        Span::styled("Tab", Style::default().fg(palette().header)),
+        Span::styled(" to queue message", Style::default().fg(palette().muted)),
+        Span::styled(" · ", Style::default().fg(palette().subtle)),
+        Span::styled("Enter", Style::default().fg(palette().accent)),
+        Span::styled(format!(" {action}"), Style::default().fg(palette().muted)),
+    ])
+}
+
+pub(super) fn format_input_footer_context(state: &TuiState) -> Line<'static> {
+    let tone = context_window_color(state);
+    Line::from(vec![Span::styled(
+        format_context_left_label(state),
+        Style::default().fg(tone).add_modifier(Modifier::BOLD),
+    )])
+}
+
 fn format_context_window_label(state: &TuiState) -> String {
     match state.session.token_ledger.context_window {
         Some(window) if window.max_tokens > 0 => {
@@ -275,6 +333,61 @@ fn format_context_window_label(state: &TuiState) -> String {
     }
 }
 
+fn format_context_left_label(state: &TuiState) -> String {
+    match state.session.token_ledger.context_window {
+        Some(window) if window.max_tokens > 0 => {
+            let used = window.used_tokens.min(window.max_tokens);
+            let left = 100_u64
+                .saturating_sub((used as u64).saturating_mul(100) / window.max_tokens as u64);
+            format!("{left}% context left")
+        }
+        Some(_) | None => "context left --".to_string(),
+    }
+}
+
+fn push_context_meter_segment(spans: &mut Vec<Span<'static>>, state: &TuiState) {
+    if !spans.is_empty() {
+        spans.push(Span::raw(" "));
+    }
+    let tone = context_window_color(state);
+    spans.push(Span::styled(
+        "Context ",
+        Style::default().fg(palette().subtle),
+    ));
+    spans.push(Span::styled("[", Style::default().fg(palette().subtle)));
+    spans.push(Span::styled(
+        context_window_meter(state),
+        Style::default().fg(tone),
+    ));
+    spans.push(Span::styled("]", Style::default().fg(palette().subtle)));
+}
+
+fn context_window_meter(state: &TuiState) -> String {
+    const WIDTH: usize = 5;
+    const PARTIAL_BLOCKS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+
+    let Some(window) = state.session.token_ledger.context_window else {
+        return " ".repeat(WIDTH);
+    };
+    if window.max_tokens == 0 {
+        return " ".repeat(WIDTH);
+    }
+
+    let used = window.used_tokens.min(window.max_tokens);
+    let units = used.saturating_mul(WIDTH).saturating_mul(8) / window.max_tokens;
+    let full = (units / 8).min(WIDTH);
+    let partial = units % 8;
+
+    let mut meter = String::new();
+    meter.push_str(&"█".repeat(full));
+    if partial > 0 && full < WIDTH {
+        meter.push(PARTIAL_BLOCKS[partial - 1]);
+    }
+    let visible = full + usize::from(partial > 0 && full < WIDTH);
+    meter.push_str(&" ".repeat(WIDTH.saturating_sub(visible)));
+    meter
+}
+
 fn context_window_color(state: &TuiState) -> Color {
     let Some(window) = state.session.token_ledger.context_window else {
         return palette().subtle;
@@ -288,6 +401,13 @@ fn context_window_color(state: &TuiState) -> Color {
     } else {
         palette().assistant
     }
+}
+
+fn footer_line_width(line: &Line<'_>) -> u16 {
+    line.spans
+        .iter()
+        .map(|span| super::shared::composer_cursor_width(span.content.as_ref()))
+        .sum()
 }
 
 fn compact_usize(value: usize) -> String {

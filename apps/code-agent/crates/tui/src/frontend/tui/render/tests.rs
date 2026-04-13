@@ -9,7 +9,10 @@ use super::history_rollback_overlay::{
 use super::main_pane_viewport_height;
 use super::picker::build_composer_hint_text;
 use super::shell::build_top_title_line;
-use super::statusline::{format_footer_context, format_toast_line, toast_height};
+use super::statusline::{
+    format_footer_context, format_input_footer_context, format_input_footer_hint,
+    format_toast_line, toast_height,
+};
 use super::theme::palette;
 use super::tool_review_overlay::{build_tool_review_list_text, build_tool_review_preview_text};
 use super::transcript::TranscriptEntryKind;
@@ -903,14 +906,27 @@ fn multiline_composer_text_keeps_followup_lines_and_shortcuts_visible() {
     assert_eq!(lines[0], "› edit queued steer · first line");
     assert_eq!(lines[1], "│ second line");
     assert!(lines[2].contains("enter/tab save"));
-    assert_eq!(composer_height(&state, None), 5);
+    assert_eq!(composer_height(80, &state, None), 4);
+}
+
+#[test]
+fn single_line_composer_grows_when_input_wraps_the_available_width() {
+    let mut state = TuiState::default();
+    state.input = "this is a deliberately long composer line that should wrap at the default test width once the operator keeps typing beyond a single visual row".into();
+
+    let text = build_composer_text(&state, None);
+    let default_lines = text_lines(&text);
+    assert_eq!(default_lines.len(), 2);
+
+    assert_eq!(composer_height(80, &state, None), 3);
+    assert!(composer_height(36, &state, None) > 3);
 }
 
 #[test]
 fn composer_cursor_position_reserves_top_padding() {
     let state = TuiState::default();
     let position = composer_cursor_position(
-        Rect::new(0, 20, 80, composer_height(&state, None)),
+        Rect::new(0, 20, 80, composer_height(80, &state, None)),
         &state,
         None,
     );
@@ -2433,7 +2449,7 @@ fn permission_request_modal_does_not_shrink_main_pane_viewport() {
 
     let viewport = main_pane_viewport_height(area, &state, None, Some(&prompt), None);
 
-    assert_eq!(viewport, 30 - composer_height(&state, None) - 2);
+    assert_eq!(viewport, 30 - composer_height(100, &state, None) - 3);
 }
 
 #[test]
@@ -2687,7 +2703,7 @@ fn footer_context_renders_configured_status_items() {
     assert!(text.contains("[model gpt-5.4 (high)]"));
     assert!(text.contains("[workspace nanoclaw]"));
     assert!(text.contains("[git nanoclaw-repo@main]"));
-    assert!(text.contains("[ctx --]"));
+    assert!(text.contains("Context [     ]"));
     assert!(text.contains("[tokens in 0 · out 0]"));
     assert!(!text.contains("[queue 0]"));
     assert!(text.contains("[sid session_123456]"));
@@ -2700,7 +2716,7 @@ fn main_pane_viewport_height_reserves_global_turn_title_space_when_enabled() {
 
     let viewport = main_pane_viewport_height(area, &state, None, None, None);
 
-    assert_eq!(viewport, 30 - composer_height(&state, None) - 2);
+    assert_eq!(viewport, 30 - composer_height(120, &state, None) - 3);
 }
 
 #[test]
@@ -2711,7 +2727,7 @@ fn main_pane_viewport_height_skips_top_title_space_when_disabled() {
 
     let viewport = main_pane_viewport_height(area, &state, None, None, None);
 
-    assert_eq!(viewport, 30 - composer_height(&state, None) - 1);
+    assert_eq!(viewport, 30 - composer_height(120, &state, None) - 2);
 }
 
 #[test]
@@ -2732,7 +2748,7 @@ fn main_pane_viewport_height_does_not_shrink_for_approval_modal() {
 
     let viewport = main_pane_viewport_height(area, &state, Some(&approval), None, None);
 
-    assert_eq!(viewport, 30 - composer_height(&state, None) - 2);
+    assert_eq!(viewport, 30 - composer_height(120, &state, None) - 3);
 }
 
 #[test]
@@ -2784,7 +2800,25 @@ fn footer_context_window_includes_units_and_percent() {
     let footer = format_footer_context(&state);
     let text = line_text_for(&footer);
 
-    assert!(text.contains("[ctx 30k / 400k tok (7%)]"));
+    assert!(text.contains("Context [▍    ]"));
+}
+
+#[test]
+fn input_footer_switches_to_queue_hint_and_context_left() {
+    let mut state = TuiState::default();
+    state.input = "draft a follow-up".to_string();
+    state.turn_running = true;
+    state.session.token_ledger.context_window = Some(agent::types::ContextWindowUsage {
+        used_tokens: 140_000,
+        max_tokens: 400_000,
+    });
+
+    let left = line_text_for(&format_input_footer_hint(&state));
+    let right = line_text_for(&format_input_footer_context(&state));
+
+    assert!(left.contains("Tab to queue message"));
+    assert!(left.contains("Enter to send steer"));
+    assert_eq!(right, "65% context left");
 }
 
 #[test]

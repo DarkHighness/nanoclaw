@@ -2,7 +2,7 @@ use super::super::UserInputView;
 use super::super::approval::ApprovalPrompt;
 use super::super::state::{ComposerContextHint, TuiState, preview_text};
 use super::shared::{
-    composer_cursor_metrics, pending_control_focus_label, pending_control_kind_label,
+    composer_cursor_width, pending_control_focus_label, pending_control_kind_label,
 };
 use super::shell::bottom_band_inner_area;
 use super::theme::palette;
@@ -20,8 +20,11 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+use unicode_width::UnicodeWidthChar;
 
-const MIN_COMPOSER_BODY_HEIGHT: u16 = 4;
+#[cfg(test)]
+const DEFAULT_COMPOSER_TEXT_WIDTH: u16 = 80;
+const MIN_COMPOSER_BODY_HEIGHT: u16 = 1;
 const MAX_COMPOSER_BODY_HEIGHT: u16 = 10;
 const COMPOSER_TOP_PADDING: u16 = 1;
 
@@ -48,21 +51,30 @@ pub(super) fn render_composer(
         );
     }
     let inner = composer_text_area(area);
-    let scroll = composer_scroll(state, user_input, inner.height);
+    let scroll = composer_scroll(state, user_input, inner.width, inner.height);
     frame.render_widget(
-        Paragraph::new(build_composer_text(state, user_input))
-            .scroll((scroll, 0))
-            .style(
-                Style::default()
-                    .fg(palette().text)
-                    .bg(palette().bottom_pane_bg),
-            ),
+        Paragraph::new(build_composer_text_for_width(
+            state,
+            user_input,
+            inner.width,
+        ))
+        .scroll((scroll, 0))
+        .style(
+            Style::default()
+                .fg(palette().text)
+                .bg(palette().bottom_pane_bg),
+        ),
         inner,
     );
 }
 
-pub(super) fn composer_height(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
-    composer_body_height(state, user_input).saturating_add(COMPOSER_TOP_PADDING)
+pub(super) fn composer_height(
+    viewport_width: u16,
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> u16 {
+    composer_body_height(composer_viewport_width(viewport_width), state, user_input)
+        .saturating_add(COMPOSER_TOP_PADDING)
 }
 
 pub(super) fn composer_cursor_position(
@@ -71,14 +83,10 @@ pub(super) fn composer_cursor_position(
     user_input: Option<&UserInputView<'_>>,
 ) -> Position {
     let inner = composer_text_area(area);
-    let scroll = composer_scroll(state, user_input, inner.height);
-    let (base_line, column) = composer_cursor_metrics(&state.input, state.input_cursor);
+    let scroll = composer_scroll(state, user_input, inner.width, inner.height);
+    let (base_line, column, lead_width) =
+        composer_cursor_metrics_for_width(state, user_input, inner.width);
     let line = base_line.saturating_add(composer_attachment_row_count(state, user_input));
-    let lead_width = if base_line == 0 {
-        first_input_line_lead_width(state, user_input)
-    } else {
-        0
-    };
     Position::new(
         inner
             .x
@@ -572,12 +580,21 @@ pub(super) fn build_composer_line(state: &TuiState) -> Line<'static> {
     Line::from(spans)
 }
 
+#[cfg(test)]
 pub(super) fn build_composer_text(
     state: &TuiState,
     user_input: Option<&UserInputView<'_>>,
 ) -> Text<'static> {
-    if composer_uses_multiline_layout(state, user_input) {
-        build_multiline_composer_text(state, user_input)
+    build_composer_text_for_width(state, user_input, DEFAULT_COMPOSER_TEXT_WIDTH)
+}
+
+fn build_composer_text_for_width(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+    width: u16,
+) -> Text<'static> {
+    if composer_uses_multiline_layout(state, user_input, width) {
+        build_multiline_composer_text(state, user_input, width)
     } else {
         Text::from(match user_input {
             Some(view) => build_user_input_composer_line(view),
@@ -870,35 +887,51 @@ fn build_user_input_composer_line(user_input: &UserInputView<'_>) -> Line<'stati
 fn composer_uses_multiline_layout(
     state: &TuiState,
     user_input: Option<&UserInputView<'_>>,
+    width: u16,
 ) -> bool {
     composer_attachment_row_count(state, user_input) > 0
-        || state.input.contains('\n')
-            && user_input.is_none_or(|view| {
-                view.flow
-                    .is_none_or(|flow| flow.collecting_other_note || !state.input.is_empty())
-            })
+        || composer_input_visual_lines(
+            &state.input,
+            first_input_line_lead(state, user_input).as_deref(),
+            width,
+        )
+        .len()
+            > 1
 }
 
-fn composer_text_line_count(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
-    build_composer_text(state, user_input)
+fn composer_text_line_count(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+    width: u16,
+) -> u16 {
+    build_composer_text_for_width(state, user_input, width)
         .lines
         .len()
         .max(1)
         .min(u16::MAX as usize) as u16
 }
 
-fn composer_body_height(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
-    composer_text_line_count(state, user_input)
+fn composer_body_height(
+    width: u16,
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+) -> u16 {
+    composer_text_line_count(state, user_input, width)
         .clamp(MIN_COMPOSER_BODY_HEIGHT, MAX_COMPOSER_BODY_HEIGHT)
 }
 
-fn composer_scroll(state: &TuiState, user_input: Option<&UserInputView<'_>>, height: u16) -> u16 {
-    if !composer_uses_multiline_layout(state, user_input) {
+fn composer_scroll(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+    width: u16,
+    height: u16,
+) -> u16 {
+    if !composer_uses_multiline_layout(state, user_input, width) {
         return 0;
     }
-    let (cursor_line, _) = composer_cursor_metrics(&state.input, state.input_cursor);
+    let (cursor_line, _, _) = composer_cursor_metrics_for_width(state, user_input, width);
     let cursor_line = cursor_line.saturating_add(composer_attachment_row_count(state, user_input));
-    let total_lines = composer_body_height(state, user_input);
+    let total_lines = composer_body_height(width, state, user_input);
     let viewport_height = height.max(1);
     let max_scroll = total_lines.saturating_sub(viewport_height);
     cursor_line
@@ -909,11 +942,14 @@ fn composer_scroll(state: &TuiState, user_input: Option<&UserInputView<'_>>, hei
 fn build_multiline_composer_text(
     state: &TuiState,
     user_input: Option<&UserInputView<'_>>,
+    width: u16,
 ) -> Text<'static> {
     let mut lines = build_attachment_rows(state, user_input);
+    let lead = first_input_line_lead(state, user_input);
     lines.extend(build_multiline_input_lines(
         &state.input,
-        first_input_line_lead(state, user_input),
+        lead.as_deref(),
+        width,
     ));
     if let Some(hint_line) = multiline_hint_line(state, user_input) {
         lines.push(hint_line);
@@ -978,9 +1014,9 @@ fn build_attachment_rows(
         .collect()
 }
 
-fn build_multiline_input_lines(input: &str, lead: Option<String>) -> Vec<Line<'static>> {
-    input
-        .split('\n')
+fn build_multiline_input_lines(input: &str, lead: Option<&str>, width: u16) -> Vec<Line<'static>> {
+    composer_input_visual_lines(input, lead, width)
+        .into_iter()
         .enumerate()
         .map(|(index, segment)| {
             let mut spans = vec![
@@ -996,7 +1032,7 @@ fn build_multiline_input_lines(input: &str, lead: Option<String>) -> Vec<Line<'s
                 && let Some(lead) = lead.as_ref()
             {
                 spans.push(Span::styled(
-                    lead.clone(),
+                    (*lead).to_string(),
                     Style::default().fg(palette().muted),
                 ));
             }
@@ -1033,7 +1069,7 @@ fn first_input_line_lead(
 
 fn first_input_line_lead_width(state: &TuiState, user_input: Option<&UserInputView<'_>>) -> u16 {
     first_input_line_lead(state, user_input)
-        .map(|lead| super::shared::composer_cursor_width(&lead))
+        .map(|lead| composer_cursor_width(&lead))
         .unwrap_or(0)
 }
 
@@ -1173,6 +1209,98 @@ fn push_composer_badge(
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled("]", Style::default().fg(palette().subtle)));
+}
+
+fn composer_viewport_width(viewport_width: u16) -> u16 {
+    viewport_width.saturating_sub(4).max(1)
+}
+
+fn composer_cursor_metrics_for_width(
+    state: &TuiState,
+    user_input: Option<&UserInputView<'_>>,
+    width: u16,
+) -> (u16, u16, u16) {
+    if !composer_uses_multiline_layout(state, user_input, width) {
+        let (base_line, column) =
+            super::shared::composer_cursor_metrics(&state.input, state.input_cursor);
+        let lead_width = if base_line == 0 {
+            first_input_line_lead_width(state, user_input)
+        } else {
+            0
+        };
+        return (base_line, column, lead_width);
+    }
+
+    wrapped_cursor_metrics(
+        &state.input,
+        state.input_cursor,
+        first_input_line_lead(state, user_input).as_deref(),
+        width,
+    )
+}
+
+fn composer_input_visual_lines(input: &str, lead: Option<&str>, width: u16) -> Vec<String> {
+    wrap_input_to_visual_lines(input, lead, width)
+}
+
+fn wrapped_cursor_metrics(
+    input: &str,
+    cursor: usize,
+    lead: Option<&str>,
+    width: u16,
+) -> (u16, u16, u16) {
+    let cursor = cursor.min(input.len());
+    let prefix = &input[..cursor];
+    let lines = wrap_input_to_visual_lines(prefix, lead, width);
+    let visual_line = lines.len().saturating_sub(1).min(u16::MAX as usize) as u16;
+    let column = lines
+        .last()
+        .map(|line| composer_cursor_width(line))
+        .unwrap_or(0);
+    let lead_width = if visual_line == 0 {
+        lead.map(composer_cursor_width).unwrap_or(0)
+    } else {
+        0
+    };
+    (visual_line, column, lead_width)
+}
+
+fn wrap_input_to_visual_lines(input: &str, lead: Option<&str>, width: u16) -> Vec<String> {
+    let first_limit = composer_line_capacity(width, lead.map(composer_cursor_width).unwrap_or(0));
+    let continuation_limit = composer_line_capacity(width, 0);
+    let mut lines = vec![String::new()];
+    let mut current_width = 0u16;
+    let mut limit = first_limit;
+
+    for ch in input.chars() {
+        if ch == '\n' {
+            lines.push(String::new());
+            current_width = 0;
+            limit = continuation_limit;
+            continue;
+        }
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+        if current_width > 0 && current_width.saturating_add(char_width) > limit {
+            lines.push(String::new());
+            current_width = 0;
+            limit = continuation_limit;
+        }
+        lines
+            .last_mut()
+            .expect("wrapped input must keep one active line")
+            .push(ch);
+        current_width = current_width.saturating_add(char_width);
+    }
+
+    if lines.is_empty() {
+        vec![String::new()]
+    } else {
+        lines
+    }
+}
+
+fn composer_line_capacity(width: u16, lead_width: u16) -> u16 {
+    width.saturating_sub(2).saturating_sub(lead_width).max(1)
 }
 
 fn composer_context_hint_spans(state: &TuiState, hint: &ComposerContextHint) -> Vec<Span<'static>> {

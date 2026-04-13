@@ -1,5 +1,13 @@
 use serde::Deserialize;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusLineContextWindowStyle {
+    Summary,
+    #[default]
+    Meter,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusLineField {
     Status,
@@ -92,6 +100,7 @@ pub struct StatusLineConfig {
     pub input_tokens: bool,
     pub output_tokens: bool,
     pub queue: bool,
+    pub context_window_style: StatusLineContextWindowStyle,
     pub clock: bool,
     pub session: bool,
 }
@@ -148,6 +157,7 @@ impl Default for StatusLineConfig {
             input_tokens: true,
             output_tokens: true,
             queue: true,
+            context_window_style: StatusLineContextWindowStyle::Meter,
             clock: true,
             session: false,
         }
@@ -160,7 +170,9 @@ pub fn status_line_fields() -> &'static [StatusLineFieldSpec] {
 
 #[cfg(test)]
 mod tests {
-    use super::{StatusLineConfig, StatusLineField, status_line_fields};
+    use super::{
+        StatusLineConfig, StatusLineContextWindowStyle, StatusLineField, status_line_fields,
+    };
 
     #[test]
     fn toggles_individual_statusline_fields() {
@@ -184,6 +196,15 @@ mod tests {
                 "status", "model", "cwd", "repo", "branch", "context", "input", "output", "queue",
                 "clock", "session",
             ]
+        );
+    }
+
+    #[test]
+    fn statusline_defaults_to_context_meter_style() {
+        let config = StatusLineConfig::default();
+        assert_eq!(
+            config.context_window_style,
+            StatusLineContextWindowStyle::Meter
         );
     }
 }

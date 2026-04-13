@@ -642,6 +642,7 @@ mod tests {
                 branch = false
                 clock = false
                 session = true
+                context_window_style = "summary"
             "#,
         )
         .unwrap();
@@ -653,6 +654,10 @@ mod tests {
         assert!(!config.statusline.branch);
         assert!(!config.statusline.clock);
         assert!(config.statusline.session);
+        assert_eq!(
+            config.statusline.context_window_style,
+            crate::statusline::StatusLineContextWindowStyle::Summary
+        );
     }
 
     #[tokio::test]

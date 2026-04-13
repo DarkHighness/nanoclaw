@@ -211,6 +211,7 @@ cwd = true
 repo = true
 branch = true
 context_window = true
+context_window_style = "meter"
 input_tokens = true
 output_tokens = true
 queue = true
@@ -227,6 +228,8 @@ Set `tui.display.top_turn_title = false` to hide the global top bar that tracks
 the current visible turn and its starting prompt while you scroll transcript
 history.
 Set any field to `false` to hide it from the bottom status line.
+Set `tui.statusline.context_window_style = "summary"` to restore the old
+token-and-percent label instead of the block meter.
 Set `tui.motion.transcript_cell_intro = false` to disable the transcript
 typewriter / shimmer entrance animation.
 

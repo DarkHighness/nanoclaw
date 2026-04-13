@@ -70,7 +70,7 @@ pub(crate) fn render(
         None
     };
     let toast_height = toast_height(state);
-    let composer_height = composer_height(state, user_input);
+    let composer_height = composer_height(area.width, state, user_input);
     let top_title_height = state.session.display.top_turn_title.then_some(1);
     let mut constraints = Vec::new();
     if let Some(height) = top_title_height {
@@ -110,7 +110,7 @@ pub(crate) fn render(
         area
     });
     let composer_area = vertical[next_index];
-    let status_area = vertical[next_index + 1];
+    let status_area = vertical[next_index + 2];
 
     if let Some(title_area) = title_area {
         render_top_title(frame, title_area, main_area, state);
@@ -172,7 +172,7 @@ pub(crate) fn main_pane_viewport_height(
         None
     };
     let toast_height = toast_height(state);
-    let composer_height = composer_height(state, user_input);
+    let composer_height = composer_height(area.width, state, user_input);
     let top_title_height = state.session.display.top_turn_title.then_some(1);
     let mut constraints = Vec::new();
     if let Some(height) = top_title_height {
