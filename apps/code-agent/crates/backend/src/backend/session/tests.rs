@@ -900,6 +900,28 @@ async fn start_new_session_refreshes_backend_snapshot_refs() {
     )));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn build_session_during_async_startup_does_not_block_the_runtime_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        })
+        .build();
+    let mut startup = startup_snapshot(dir.path());
+    startup.active_session_ref = runtime.session_id().to_string();
+    startup.root_agent_session_id = runtime.agent_session_id().to_string();
+
+    let session = build_session(runtime, Arc::new(NoopSubagentExecutor), store, startup);
+
+    let snapshot = session.startup_snapshot();
+    assert!(!snapshot.active_session_ref.is_empty());
+}
+
 #[tokio::test]
 async fn start_new_session_keeps_base_instructions_stable() {
     let dir = tempfile::tempdir().unwrap();

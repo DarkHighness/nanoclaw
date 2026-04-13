@@ -189,20 +189,19 @@ impl CodeAgentSession {
         session_memory_refresh: SharedSessionMemoryRefreshState,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
-        let runtime = Arc::new(AsyncMutex::new(runtime));
         let checkpoint_manager = Arc::new(super::SessionCheckpointManager::new(store.clone()));
         session_tool_context.write().unwrap().checkpoint_handler = Some(checkpoint_manager.clone());
-        let (side_question_context, control_plane, session_id) = {
-            let runtime_guard = runtime.blocking_lock();
-            (
-                Some(Self::side_question_context_from_runtime(
-                    &runtime_guard,
-                    None::<Message>,
-                )),
-                runtime_guard.control_plane(),
-                runtime_guard.session_id(),
-            )
-        };
+        // Session boot owns the runtime value here, so derive the initial
+        // control-plane handles before wrapping it in an async mutex. Using
+        // `blocking_lock()` during async startup can panic on current-thread
+        // Tokio runtimes because that thread is already driving async tasks.
+        let side_question_context = Some(Self::side_question_context_from_runtime(
+            &runtime,
+            None::<Message>,
+        ));
+        let control_plane = runtime.control_plane();
+        let session_id = runtime.session_id();
+        let runtime = Arc::new(AsyncMutex::new(runtime));
         session_memory_refresh.lock().unwrap().active_session_id = Some(session_id.clone());
         let initial_captured_message_id = side_question_context
             .as_ref()
