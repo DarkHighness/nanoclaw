@@ -99,6 +99,18 @@ impl PasteBurst {
             .is_some_and(|until| now <= until && !self.is_active_internal())
     }
 
+    pub(crate) fn buffered_text_preview(&self) -> Option<String> {
+        if !self.is_active() {
+            return None;
+        }
+
+        let mut preview = self.buffer.clone();
+        if let Some((ch, _)) = self.pending_first_char {
+            preview.push(ch);
+        }
+        (!preview.is_empty()).then_some(preview)
+    }
+
     pub(crate) fn flush_if_due(&mut self, now: Instant) -> FlushResult {
         let timeout = if self.is_active_internal() {
             PASTE_BURST_ACTIVE_IDLE_TIMEOUT
@@ -249,5 +261,18 @@ mod tests {
             CharDecision::RetainFirstChar
         ));
         assert_eq!(burst.flush_before_modified_input(), Some("a".to_string()));
+    }
+
+    #[test]
+    fn buffered_text_preview_includes_pending_command_prefix() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+
+        assert!(matches!(
+            burst.on_plain_char('/', t0),
+            CharDecision::RetainFirstChar
+        ));
+
+        assert_eq!(burst.buffered_text_preview().as_deref(), Some("/"));
     }
 }

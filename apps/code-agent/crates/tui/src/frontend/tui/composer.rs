@@ -80,6 +80,17 @@ impl CodeAgentTui {
         }
 
         if matches!(key.code, KeyCode::Enter) {
+            let input = self.ui_state.snapshot().input;
+            // Slash commands own Enter semantics; a fast command typed inside
+            // the paste-burst window must still submit instead of turning into
+            // a literal newline in the composer.
+            if preserve_enter_submission_for_command_input(&input, &self.paste_burst) {
+                if let Some(flushed) = self.paste_burst.flush_before_modified_input() {
+                    self.insert_pasted_text(&flushed).await;
+                }
+                self.paste_burst.clear_window_after_non_char();
+                return false;
+            }
             if self.paste_burst.append_newline_if_active(now) {
                 return true;
             }
@@ -627,5 +638,63 @@ impl CodeAgentTui {
                 state.push_activity("attachment move rejected");
             }
         });
+    }
+}
+
+fn preserve_enter_submission_for_command_input(input: &str, paste_burst: &PasteBurst) -> bool {
+    if input.starts_with('/') {
+        return true;
+    }
+
+    input.is_empty()
+        && paste_burst
+            .buffered_text_preview()
+            .is_some_and(|text| text.starts_with('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PasteBurst, preserve_enter_submission_for_command_input};
+    use crate::frontend::tui::CharDecision;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn enter_submission_is_preserved_for_buffered_slash_commands() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+
+        assert!(matches!(
+            burst.on_plain_char('/', t0),
+            CharDecision::RetainFirstChar
+        ));
+
+        let t1 = t0 + Duration::from_millis(1);
+        assert!(matches!(
+            burst.on_plain_char('h', t1),
+            CharDecision::BeginBufferFromPending
+        ));
+        burst.append_char_to_buffer('h', t1);
+
+        assert!(preserve_enter_submission_for_command_input("", &burst));
+    }
+
+    #[test]
+    fn enter_submission_is_not_preserved_for_prompt_bursts() {
+        let mut burst = PasteBurst::default();
+        let t0 = Instant::now();
+
+        assert!(matches!(
+            burst.on_plain_char('h', t0),
+            CharDecision::RetainFirstChar
+        ));
+
+        let t1 = t0 + Duration::from_millis(1);
+        assert!(matches!(
+            burst.on_plain_char('i', t1),
+            CharDecision::BeginBufferFromPending
+        ));
+        burst.append_char_to_buffer('i', t1);
+
+        assert!(!preserve_enter_submission_for_command_input("", &burst));
     }
 }
