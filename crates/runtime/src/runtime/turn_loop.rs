@@ -5,6 +5,8 @@ use crate::{
 };
 use futures::StreamExt;
 use serde_json::json;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::time::sleep;
 use tracing::{debug, info, warn};
 use types::{
     AgentCoreError, ContextWindowUsage, HookContext, HookEvent, HookRegistration, Message,
@@ -20,6 +22,9 @@ struct TurnResponse {
     provider_continuation: Option<types::ProviderContinuation>,
     token_usage: Option<TokenUsage>,
 }
+
+const MAX_PROVIDER_REQUEST_RETRIES: usize = 5;
+const PROVIDER_REQUEST_BASE_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 impl AgentRuntime {
     pub(super) async fn run_turn_loop(
@@ -104,115 +109,92 @@ impl AgentRuntime {
         observer: &mut dyn RuntimeObserver,
     ) -> Result<TurnResponse> {
         let mut request = self.build_model_request(turn_id, instructions, false);
-        self.append_event(
-            Some(turn_id.clone()),
-            None,
-            SessionEventKind::ModelRequestStarted {
-                request: request.clone(),
-            },
-        )
-        .await?;
-        let request_context_usage = ContextWindowUsage {
-            used_tokens: estimate_prompt_tokens(
-                &request.instructions,
-                &request.messages,
-                &request.tools,
-                &request.additional_context,
-            ),
-            max_tokens: self.compaction_config.context_window_tokens,
-        };
-        let request_ledger = self.record_request_token_window(request_context_usage);
-        self.append_event(
-            Some(turn_id.clone()),
-            None,
-            SessionEventKind::TokenUsageUpdated {
-                phase: TokenUsagePhase::RequestStarted,
-                ledger: request_ledger.clone(),
-            },
-        )
-        .await?;
-        debug!(
-            session_id = %self.session.session_id,
-            turn_id = %turn_id,
-            iteration,
-            uses_provider_continuation = request.continuation.is_some(),
-            message_count = request.messages.len(),
-            tool_count = request.tools.len(),
-            "starting model request"
-        );
-        observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
-            turn_id: turn_id.clone(),
-            iteration,
-        })?;
-        observer.on_event(RuntimeProgressEvent::TokenUsageUpdated {
-            phase: TokenUsagePhase::RequestStarted,
-            ledger: request_ledger,
-        })?;
+        self.publish_model_request_started(turn_id, iteration, observer, &request)
+            .await?;
 
-        let used_continuation = request.continuation.is_some();
-        let mut stream = match self.backend.stream_turn(request.clone()).await {
-            Ok(stream) => stream,
-            Err(error) if used_continuation && is_provider_continuation_lost(&error) => {
-                warn!(
-                    session_id = %self.session.session_id,
-                    turn_id = %turn_id,
-                    iteration,
-                    error = %error,
-                    "provider continuation was rejected; retrying with rebuilt transcript"
-                );
-                self.reset_provider_continuation();
-                self.append_event(
-                    Some(turn_id.clone()),
-                    None,
-                    SessionEventKind::Notification {
+        let mut retry_count = 0usize;
+        let mut stream = loop {
+            match self.backend.stream_turn(request.clone()).await {
+                Ok(stream) => break stream,
+                Err(error)
+                    if request.continuation.is_some() && is_provider_continuation_lost(&error) =>
+                {
+                    warn!(
+                        session_id = %self.session.session_id,
+                        turn_id = %turn_id,
+                        iteration,
+                        error = %error,
+                        "provider continuation was rejected; retrying with rebuilt transcript"
+                    );
+                    self.reset_provider_continuation();
+                    self.append_event(
+                        Some(turn_id.clone()),
+                        None,
+                        SessionEventKind::Notification {
+                            source: "provider_state".to_string(),
+                            message: error.to_string(),
+                        },
+                    )
+                    .await?;
+                    observer.on_event(RuntimeProgressEvent::Notification {
                         source: "provider_state".to_string(),
                         message: error.to_string(),
-                    },
-                )
-                .await?;
-                observer.on_event(RuntimeProgressEvent::Notification {
-                    source: "provider_state".to_string(),
-                    message: error.to_string(),
-                })?;
-                request = self.build_model_request(turn_id, instructions, true);
-                self.append_event(
-                    Some(turn_id.clone()),
-                    None,
-                    SessionEventKind::ModelRequestStarted {
-                        request: request.clone(),
-                    },
-                )
-                .await?;
-                observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
-                    turn_id: turn_id.clone(),
-                    iteration,
-                })?;
-                let retried_context_usage = ContextWindowUsage {
-                    used_tokens: estimate_prompt_tokens(
-                        &request.instructions,
-                        &request.messages,
-                        &request.tools,
-                        &request.additional_context,
-                    ),
-                    max_tokens: self.compaction_config.context_window_tokens,
-                };
-                let retried_ledger = self.record_request_token_window(retried_context_usage);
-                self.append_event(
-                    Some(turn_id.clone()),
-                    None,
-                    SessionEventKind::TokenUsageUpdated {
-                        phase: TokenUsagePhase::RequestStarted,
-                        ledger: retried_ledger.clone(),
-                    },
-                )
-                .await?;
-                observer.on_event(RuntimeProgressEvent::TokenUsageUpdated {
-                    phase: TokenUsagePhase::RequestStarted,
-                    ledger: retried_ledger,
-                })?;
-                self.backend.stream_turn(request).await?
+                    })?;
+                    request = self.build_model_request(turn_id, instructions, true);
+                    retry_count = 0;
+                    self.publish_model_request_started(turn_id, iteration, observer, &request)
+                        .await?;
+                }
+                Err(error) => {
+                    let Some(retry_hint) = error.model_backend_retry_hint() else {
+                        return Err(error);
+                    };
+                    if retry_count == MAX_PROVIDER_REQUEST_RETRIES {
+                        return Err(error);
+                    }
+
+                    retry_count = retry_count.saturating_add(1);
+                    let remaining_retries =
+                        MAX_PROVIDER_REQUEST_RETRIES.saturating_sub(retry_count);
+                    let delay = retry_hint.retry_after.unwrap_or_else(|| {
+                        PROVIDER_REQUEST_BASE_RETRY_DELAY.saturating_mul(retry_count as u32)
+                    });
+                    let next_retry_at_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                        .saturating_add(delay.as_millis());
+
+                    // Retry only before the backend yields any model events. Once the
+                    // provider has started streaming, replaying the turn could duplicate
+                    // tool calls or assistant output.
+                    warn!(
+                        session_id = %self.session.session_id,
+                        turn_id = %turn_id,
+                        iteration,
+                        status_code = retry_hint.status_code,
+                        retry_count,
+                        max_retries = MAX_PROVIDER_REQUEST_RETRIES,
+                        remaining_retries,
+                        delay_ms = delay.as_millis() as u64,
+                        "provider request failed before streaming; retrying retryable status"
+                    );
+                    observer.on_event(RuntimeProgressEvent::ProviderRetryScheduled {
+                        turn_id: turn_id.clone(),
+                        iteration,
+                        status_code: retry_hint.status_code,
+                        retry_count,
+                        max_retries: MAX_PROVIDER_REQUEST_RETRIES,
+                        remaining_retries,
+                        next_retry_at_ms,
+                    })?;
+                    sleep(delay).await;
+                    observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
+                        turn_id: turn_id.clone(),
+                        iteration,
+                    })?;
+                }
             }
-            Err(error) => return Err(error),
         };
 
         let mut response = TurnResponse {
@@ -289,6 +271,60 @@ impl AgentRuntime {
         })?;
         self.clear_pending_request_effects();
         Ok(response)
+    }
+
+    async fn publish_model_request_started(
+        &mut self,
+        turn_id: &TurnId,
+        iteration: usize,
+        observer: &mut dyn RuntimeObserver,
+        request: &types::ModelRequest,
+    ) -> Result<()> {
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            SessionEventKind::ModelRequestStarted {
+                request: request.clone(),
+            },
+        )
+        .await?;
+        let request_context_usage = ContextWindowUsage {
+            used_tokens: estimate_prompt_tokens(
+                &request.instructions,
+                &request.messages,
+                &request.tools,
+                &request.additional_context,
+            ),
+            max_tokens: self.compaction_config.context_window_tokens,
+        };
+        let request_ledger = self.record_request_token_window(request_context_usage);
+        self.append_event(
+            Some(turn_id.clone()),
+            None,
+            SessionEventKind::TokenUsageUpdated {
+                phase: TokenUsagePhase::RequestStarted,
+                ledger: request_ledger.clone(),
+            },
+        )
+        .await?;
+        debug!(
+            session_id = %self.session.session_id,
+            turn_id = %turn_id,
+            iteration,
+            uses_provider_continuation = request.continuation.is_some(),
+            message_count = request.messages.len(),
+            tool_count = request.tools.len(),
+            "starting model request"
+        );
+        observer.on_event(RuntimeProgressEvent::ModelRequestStarted {
+            turn_id: turn_id.clone(),
+            iteration,
+        })?;
+        observer.on_event(RuntimeProgressEvent::TokenUsageUpdated {
+            phase: TokenUsagePhase::RequestStarted,
+            ledger: request_ledger,
+        })?;
+        Ok(())
     }
 
     fn record_request_token_window(

@@ -38,8 +38,8 @@ use crate::frontend::tui::commands::{
 use crate::frontend::tui::state::{
     ActiveToolCell, ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
     ComposerDraftState, HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode,
-    StatusLinePickerState, ThemePickerState, ToastTone, ToolSelectionTarget, TrackedTaskSummary,
-    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    ProviderRetryState, StatusLinePickerState, ThemePickerState, ToastTone, ToolSelectionTarget,
+    TrackedTaskSummary, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::interaction::{
     ApprovalContent, ApprovalContentKind, ApprovalOrigin, PendingControlKind, PendingControlReason,
@@ -56,7 +56,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn builtin_slash(spec: SlashCommandSpec) -> SlashInvocationSpec {
     SlashInvocationSpec::Builtin(spec)
@@ -1438,6 +1438,37 @@ fn transcript_renders_compact_live_progress_line() {
             .iter()
             .any(|span| span.content.as_ref().contains("$ cargo test"))
     }));
+}
+
+#[test]
+fn live_progress_shows_retry_countdown_in_working_prompt() {
+    let next_retry_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .saturating_add(5_000);
+    let state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        turn_running: true,
+        status: "Working".to_string(),
+        provider_retry: Some(ProviderRetryState {
+            iteration: 1,
+            status_code: 429,
+            retry_count: 1,
+            max_retries: 5,
+            remaining_retries: 4,
+            next_retry_at_ms,
+        }),
+        turn_started_at: Some(Instant::now() - Duration::from_secs(2)),
+        ..TuiState::default()
+    };
+
+    let rendered = live_progress_lines(&state);
+    let text = line_text_for(&rendered[0]);
+
+    assert!(text.contains("Retry in 5 second(s)"));
+    assert!(text.contains("retry 1/5"));
+    assert!(text.contains("4 left"));
 }
 
 #[test]

@@ -2,6 +2,7 @@ use error_stack::{IntoReport, Report};
 use skills::SkillError;
 use std::error::Error as StdError;
 use std::fmt;
+use std::time::Duration;
 use store::SessionStoreError;
 use thiserror::Error;
 use tools::ToolError;
@@ -44,10 +45,19 @@ pub enum RuntimeError {
         message: String,
         #[source]
         source: Option<ErrorSource>,
+        status_code: Option<u16>,
+        retryable: bool,
+        retry_after: Option<Duration>,
     },
 }
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelBackendRetryHint {
+    pub status_code: u16,
+    pub retry_after: Option<Duration>,
+}
 
 impl RuntimeError {
     #[must_use]
@@ -95,6 +105,9 @@ impl RuntimeError {
         Self::ModelBackend {
             message: message.into(),
             source: None,
+            status_code: None,
+            retryable: false,
+            retry_after: None,
         }
     }
 
@@ -107,6 +120,70 @@ impl RuntimeError {
         Self::ModelBackend {
             source: Some(boxed_report_source("model backend error", &message, error)),
             message,
+            status_code: None,
+            retryable: false,
+            retry_after: None,
+        }
+    }
+
+    #[must_use]
+    pub fn model_backend_request(
+        message: impl Into<String>,
+        status_code: u16,
+        retryable: bool,
+        retry_after: Option<Duration>,
+    ) -> Self {
+        Self::ModelBackend {
+            message: message.into(),
+            source: None,
+            status_code: Some(status_code),
+            retryable,
+            retry_after,
+        }
+    }
+
+    #[must_use]
+    pub fn model_backend_request_with_source<E>(
+        message: impl Into<String>,
+        status_code: u16,
+        retryable: bool,
+        retry_after: Option<Duration>,
+        error: E,
+    ) -> Self
+    where
+        E: StdError + Send + Sync + 'static,
+    {
+        let message = message.into();
+        Self::ModelBackend {
+            source: Some(boxed_report_source("model backend error", &message, error)),
+            message,
+            status_code: Some(status_code),
+            retryable,
+            retry_after,
+        }
+    }
+
+    #[must_use]
+    pub fn model_backend_status_code(&self) -> Option<u16> {
+        match self {
+            Self::ModelBackend { status_code, .. } => *status_code,
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn model_backend_retry_hint(&self) -> Option<ModelBackendRetryHint> {
+        match self {
+            Self::ModelBackend {
+                status_code: Some(status_code),
+                retryable: true,
+                retry_after,
+                ..
+            } => Some(ModelBackendRetryHint {
+                status_code: *status_code,
+                retry_after: *retry_after,
+            }),
+            _ => None,
         }
     }
 }

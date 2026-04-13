@@ -163,6 +163,16 @@ pub(crate) enum TurnPhase {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProviderRetryState {
+    pub(crate) iteration: usize,
+    pub(crate) status_code: u16,
+    pub(crate) retry_count: usize,
+    pub(crate) max_retries: usize,
+    pub(crate) remaining_retries: usize,
+    pub(crate) next_retry_at_ms: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ToastState {
     pub(crate) message: String,
     pub(crate) tone: ToastTone,
@@ -482,6 +492,7 @@ pub(crate) struct TuiState {
     pub(crate) activity: Vec<String>,
     pub(crate) activity_scroll: u16,
     pub(crate) status: String,
+    pub(crate) provider_retry: Option<ProviderRetryState>,
     pub(crate) turn_phase: TurnPhase,
     pub(crate) turn_running: bool,
     pub(crate) turn_started_at: Option<Instant>,

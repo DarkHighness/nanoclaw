@@ -7,11 +7,10 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
-use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
-use tracing::{debug, warn};
+use tracing::debug;
 use types::{
     AgentCoreError, MessageId, ModelEvent, ModelRequest, ProviderContinuation, ResponseId,
     TokenUsage,
@@ -25,9 +24,7 @@ use message_codec::{
 };
 pub(crate) use payload::{build_openai_realtime_request_event, build_openai_responses_body};
 
-const OPENAI_RESPONSES_MAX_ATTEMPTS: usize = 3;
-const OPENAI_RESPONSES_BASE_RETRY_DELAY: Duration = Duration::from_millis(250);
-const OPENAI_RESPONSES_MAX_RETRY_AFTER: Duration = Duration::from_secs(5);
+const OPENAI_MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Default)]
 pub struct OpenAiResponsesOptions {
@@ -186,13 +183,18 @@ pub(crate) async fn stream_openai_responses_turn(
                     ))
                 })
         } else {
+            let retry_after = retry_after_delay(response.headers());
             let body = response.text().await.map_err(|error| {
                 runtime::RuntimeError::from(ProviderError::request_with_source(
                     "failed to read OpenAI Responses error body",
                     error,
                 ))
             })?;
-            Err::<(), runtime::RuntimeError>(classify_openai_error(status.as_u16(), &body)?)?;
+            Err::<(), runtime::RuntimeError>(classify_openai_error(
+                status.as_u16(),
+                &body,
+                retry_after,
+            )?)?;
             unreachable!();
         };
 
@@ -480,58 +482,24 @@ async fn send_openai_responses_request(
     api_key: &str,
     body: &Value,
 ) -> runtime::Result<reqwest::Response> {
-    let auth_header = format!("Bearer {api_key}");
-
-    for attempt in 1..=OPENAI_RESPONSES_MAX_ATTEMPTS {
-        let response = http_client
-            .post(url)
-            .header(AUTHORIZATION, auth_header.clone())
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "text/event-stream")
-            .json(body)
-            .send()
-            .await
-            .map_err(|error| {
-                runtime::RuntimeError::from(ProviderError::request_with_source(
-                    "failed to send OpenAI Responses request",
-                    error,
-                ))
-            })?;
-
-        let status = response.status();
-        if status.is_success()
-            || !is_retryable_openai_responses_status(status.as_u16())
-            || attempt == OPENAI_RESPONSES_MAX_ATTEMPTS
-        {
-            return Ok(response);
-        }
-
-        // Retry only before the SSE stream starts. Once the provider has begun
-        // emitting events, replaying the same turn could duplicate tool calls.
-        let delay = retry_delay_for_openai_responses_attempt(attempt, response.headers());
-        warn!(
-            attempt,
-            max_attempts = OPENAI_RESPONSES_MAX_ATTEMPTS,
-            status = status.as_u16(),
-            delay_ms = delay.as_millis() as u64,
-            "OpenAI Responses request failed before streaming; retrying transient status"
-        );
-        sleep(delay).await;
-    }
-
-    unreachable!("retry loop must return a response or propagate the send error")
+    http_client
+        .post(url)
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "text/event-stream")
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| {
+            runtime::RuntimeError::from(ProviderError::request_with_source(
+                "failed to send OpenAI Responses request",
+                error,
+            ))
+        })
 }
 
 fn is_retryable_openai_responses_status(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504)
-}
-
-fn retry_delay_for_openai_responses_attempt(
-    attempt: usize,
-    headers: &reqwest::header::HeaderMap,
-) -> Duration {
-    retry_after_delay(headers)
-        .unwrap_or_else(|| OPENAI_RESPONSES_BASE_RETRY_DELAY.saturating_mul(attempt as u32))
 }
 
 fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
@@ -541,7 +509,7 @@ fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
         .ok()?
         .parse::<u64>()
         .ok()?;
-    Some(Duration::from_secs(seconds).min(OPENAI_RESPONSES_MAX_RETRY_AFTER))
+    Some(Duration::from_secs(seconds).min(OPENAI_MAX_RETRY_AFTER))
 }
 
 fn parse_openai_usage(usage: Option<&Value>) -> Option<TokenUsage> {
@@ -563,7 +531,11 @@ fn parse_openai_usage(usage: Option<&Value>) -> Option<TokenUsage> {
     (!usage.is_zero()).then_some(usage)
 }
 
-fn classify_openai_error(status: u16, body: &str) -> Result<runtime::RuntimeError> {
+fn classify_openai_error(
+    status: u16,
+    body: &str,
+    retry_after: Option<Duration>,
+) -> Result<runtime::RuntimeError> {
     let parsed = serde_json::from_str::<Value>(body).ok();
     if parsed
         .as_ref()
@@ -597,7 +569,12 @@ fn classify_openai_error(status: u16, body: &str) -> Result<runtime::RuntimeErro
             }
         })
         .unwrap_or_else(|| format!("OpenAI Responses request failed with status {status}: {body}"));
-    Ok(AgentCoreError::ModelBackend(message).into())
+    Ok(runtime::RuntimeError::model_backend_request(
+        message,
+        status,
+        is_retryable_openai_responses_status(status),
+        retry_after,
+    ))
 }
 
 #[cfg(test)]
@@ -610,6 +587,7 @@ mod tests {
     use crate::{PromptCacheRetention, RequestOptions};
     use futures::{SinkExt, StreamExt};
     use serde_json::{Value, json};
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
@@ -1081,6 +1059,7 @@ mod tests {
         let error = classify_openai_error(
             404,
             r#"{"error":{"code":"previous_response_not_found","message":"expired"}}"#,
+            None,
         )
         .unwrap();
 
@@ -1089,6 +1068,25 @@ mod tests {
             runtime::RuntimeError::AgentCore(AgentCoreError::ProviderContinuationLost(message))
                 if message == "expired"
         ));
+    }
+
+    #[test]
+    fn retryable_openai_status_preserves_retry_metadata() {
+        let error = classify_openai_error(
+            429,
+            r#"{"error":{"code":"rate_limit_exceeded","message":"slow down"}}"#,
+            Some(Duration::from_secs(5)),
+        )
+        .unwrap();
+
+        assert_eq!(error.model_backend_status_code(), Some(429));
+        assert_eq!(
+            error.model_backend_retry_hint(),
+            Some(runtime::ModelBackendRetryHint {
+                status_code: 429,
+                retry_after: Some(Duration::from_secs(5)),
+            })
+        );
     }
 
     #[test]
@@ -1319,42 +1317,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn openai_stream_retries_transient_502_before_streaming() {
+    async fn openai_stream_surfaces_retryable_transient_502_before_streaming() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            for attempt in 1..=2 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                read_http_request(&mut stream).await;
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http_request(&mut stream).await;
 
-                if attempt == 1 {
-                    let body =
-                        r#"{"error":{"code":"server_error","message":"temporary upstream issue"}}"#;
-                    let response = format!(
-                        "HTTP/1.1 502 Bad Gateway\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
-                    stream.write_all(response.as_bytes()).await.unwrap();
-                    stream.flush().await.unwrap();
-                    continue;
-                }
-
-                let sse = concat!(
-                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
-                    "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg_retry\"}}\n\n",
-                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_retry\"}}\n\n",
-                    "data: [DONE]\n\n"
-                );
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                    sse.len(),
-                    sse
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-                stream.flush().await.unwrap();
-            }
+            let body = r#"{"error":{"code":"server_error","message":"temporary upstream issue"}}"#;
+            let response = format!(
+                "HTTP/1.1 502 Bad Gateway\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
         });
 
         let stream = stream_openai_responses_turn(
@@ -1369,21 +1347,20 @@ mod tests {
         )
         .await
         .unwrap();
-
         let events = stream.collect::<Vec<_>>().await;
         server.await.unwrap();
 
-        assert!(matches!(
-            &events[0],
-            Ok(ModelEvent::TextDelta { delta }) if delta == "ok"
-        ));
-        assert!(matches!(
-            events.last(),
-            Some(Ok(ModelEvent::ResponseComplete {
-                message_id: Some(message_id),
-                continuation: Some(ProviderContinuation::OpenAiResponses { response_id }),
-                ..
-            })) if message_id.as_str() == "msg_retry" && response_id.as_str() == "resp_retry"
-        ));
+        let error = match events.as_slice() {
+            [Err(error)] => error,
+            other => panic!("expected one retryable provider error event, got {other:?}"),
+        };
+        assert_eq!(error.model_backend_status_code(), Some(502));
+        assert_eq!(
+            error.model_backend_retry_hint(),
+            Some(runtime::ModelBackendRetryHint {
+                status_code: 502,
+                retry_after: None,
+            })
+        );
     }
 }

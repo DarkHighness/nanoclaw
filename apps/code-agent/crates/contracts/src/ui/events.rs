@@ -88,6 +88,14 @@ pub enum SessionEvent {
     ModelRequestStarted {
         iteration: usize,
     },
+    ProviderRetryScheduled {
+        iteration: usize,
+        status_code: u16,
+        retry_count: usize,
+        max_retries: usize,
+        remaining_retries: usize,
+        next_retry_at_ms: u128,
+    },
     TokenUsageUpdated {
         phase: TokenUsagePhase,
         ledger: TokenLedgerSnapshot,

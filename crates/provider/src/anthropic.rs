@@ -6,10 +6,11 @@ use agent_env::vars;
 use async_stream::try_stream;
 use eventsource_stream::Eventsource;
 use futures::{StreamExt, TryStreamExt, stream::BoxStream};
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use runtime::Result as RuntimeResult;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+use std::time::Duration;
 use tracing::debug;
 use types::{
     AgentCoreError, CallId, MessageId, MessagePart, MessageRole, ModelEvent, ModelRequest,
@@ -18,6 +19,7 @@ use types::{
 };
 
 const DEFAULT_ANTHROPIC_MAX_TOKENS: u64 = 4_096;
+const ANTHROPIC_MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
 pub(crate) struct AnthropicTransport {
@@ -99,19 +101,24 @@ pub(crate) async fn stream_anthropic_turn(
                 .bytes_stream()
                 .eventsource()
                 .map_err(|error| {
-                    runtime::RuntimeError::from(ProviderError::request_with_source(
-                        "failed to decode Anthropic event stream",
-                        error,
-                    ))
-                })
+                runtime::RuntimeError::from(ProviderError::request_with_source(
+                    "failed to decode Anthropic event stream",
+                    error,
+                ))
+            })
         } else {
+            let retry_after = retry_after_delay(response.headers());
             let body = response.text().await.map_err(|error| {
                 runtime::RuntimeError::from(ProviderError::request_with_source(
                     "failed to read Anthropic error response body",
                     error,
                 ))
             })?;
-            Err::<(), runtime::RuntimeError>(classify_anthropic_error(status.as_u16(), &body)?)?;
+            Err::<(), runtime::RuntimeError>(classify_anthropic_error(
+                status.as_u16(),
+                &body,
+                retry_after,
+            )?)?;
             unreachable!();
         };
 
@@ -505,7 +512,25 @@ fn tool_result_block(result: ToolResult) -> Value {
     })
 }
 
-fn classify_anthropic_error(status: u16, body: &str) -> Result<runtime::RuntimeError> {
+fn is_retryable_anthropic_status(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503 | 504 | 529)
+}
+
+fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let seconds = headers
+        .get(RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()?;
+    Some(Duration::from_secs(seconds).min(ANTHROPIC_MAX_RETRY_AFTER))
+}
+
+fn classify_anthropic_error(
+    status: u16,
+    body: &str,
+    retry_after: Option<Duration>,
+) -> Result<runtime::RuntimeError> {
     let parsed = serde_json::from_str::<Value>(body).ok();
     let message = parsed
         .as_ref()
@@ -514,7 +539,12 @@ fn classify_anthropic_error(status: u16, body: &str) -> Result<runtime::RuntimeE
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("Anthropic request failed with status {status}: {body}"));
-    Ok(AgentCoreError::ModelBackend(message).into())
+    Ok(runtime::RuntimeError::model_backend_request(
+        message,
+        status,
+        is_retryable_anthropic_status(status),
+        retry_after,
+    ))
 }
 
 enum AnthropicBlockState {
@@ -669,10 +699,11 @@ impl AnthropicBlockState {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_anthropic_messages_body, stream_anthropic_turn};
+    use super::{build_anthropic_messages_body, classify_anthropic_error, stream_anthropic_turn};
     use crate::{AnthropicTransport, ProviderDescriptor, RequestOptions};
     use futures::StreamExt;
     use serde_json::{Value, json};
+    use std::time::Duration;
     use types::{
         AgentSessionId, Message, ModelEvent, ModelRequest, SessionId, TokenUsage, ToolName,
         ToolOrigin, ToolOutputMode, ToolSource, ToolSpec, TurnId,
@@ -699,6 +730,25 @@ mod tests {
             continuation: None,
             metadata: json!({}),
         }
+    }
+
+    #[test]
+    fn retryable_anthropic_status_preserves_retry_metadata() {
+        let error = classify_anthropic_error(
+            529,
+            r#"{"error":{"message":"overloaded"}}"#,
+            Some(Duration::from_secs(3)),
+        )
+        .unwrap();
+
+        assert_eq!(error.model_backend_status_code(), Some(529));
+        assert_eq!(
+            error.model_backend_retry_hint(),
+            Some(runtime::ModelBackendRetryHint {
+                status_code: 529,
+                retry_after: Some(Duration::from_secs(3)),
+            })
+        );
     }
 
     #[test]

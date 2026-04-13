@@ -1,6 +1,7 @@
 use super::state::{
-    ActiveToolCell, SharedUiState, ToastTone, TranscriptEntry, TranscriptShellDetail,
-    TranscriptShellEntry, TranscriptToolEntry, TranscriptToolStatus, TurnPhase, preview_text,
+    ActiveToolCell, ProviderRetryState, SharedUiState, ToastTone, TranscriptEntry,
+    TranscriptShellDetail, TranscriptShellEntry, TranscriptToolEntry, TranscriptToolStatus,
+    TurnPhase, preview_text,
 };
 use super::task_state::{
     apply_subagent_started, apply_subagent_stopped, apply_task_completed, apply_task_created,
@@ -63,6 +64,7 @@ impl SharedRenderObserver {
                 flush_transcript_ready_tool_cells(state);
                 state.active_tool_cells.clear();
                 state.clear_tool_selection();
+                state.provider_retry = None;
                 state.push_transcript(TranscriptEntry::UserPrompt(prompt.clone()));
                 state.status = "Working".to_string();
                 state.turn_phase = TurnPhase::Working;
@@ -105,12 +107,31 @@ impl SharedRenderObserver {
                 ));
             }
             SessionEvent::ModelRequestStarted { iteration } => {
-                state.status = if iteration == 1 {
-                    "Working".to_string()
-                } else {
-                    format!("Working ({iteration})")
-                };
+                state.provider_retry = None;
+                state.status = working_status_label(iteration);
                 state.turn_phase = TurnPhase::Working;
+            }
+            SessionEvent::ProviderRetryScheduled {
+                iteration,
+                status_code,
+                retry_count,
+                max_retries,
+                remaining_retries,
+                next_retry_at_ms,
+            } => {
+                state.status = working_status_label(iteration);
+                state.provider_retry = Some(ProviderRetryState {
+                    iteration,
+                    status_code,
+                    retry_count,
+                    max_retries,
+                    remaining_retries,
+                    next_retry_at_ms,
+                });
+                state.turn_phase = TurnPhase::Working;
+                state.push_activity(format!(
+                    "provider retry status {status_code}: retry {retry_count}/{max_retries}, {remaining_retries} left"
+                ));
             }
             SessionEvent::TokenUsageUpdated { ledger, .. } => {
                 state.session.token_ledger = ledger.clone();
@@ -510,6 +531,7 @@ impl SharedRenderObserver {
                 flush_transcript_ready_tool_cells(state);
                 state.active_tool_cells.clear();
                 state.clear_missing_live_tool_selection();
+                state.provider_retry = None;
                 state.status = "Ready".to_string();
                 state.turn_phase = TurnPhase::Idle;
                 state.push_activity("turn complete");
@@ -567,6 +589,14 @@ fn notification_entry(
             format!("Notification from {source}"),
             detail_lines,
         ),
+    }
+}
+
+fn working_status_label(iteration: usize) -> String {
+    if iteration == 1 {
+        "Working".to_string()
+    } else {
+        format!("Working ({iteration})")
     }
 }
 
@@ -1163,7 +1193,9 @@ fn subagent_stopped_entry(
 #[cfg(test)]
 mod tests {
     use super::SharedRenderObserver;
-    use crate::frontend::tui::state::{SharedUiState, ToolSelectionTarget, TranscriptEntry};
+    use crate::frontend::tui::state::{
+        ProviderRetryState, SharedUiState, ToolSelectionTarget, TranscriptEntry,
+    };
     use crate::ui::{SessionEvent, SessionNotificationSource, SessionToolCall, SessionToolOrigin};
     use agent::types::{
         AgentSessionId, AgentTaskSpec, ContextWindowUsage, MonitorEventKind, MonitorEventRecord,
@@ -1276,6 +1308,41 @@ mod tests {
 
         let snapshot = ui_state.snapshot();
         assert_eq!(snapshot.input, "existing + appended");
+    }
+
+    #[test]
+    fn provider_retry_status_is_live_only_until_the_next_request_attempt() {
+        let ui_state = SharedUiState::new();
+        let mut observer = SharedRenderObserver::new(ui_state.clone());
+
+        observer.apply_event(SessionEvent::ProviderRetryScheduled {
+            iteration: 1,
+            status_code: 429,
+            retry_count: 1,
+            max_retries: 5,
+            remaining_retries: 4,
+            next_retry_at_ms: 5_000,
+        });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.status, "Working");
+        assert_eq!(
+            snapshot.provider_retry,
+            Some(ProviderRetryState {
+                iteration: 1,
+                status_code: 429,
+                retry_count: 1,
+                max_retries: 5,
+                remaining_retries: 4,
+                next_retry_at_ms: 5_000,
+            })
+        );
+
+        observer.apply_event(SessionEvent::ModelRequestStarted { iteration: 1 });
+
+        let snapshot = ui_state.snapshot();
+        assert_eq!(snapshot.status, "Working");
+        assert!(snapshot.provider_retry.is_none());
     }
 
     #[test]

@@ -23,9 +23,28 @@ struct ToolTurnRecordingBackend {
     requests: Arc<Mutex<Vec<ModelRequest>>>,
 }
 
+#[derive(Clone)]
+struct RetryThenSuccessBackend {
+    attempts: Arc<Mutex<usize>>,
+    retries_before_success: usize,
+}
+
 impl ToolTurnRecordingBackend {
     fn requests(&self) -> Vec<ModelRequest> {
         self.requests.lock().unwrap().clone()
+    }
+}
+
+impl RetryThenSuccessBackend {
+    fn with_failures(retries_before_success: usize) -> Self {
+        Self {
+            attempts: Arc::new(Mutex::new(0)),
+            retries_before_success,
+        }
+    }
+
+    fn attempts(&self) -> usize {
+        *self.attempts.lock().unwrap()
     }
 }
 
@@ -118,6 +137,39 @@ impl ModelBackend for ToolTurnRecordingBackend {
     }
 }
 
+#[async_trait]
+impl ModelBackend for RetryThenSuccessBackend {
+    async fn stream_turn(
+        &self,
+        _request: ModelRequest,
+    ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+        let mut attempts = self.attempts.lock().unwrap();
+        *attempts = attempts.saturating_add(1);
+        if *attempts <= self.retries_before_success {
+            return Err(crate::RuntimeError::model_backend_request(
+                "rate limit",
+                429,
+                true,
+                None,
+            ));
+        }
+
+        Ok(stream::iter(vec![
+            Ok(ModelEvent::TextDelta {
+                delta: "ok".to_string(),
+            }),
+            Ok(ModelEvent::ResponseComplete {
+                stop_reason: Some("stop".to_string()),
+                message_id: None,
+                continuation: None,
+                usage: None,
+                reasoning: Vec::new(),
+            }),
+        ])
+        .boxed())
+    }
+}
+
 struct SteeringObserver {
     control_plane: RuntimeControlPlane,
     sent: bool,
@@ -189,6 +241,54 @@ async fn runtime_notifies_observer_of_streaming_text_progress() {
         event,
         RuntimeProgressEvent::TurnCompleted { assistant_text, .. } if assistant_text == "hello"
     )));
+}
+
+#[tokio::test]
+async fn runtime_retries_retryable_provider_failures_before_streaming() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = RetryThenSuccessBackend::with_failures(2);
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(backend.clone()), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .build();
+    let mut observer = RecordingObserver::default();
+
+    let outcome = runtime
+        .run_user_prompt_with_observer("retry me", &mut observer)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.assistant_text, "ok");
+    assert_eq!(backend.attempts(), 3);
+
+    let retry_events = observer
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeProgressEvent::ProviderRetryScheduled {
+                status_code,
+                retry_count,
+                max_retries,
+                remaining_retries,
+                ..
+            } => Some((*status_code, *retry_count, *max_retries, *remaining_retries)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(retry_events, vec![(429, 1, 5, 4), (429, 2, 5, 3)]);
+
+    let request_start_count = observer
+        .events()
+        .iter()
+        .filter(|event| matches!(event, RuntimeProgressEvent::ModelRequestStarted { .. }))
+        .count();
+    assert_eq!(request_start_count, 3);
 }
 
 #[tokio::test]

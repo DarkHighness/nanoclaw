@@ -1,6 +1,7 @@
 use error_stack::{IntoReport, Report};
 use std::error::Error as StdError;
 use std::fmt;
+use std::time::Duration;
 use thiserror::Error;
 
 type ErrorSource = Box<dyn StdError + Send + Sync + 'static>;
@@ -22,6 +23,9 @@ pub enum ProviderError {
     #[error("provider request error: {message}")]
     Request {
         message: String,
+        status_code: Option<u16>,
+        retryable: bool,
+        retry_after: Option<Duration>,
         #[source]
         source: Option<ErrorSource>,
     },
@@ -84,6 +88,9 @@ impl ProviderError {
     pub fn request(message: impl Into<String>) -> Self {
         Self::Request {
             message: message.into(),
+            status_code: None,
+            retryable: false,
+            retry_after: None,
             source: None,
         }
     }
@@ -95,6 +102,9 @@ impl ProviderError {
     {
         let message = message.into();
         Self::Request {
+            status_code: None,
+            retryable: false,
+            retry_after: None,
             source: Some(boxed_report_source(
                 "provider request error",
                 &message,
@@ -103,16 +113,81 @@ impl ProviderError {
             message,
         }
     }
+
+    #[must_use]
+    pub fn request_status(
+        message: impl Into<String>,
+        status_code: u16,
+        retryable: bool,
+        retry_after: Option<Duration>,
+    ) -> Self {
+        Self::Request {
+            message: message.into(),
+            status_code: Some(status_code),
+            retryable,
+            retry_after,
+            source: None,
+        }
+    }
+
+    #[must_use]
+    pub fn request_status_with_source<E>(
+        message: impl Into<String>,
+        status_code: u16,
+        retryable: bool,
+        retry_after: Option<Duration>,
+        error: E,
+    ) -> Self
+    where
+        E: StdError + Send + Sync + 'static,
+    {
+        let message = message.into();
+        let source = boxed_report_source("provider request error", &message, error);
+        Self::Request {
+            message,
+            status_code: Some(status_code),
+            retryable,
+            retry_after,
+            source: Some(source),
+        }
+    }
 }
 
 impl From<ProviderError> for runtime::RuntimeError {
     fn from(value: ProviderError) -> Self {
         match value {
             ProviderError::Config { message, source }
-            | ProviderError::Protocol { message, source }
-            | ProviderError::Request { message, source } => match source {
+            | ProviderError::Protocol { message, source } => match source {
                 None => runtime::RuntimeError::model_backend(message),
                 Some(source) => runtime::RuntimeError::model_backend_with_source(
+                    message,
+                    ProviderRuntimeSource(source),
+                ),
+            },
+            ProviderError::Request {
+                message,
+                status_code,
+                retryable,
+                retry_after,
+                source,
+            } => match (status_code, source) {
+                (Some(status_code), None) => runtime::RuntimeError::model_backend_request(
+                    message,
+                    status_code,
+                    retryable,
+                    retry_after,
+                ),
+                (Some(status_code), Some(source)) => {
+                    runtime::RuntimeError::model_backend_request_with_source(
+                        message,
+                        status_code,
+                        retryable,
+                        retry_after,
+                        ProviderRuntimeSource(source),
+                    )
+                }
+                (None, None) => runtime::RuntimeError::model_backend(message),
+                (None, Some(source)) => runtime::RuntimeError::model_backend_with_source(
                     message,
                     ProviderRuntimeSource(source),
                 ),

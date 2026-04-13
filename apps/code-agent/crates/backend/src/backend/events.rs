@@ -134,6 +134,22 @@ fn project_session_event(event: RuntimeProgressEvent) -> SessionEvent {
         RuntimeProgressEvent::ModelRequestStarted { iteration, .. } => {
             SessionEvent::ModelRequestStarted { iteration }
         }
+        RuntimeProgressEvent::ProviderRetryScheduled {
+            iteration,
+            status_code,
+            retry_count,
+            max_retries,
+            remaining_retries,
+            next_retry_at_ms,
+            ..
+        } => SessionEvent::ProviderRetryScheduled {
+            iteration,
+            status_code,
+            retry_count,
+            max_retries,
+            remaining_retries,
+            next_retry_at_ms,
+        },
         RuntimeProgressEvent::TokenUsageUpdated { phase, ledger } => {
             SessionEvent::TokenUsageUpdated { phase, ledger }
         }

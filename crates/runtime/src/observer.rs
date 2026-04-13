@@ -26,6 +26,15 @@ pub enum RuntimeProgressEvent {
         turn_id: TurnId,
         iteration: usize,
     },
+    ProviderRetryScheduled {
+        turn_id: TurnId,
+        iteration: usize,
+        status_code: u16,
+        retry_count: usize,
+        max_retries: usize,
+        remaining_retries: usize,
+        next_retry_at_ms: u128,
+    },
     TokenUsageUpdated {
         phase: TokenUsagePhase,
         ledger: TokenLedgerSnapshot,

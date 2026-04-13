@@ -19,7 +19,7 @@ use crate::tool_render::{
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const COLLAPSED_SHELL_PREVIEW_DETAIL_LINES: usize = 2;
 const SELECTED_TOOL_PREVIEW_DETAIL_LINES: usize = 5;
@@ -1442,11 +1442,34 @@ pub(super) fn format_elapsed_duration(elapsed: Duration) -> String {
 fn live_progress_summary(state: &TuiState) -> String {
     if state.turn_phase == super::super::state::TurnPhase::WaitingApproval {
         "Waiting for approval".to_string()
+    } else if let Some(retry) = state.provider_retry.as_ref() {
+        format!(
+            "{} · Retry in {} second(s) · retry {}/{} · {} left",
+            if retry.iteration == 1 {
+                "Working".to_string()
+            } else {
+                format!("Working ({})", retry.iteration)
+            },
+            seconds_until_retry(retry.next_retry_at_ms),
+            retry.retry_count,
+            retry.max_retries,
+            retry.remaining_retries,
+        )
     } else if !state.status.is_empty() {
         state.status.clone()
     } else {
         "Working".to_string()
     }
+}
+
+fn seconds_until_retry(next_retry_at_ms: u128) -> u64 {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let remaining_ms = next_retry_at_ms.saturating_sub(now_ms);
+    let remaining_secs = remaining_ms.div_ceil(1000);
+    remaining_secs.max(1).min(u128::from(u64::MAX)) as u64
 }
 
 fn live_tool_progress_label(state: &TuiState) -> Option<String> {
