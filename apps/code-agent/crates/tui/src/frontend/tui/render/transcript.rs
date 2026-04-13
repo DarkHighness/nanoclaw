@@ -22,8 +22,9 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use std::time::Instant;
 
-const TRANSCRIPT_SIDE_PADDING: u16 = 3;
 const WELCOME_SIDE_PADDING: u16 = 4;
+const TRANSCRIPT_CELL_GAP_LINES: usize = 1;
+const TRANSCRIPT_TURN_GAP_LINES: usize = 1;
 
 pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     frame.render_widget(
@@ -44,13 +45,11 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
         return;
     }
 
-    let content_width = area
-        .width
-        .saturating_sub(TRANSCRIPT_SIDE_PADDING.saturating_mul(2));
-    let lines = pad_transcript_lines(
-        build_transcript_lines_for_width(state, content_width),
-        usize::from(TRANSCRIPT_SIDE_PADDING),
-    );
+    // The transcript width must match the actual visible pane width. Global
+    // string padding shrinks the effective line budget and then `Paragraph`
+    // wraps the already-padded text a second time, which causes early wraps
+    // and short dividers. Keep spacing in the cell renderer instead.
+    let lines = build_transcript_lines_for_width(state, area.width);
     let scroll = shared::clamp_scroll(state.transcript_scroll, lines.len(), area.height);
     let transcript = Paragraph::new(Text::from(lines))
         .scroll((scroll, 0))
@@ -90,13 +89,20 @@ pub(super) fn build_transcript_lines_for_width(
         for (index, entry) in state.transcript.iter().enumerate() {
             let selected = matches!(
                 state.tool_selection.as_ref(),
-                Some(ToolSelectionTarget::Transcript(selected)) if *selected == index
+            Some(ToolSelectionTarget::Transcript(selected)) if *selected == index
             );
             if index > 0 {
-                lines.push(Line::raw(""));
+                lines.extend(
+                    std::iter::repeat_with(|| Line::raw("")).take(TRANSCRIPT_CELL_GAP_LINES),
+                );
                 if entry_kind_from_cell(entry) == TranscriptEntryKind::UserPrompt {
+                    lines.extend(
+                        std::iter::repeat_with(|| Line::raw("")).take(TRANSCRIPT_TURN_GAP_LINES),
+                    );
                     lines.push(turn_divider(transcript_width));
-                    lines.push(Line::raw(""));
+                    lines.extend(
+                        std::iter::repeat_with(|| Line::raw("")).take(TRANSCRIPT_TURN_GAP_LINES),
+                    );
                 }
             }
             let mut cell_lines = format_transcript_cell_with_mode(
@@ -208,30 +214,6 @@ fn turn_divider(width: u16) -> Line<'static> {
         "─".repeat(width),
         Style::default().fg(palette().subtle),
     ))
-}
-
-fn pad_transcript_lines(lines: Vec<Line<'static>>, padding: usize) -> Vec<Line<'static>> {
-    if padding == 0 {
-        return lines;
-    }
-    lines
-        .into_iter()
-        .map(|mut line| {
-            if line_text_is_divider(&line) || line.spans.is_empty() {
-                return line;
-            }
-            line.spans.insert(0, Span::raw(" ".repeat(padding)));
-            line
-        })
-        .collect()
-}
-
-fn line_text_is_divider(line: &Line<'static>) -> bool {
-    !line.spans.is_empty()
-        && line
-            .spans
-            .iter()
-            .all(|span| span.content.chars().all(|ch| ch == '─'))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

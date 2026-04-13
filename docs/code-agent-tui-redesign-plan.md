@@ -82,7 +82,7 @@ The current TUI still has systemic issues:
 | Phase | Status | Summary |
 | --- | --- | --- |
 | Phase 1: Theme And Surface Unification | Complete | `ThemePalette` now exposes semantic surface helpers and startup loading consumes the active theme instead of a local palette. |
-| Phase 2: Width, Divider, And Spacing Repair | Pending | Rebuild transcript width accounting and full-width separators. |
+| Phase 2: Width, Divider, And Spacing Repair | Complete | Transcript width now follows the visible pane geometry directly, and turn dividers no longer inherit artificial side padding. |
 | Phase 3: Footer Layout Redesign | Pending | Redesign composer and statusline as a lighter shared footer without default color bands. |
 | Phase 4: Transcript Cell Model | Pending | Replace ad hoc entry rendering with explicit cell sections and clearer selection chrome. |
 | Phase 5: Markdown-First Transcript | Pending | Promote Markdown rendering into the default assistant/system composition path. |
@@ -144,6 +144,13 @@ Acceptance criteria:
 - single-line transcript entries do not wrap before the visible boundary
 - turn dividers visually fill the pane width
 - transcript cells, code fences, and continuation lines share one width model
+
+Shipped:
+
+- transcript rendering no longer subtracts global string padding before wrapping
+- turn dividers now use the full live pane width instead of a padded text width
+- cell and turn spacing are expressed as layout constants instead of ad hoc
+  blank-line insertion
 
 ## Phase 3: Footer Layout Redesign
 
