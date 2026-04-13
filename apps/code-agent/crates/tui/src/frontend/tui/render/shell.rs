@@ -20,7 +20,7 @@ pub(super) fn render_top_title(
     state: &TuiState,
 ) {
     frame.render_widget(
-        Block::default().style(Style::default().bg(palette().footer_bg)),
+        Block::default().style(Style::default().bg(palette().main_bg)),
         title_area,
     );
     let inner = title_area.inner(Margin {
@@ -29,7 +29,7 @@ pub(super) fn render_top_title(
     });
     frame.render_widget(
         Paragraph::new(build_top_title_line(state, main_area))
-            .style(Style::default().fg(palette().muted).bg(palette().footer_bg)),
+            .style(Style::default().fg(palette().muted).bg(palette().main_bg)),
         inner,
     );
 }
