@@ -1,11 +1,15 @@
 use super::super::state::{TuiState, draft_preview_text};
+use super::overlay::{
+    centered_overlay_rect, overlay_container_style, overlay_help_style, overlay_panel_block,
+    overlay_panel_style, render_overlay_container,
+};
 use super::shared::clamp_scroll;
 use super::theme::palette;
 use super::transcript::format_transcript_cell;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 pub(super) fn render_history_rollback_overlay(
     frame: &mut ratatui::Frame<'_>,
@@ -15,26 +19,14 @@ pub(super) fn render_history_rollback_overlay(
     let Some(overlay) = state.history_rollback_overlay() else {
         return;
     };
-    let popup = centered_rect(area, 84, 80);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Block::default()
-            .title(" History Rollback ")
-            .title_style(
-                Style::default()
-                    .fg(palette().header)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette().border_active))
-            .style(Style::default().bg(palette().footer_bg)),
+    let popup = centered_overlay_rect(area, 84, 80);
+    let inner = render_overlay_container(
+        frame,
         popup,
+        "History Rollback",
+        palette().header,
+        palette().emphasis_border(),
     );
-
-    let inner = popup.inner(Margin {
-        vertical: 1,
-        horizontal: 2,
-    });
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -48,32 +40,8 @@ pub(super) fn render_history_rollback_overlay(
         .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
         .split(sections[1]);
 
-    frame.render_widget(
-        Block::default()
-            .title(" Candidates ")
-            .title_style(
-                Style::default()
-                    .fg(palette().accent)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette().border_active))
-            .style(Style::default().bg(palette().bottom_pane_bg)),
-        body[0],
-    );
-    frame.render_widget(
-        Block::default()
-            .title(" Preview ")
-            .title_style(
-                Style::default()
-                    .fg(palette().header)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette().border_active))
-            .style(Style::default().bg(palette().bottom_pane_bg)),
-        body[1],
-    );
+    frame.render_widget(overlay_panel_block("Candidates", palette().accent), body[0]);
+    frame.render_widget(overlay_panel_block("Preview", palette().header), body[1]);
     let list_area = body[0].inner(Margin {
         vertical: 1,
         horizontal: 2,
@@ -86,7 +54,7 @@ pub(super) fn render_history_rollback_overlay(
     frame.render_widget(
         Paragraph::new(build_history_rollback_summary_text(state))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
+            .style(overlay_container_style()),
         sections[0],
     );
 
@@ -104,29 +72,21 @@ pub(super) fn render_history_rollback_overlay(
         Paragraph::new(list)
             .scroll((scroll, 0))
             .wrap(Wrap { trim: false })
-            .style(
-                Style::default()
-                    .fg(palette().text)
-                    .bg(palette().bottom_pane_bg),
-            ),
+            .style(overlay_panel_style()),
         list_area,
     );
 
     frame.render_widget(
         Paragraph::new(build_history_rollback_preview_text(state))
             .wrap(Wrap { trim: false })
-            .style(
-                Style::default()
-                    .fg(palette().text)
-                    .bg(palette().bottom_pane_bg),
-            ),
+            .style(overlay_panel_style()),
         preview_area,
     );
 
     frame.render_widget(
         Paragraph::new(build_history_rollback_help_text())
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(palette().muted).bg(palette().footer_bg)),
+            .style(overlay_help_style()),
         sections[2],
     );
 }
@@ -269,23 +229,4 @@ fn build_history_rollback_help_text() -> Text<'static> {
         Span::styled("q", Style::default().fg(palette().accent)),
         Span::styled(" close", Style::default().fg(palette().muted)),
     ])])
-}
-
-fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100_u16.saturating_sub(height_percent)) / 2),
-            Constraint::Percentage(height_percent),
-            Constraint::Percentage((100_u16.saturating_sub(height_percent)) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
-            Constraint::Percentage(width_percent),
-            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
-        ])
-        .split(vertical[1])[1]
 }

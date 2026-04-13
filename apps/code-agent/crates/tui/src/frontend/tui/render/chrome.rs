@@ -8,14 +8,17 @@ use super::shell::bottom_band_inner_area;
 use super::theme::palette;
 use super::transcript_markdown::code_span;
 use crate::backend::preview_id;
+use crate::frontend::tui::render::overlay::{
+    centered_overlay_rect, overlay_container_style, render_overlay_container,
+};
 use crate::interaction::{
     ApprovalOrigin, PendingControlKind, PermissionProfile, PermissionRequestPrompt,
 };
 use crate::preview::{PreviewCollapse, collapse_preview_lines};
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Position, Rect};
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 
 const MAX_COMPOSER_HEIGHT: u16 = 10;
 
@@ -76,29 +79,12 @@ pub(super) fn render_approval_modal(
     area: Rect,
     approval: &ApprovalPrompt,
 ) {
-    let popup = centered_rect(area, 76, 42);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Block::default()
-            .title(" Approval ")
-            .title_style(
-                Style::default()
-                    .fg(palette().warn)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette().warn))
-            .style(Style::default().bg(palette().footer_bg)),
-        popup,
-    );
-    let inner = popup.inner(Margin {
-        vertical: 1,
-        horizontal: 2,
-    });
+    let popup = centered_overlay_rect(area, 76, 42);
+    let inner = render_overlay_container(frame, popup, "Approval", palette().warn, palette().warn);
     frame.render_widget(
         Paragraph::new(build_approval_text(approval))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
+            .style(overlay_container_style()),
         inner,
     );
 }
@@ -130,29 +116,13 @@ pub(super) fn render_permission_request_modal(
     area: Rect,
     prompt: &PermissionRequestPrompt,
 ) {
-    let popup = centered_rect(area, 78, 58);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Block::default()
-            .title(" Permissions ")
-            .title_style(
-                Style::default()
-                    .fg(palette().warn)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(palette().warn))
-            .style(Style::default().bg(palette().footer_bg)),
-        popup,
-    );
-    let inner = popup.inner(Margin {
-        vertical: 1,
-        horizontal: 2,
-    });
+    let popup = centered_overlay_rect(area, 78, 58);
+    let inner =
+        render_overlay_container(frame, popup, "Permissions", palette().warn, palette().warn);
     frame.render_widget(
         Paragraph::new(build_permission_request_text(prompt))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(palette().text).bg(palette().footer_bg)),
+            .style(overlay_container_style()),
         inner,
     );
 }
@@ -296,25 +266,6 @@ fn approval_detail_line(label: Option<&str>, mut body: Vec<Span<'static>>) -> Li
     }
     spans.append(&mut body);
     Line::from(spans)
-}
-
-fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100_u16.saturating_sub(height_percent)) / 2),
-            Constraint::Percentage(height_percent),
-            Constraint::Percentage((100_u16.saturating_sub(height_percent)) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
-            Constraint::Percentage(width_percent),
-            Constraint::Percentage((100_u16.saturating_sub(width_percent)) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 pub(super) fn approval_preview_lines(lines: &[String]) -> Vec<String> {

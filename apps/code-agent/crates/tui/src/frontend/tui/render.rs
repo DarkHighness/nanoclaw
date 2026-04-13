@@ -1,5 +1,6 @@
 mod chrome;
 mod history_rollback_overlay;
+mod overlay;
 mod picker;
 mod shared;
 mod shell;

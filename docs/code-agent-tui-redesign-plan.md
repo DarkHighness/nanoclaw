@@ -299,6 +299,15 @@ Acceptance criteria:
 - expanded review surfaces present structured detail instead of generic dumps
 - modal surfaces look like one system instead of separate custom widgets
 
+Shipped So Far:
+
+- approval, permissions, tool review, and history rollback now share one
+  overlay substrate for centered geometry, outer chrome, and inner panel
+  surfaces
+- overlay containers now render on the theme `overlay_surface`, while
+  list/preview panes render on the shared elevated panel surface instead of
+  mixing footer and bottom-pane colors by subsystem
+
 ## Phase 7: Tests, Docs, And Stabilization
 
 Goal:
