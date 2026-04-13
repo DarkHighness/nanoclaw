@@ -2773,6 +2773,7 @@ fn transcript_chrome_rows_keep_the_transcript_background() {
 
     let buffer = terminal.backend().buffer();
     let title_y = 0;
+    let composer_y = buffer.area.height.saturating_sub(3);
     let spacer_y = buffer.area.height.saturating_sub(2);
     let status_y = buffer.area.height.saturating_sub(1);
 
@@ -2781,6 +2782,11 @@ fn transcript_chrome_rows_keep_the_transcript_background() {
             buffer[(x, title_y)].bg,
             palette().main_bg,
             "expected top title row to keep transcript background at x={x}",
+        );
+        assert_eq!(
+            buffer[(x, composer_y)].bg,
+            palette().main_bg,
+            "expected composer row to keep transcript background at x={x}",
         );
         assert_eq!(
             buffer[(x, spacer_y)].bg,

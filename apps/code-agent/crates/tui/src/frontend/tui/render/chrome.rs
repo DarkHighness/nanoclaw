@@ -34,7 +34,7 @@ pub(super) fn render_composer(
     user_input: Option<&UserInputView<'_>>,
 ) {
     frame.render_widget(
-        Block::default().style(Style::default().bg(palette().bottom_pane_bg)),
+        Block::default().style(Style::default().bg(palette().main_bg)),
         area,
     );
     let inner = composer_text_area(area);
@@ -46,11 +46,7 @@ pub(super) fn render_composer(
             inner.width,
         ))
         .scroll((scroll, 0))
-        .style(
-            Style::default()
-                .fg(palette().text)
-                .bg(palette().bottom_pane_bg),
-        ),
+        .style(Style::default().fg(palette().text).bg(palette().main_bg)),
         inner,
     );
 }
