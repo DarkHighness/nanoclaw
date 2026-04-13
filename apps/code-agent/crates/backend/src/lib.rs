@@ -7,7 +7,7 @@ mod ui_session;
 pub use backend::*;
 pub use code_agent_config as config;
 pub use code_agent_contracts::interaction::*;
-pub use code_agent_contracts::{interaction, preview, statusline, theme, tool_render, ui};
+pub use code_agent_contracts::{interaction, motion, preview, statusline, theme, tool_render, ui};
 pub use options::*;
 pub use provider::*;
 pub use ui::*;

@@ -277,6 +277,12 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
+        name: "motion",
+        usage: "motion [on|off]",
+        summary: "toggle transcript intro motion",
+    },
+    SlashCommandSpec {
+        section: "Session",
         name: "image",
         usage: "image <path-or-url>",
         summary: "attach image to composer",
@@ -450,6 +456,9 @@ pub(crate) enum SlashCommand {
     Theme {
         name: Option<String>,
     },
+    Motion {
+        enabled: Option<bool>,
+    },
     Image {
         path: String,
     },
@@ -552,6 +561,9 @@ enum SlashSubcommand {
     },
     Theme {
         name: Option<String>,
+    },
+    Motion {
+        enabled: Option<MotionToggleArg>,
     },
     Image {
         #[arg(value_name = "PATH_OR_URL", required = true, trailing_var_arg = true)]
@@ -663,6 +675,22 @@ enum SlashSubcommand {
     },
     #[command(name = "exit", alias = "quit", alias = "q")]
     Quit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+enum MotionToggleArg {
+    On,
+    Off,
+}
+
+impl MotionToggleArg {
+    fn enabled(self) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

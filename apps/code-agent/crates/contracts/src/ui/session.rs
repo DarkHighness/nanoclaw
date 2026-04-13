@@ -1,5 +1,6 @@
 use super::mcp::StartupDiagnosticsSnapshot;
 use crate::interaction::SessionPermissionMode;
+use crate::motion::TuiMotionConfig;
 use crate::statusline::StatusLineConfig;
 use agent::types::{
     AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, Message, MessageId,
@@ -29,6 +30,7 @@ pub struct SessionStartupSnapshot {
     pub host_process_surfaces_allowed: bool,
     pub startup_diagnostics: StartupDiagnosticsSnapshot,
     pub statusline: StatusLineConfig,
+    pub motion: TuiMotionConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -4,8 +4,9 @@
 //! code-agent-specific host settings layered on top of the shared core config
 //! surface.
 
-pub use code_agent_contracts::{statusline, theme};
+pub use code_agent_contracts::{motion, statusline, theme};
 
+use crate::motion::{TuiMotionConfig, TuiMotionField};
 use crate::statusline::StatusLineConfig;
 use crate::theme::{ThemeCatalog, load_theme_catalog};
 use agent::types::{McpToolBoundaryClass, McpTransportKind};
@@ -40,6 +41,7 @@ pub struct CodeAgentConfig {
     pub lsp_install_root: Option<PathBuf>,
     pub approval_policy: CodeAgentApprovalPolicyConfig,
     pub statusline: StatusLineConfig,
+    pub motion: TuiMotionConfig,
     pub theme_catalog: ThemeCatalog,
 }
 
@@ -167,6 +169,7 @@ struct CodeAgentApprovalMcpBoundaryMatcherConfig {
 #[serde(default)]
 struct CodeAgentTuiConfig {
     statusline: StatusLineConfig,
+    motion: TuiMotionConfig,
     theme: Option<String>,
     theme_file: Option<String>,
 }
@@ -215,6 +218,7 @@ impl CodeAgentConfig {
                 .map(|value| resolve_path(workspace_root, value)),
             approval_policy: normalize_approval_policy(app.approval)?,
             statusline: app.tui.statusline,
+            motion: app.tui.motion,
             theme_catalog: load_theme_catalog(
                 workspace_root,
                 app.tui.theme_file.as_deref(),
@@ -252,6 +256,57 @@ pub fn persist_tui_theme_selection(workspace_root: &Path, theme_id: &str) -> Res
     tui_item
         .as_table_mut()
         .expect("tui config must be a TOML table")["theme"] = value(theme_id);
+
+    let mut serialized = document.to_string();
+    if !serialized.ends_with('\n') {
+        serialized.push('\n');
+    }
+    std::fs::write(&path, serialized).with_context(|| format!("failed to write {}", path.display()))
+}
+
+pub fn persist_tui_motion_selection(
+    workspace_root: &Path,
+    field: TuiMotionField,
+    enabled: bool,
+) -> Result<()> {
+    let path = workspace_root.join(CODE_AGENT_APP_CONFIG_PATH);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let raw = if path.exists() {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?
+    } else {
+        String::new()
+    };
+    let mut document = if raw.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        raw.parse::<DocumentMut>()
+            .with_context(|| format!("failed to parse {}", path.display()))?
+    };
+    let root = document.as_table_mut();
+    let tui_item = root.entry("tui").or_insert(Item::Table(Table::new()));
+    if !tui_item.is_table() {
+        *tui_item = Item::Table(Table::new());
+    }
+    let tui = tui_item
+        .as_table_mut()
+        .expect("tui config must be a TOML table");
+    let motion_item = tui.entry("motion").or_insert(Item::Table(Table::new()));
+    if !motion_item.is_table() {
+        *motion_item = Item::Table(Table::new());
+    }
+    let motion = motion_item
+        .as_table_mut()
+        .expect("tui.motion config must be a TOML table");
+    match field {
+        TuiMotionField::TranscriptCellIntro => {
+            motion["transcript_cell_intro"] = value(enabled);
+        }
+    }
 
     let mut serialized = document.to_string();
     if !serialized.ends_with('\n') {
@@ -541,6 +596,7 @@ mod tests {
     use agent_env::EnvMap;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
+    use toml_edit::DocumentMut;
 
     fn env_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -593,6 +649,26 @@ mod tests {
         assert!(!config.statusline.branch);
         assert!(!config.statusline.clock);
         assert!(config.statusline.session);
+    }
+
+    #[tokio::test]
+    async fn loads_motion_flags_from_app_config() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().join(".nanoclaw/apps");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("code-agent.toml"),
+            r#"
+                [tui.motion]
+                transcript_cell_intro = false
+            "#,
+        )
+        .unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+        let config = CodeAgentConfig::load_from_dir(dir.path(), &env_map).unwrap();
+
+        assert!(!config.motion.transcript_cell_intro);
     }
 
     #[tokio::test]
@@ -824,5 +900,42 @@ theme_file = ".nanoclaw/apps/code-agent-themes.toml"
         assert!(raw.contains("# keep the app comment"));
         assert!(raw.contains("# keep the theme source note"));
         assert!(raw.contains("theme = \"graphite\""));
+    }
+
+    #[test]
+    fn persists_tui_motion_selection_without_clobbering_other_tui_settings() {
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().join(".nanoclaw/apps");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let path = app_dir.join("code-agent.toml");
+        std::fs::write(
+            &path,
+            r#"
+                [tui]
+                theme = "fjord"
+
+                [tui.statusline]
+                model = false
+            "#,
+        )
+        .unwrap();
+
+        super::persist_tui_motion_selection(
+            dir.path(),
+            crate::motion::TuiMotionField::TranscriptCellIntro,
+            false,
+        )
+        .unwrap();
+
+        let parsed = std::fs::read_to_string(&path)
+            .unwrap()
+            .parse::<DocumentMut>()
+            .unwrap();
+        assert_eq!(parsed["tui"]["theme"].as_str(), Some("fjord"));
+        assert_eq!(parsed["tui"]["statusline"]["model"].as_bool(), Some(false));
+        assert_eq!(
+            parsed["tui"]["motion"]["transcript_cell_intro"].as_bool(),
+            Some(false)
+        );
     }
 }

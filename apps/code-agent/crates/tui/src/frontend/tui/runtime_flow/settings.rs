@@ -1,6 +1,45 @@
 use super::*;
 
 impl CodeAgentTui {
+    pub(crate) fn apply_tui_motion(&mut self, field: TuiMotionField, enabled: bool, persist: bool) {
+        self.ui_state.mutate(|state| {
+            state.session.motion.set_enabled(field, enabled);
+            state.status = if enabled {
+                "Transcript intro motion enabled".to_string()
+            } else {
+                "Transcript intro motion disabled".to_string()
+            };
+            state.push_activity(format!(
+                "transcript motion {}",
+                if enabled { "enabled" } else { "disabled" }
+            ));
+            if !enabled {
+                state.advance_transcript_motion(Instant::now());
+            }
+        });
+
+        if !persist {
+            return;
+        }
+
+        let workspace_root = self.workspace_root_buf();
+        if let Err(error) = persist_tui_motion_selection(&workspace_root, field, enabled) {
+            let message = summarize_nonfatal_error("persist tui motion", &error);
+            self.ui_state.mutate(|state| {
+                state.status = format!("Transcript motion changed, but failed to save: {message}");
+                state.push_activity(format!(
+                    "motion persistence failed: {}",
+                    state::preview_text(&message, 56)
+                ));
+            });
+        }
+    }
+
+    pub(crate) fn toggle_tui_motion(&mut self, field: TuiMotionField) {
+        let enabled = !self.ui_state.snapshot().session.motion.enabled(field);
+        self.apply_tui_motion(field, enabled, true);
+    }
+
     pub(crate) fn cycle_model_reasoning_effort(&mut self) {
         match self.cycle_model_reasoning_effort_result() {
             Ok(outcome) => self.apply_model_reasoning_effort_outcome(outcome, "cycled"),

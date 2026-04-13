@@ -76,7 +76,7 @@ const STATUS_LINE_FIELDS: &[StatusLineFieldSpec] = &[
     StatusLineFieldSpec {
         field: StatusLineField::Session,
         label: "session",
-        summary: "active session reference",
+        summary: "active substrate session id",
     },
 ];
 

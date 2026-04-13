@@ -1,6 +1,5 @@
 use super::super::state::{ToastTone, TuiState, TurnPhase, preview_text};
 use super::theme::palette;
-use crate::backend::preview_id;
 use chrono::Local;
 use ratatui::layout::Margin;
 use ratatui::style::{Color, Modifier, Style};
@@ -165,7 +164,7 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         &mut spans,
         config.session.then(|| {
             (
-                preview_id(&state.session.active_session_ref),
+                format!("sid {}", state.session.active_session_ref),
                 Style::default().fg(palette().muted),
             )
         }),

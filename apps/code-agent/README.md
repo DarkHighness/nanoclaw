@@ -164,9 +164,12 @@ The bottom status line is configurable through `.nanoclaw/apps/code-agent.toml`.
 By default it surfaces the current status, full model name plus reasoning
 effort, current directory name, git repository and branch when available,
 context-window usage, cumulative input/output tokens, queued command depth, and
-local time.
+local time. When enabled, the session item renders the full active substrate
+session id as `sid <session_ref>` instead of a shortened preview.
 Use `/statusline` inside the TUI to open a multi-select picker and toggle those
 footer items on or off for the current operator session.
+Use `/motion [on|off]` to enable or disable transcript intro motion for newly
+arrived cells.
 
 One-shot prompt:
 
@@ -207,9 +210,14 @@ output_tokens = true
 queue = true
 clock = true
 session = false
+
+[tui.motion]
+transcript_cell_intro = true
 ```
 
 Set any field to `false` to hide it from the bottom status line.
+Set `tui.motion.transcript_cell_intro = false` to disable the transcript
+typewriter / shimmer entrance animation.
 
 Example host-local approval settings:
 
@@ -339,6 +347,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 
 - `/status`
 - `/statusline`
+- `/motion [on|off]`
 - `/thinking [level]`
 - `/help`
 - `/details`

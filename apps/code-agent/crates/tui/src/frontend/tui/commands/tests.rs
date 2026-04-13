@@ -313,6 +313,20 @@ fn parses_theme_command() {
 }
 
 #[test]
+fn parses_motion_command() {
+    assert_eq!(
+        parse_slash_command("/motion off"),
+        SlashCommand::Motion {
+            enabled: Some(false)
+        }
+    );
+    assert_eq!(
+        parse_slash_command("/motion"),
+        SlashCommand::Motion { enabled: None }
+    );
+}
+
+#[test]
 fn parses_image_and_file_attachment_commands() {
     assert_eq!(
         parse_slash_command("/image artifacts/failure.png"),
@@ -377,6 +391,11 @@ fn command_palette_includes_help_and_clear_alias() {
         lines
             .iter()
             .any(|line| line == "/theme [name]  pick or set the tui theme")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "/motion [on|off]  toggle transcript intro motion")
     );
     assert!(
         lines

@@ -2,6 +2,7 @@ use super::input_history::PersistedComposerHistoryEntry;
 use crate::interaction::{
     PendingControlKind, PendingControlSummary, SessionPermissionMode, SkillSummary,
 };
+use crate::motion::TuiMotionConfig;
 use crate::statusline::{StatusLineConfig, StatusLineField, status_line_fields};
 use crate::theme::ThemeSummary;
 use crate::tool_render::{
@@ -120,6 +121,7 @@ pub(crate) struct SessionSummary {
     pub(crate) queued_commands: usize,
     pub(crate) token_ledger: TokenLedgerSnapshot,
     pub(crate) statusline: StatusLineConfig,
+    pub(crate) motion: TuiMotionConfig,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -180,6 +182,135 @@ pub(crate) struct ActiveToolCell {
     pub(crate) kind: ActiveToolCellKind,
     pub(crate) calls: Vec<ActiveToolCall>,
     pub(crate) entry: TranscriptToolEntry,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranscriptCellMotionKind {
+    IntroFade,
+    Typewriter,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TranscriptCellMotionState {
+    pub(crate) kind: TranscriptCellMotionKind,
+    pub(crate) inserted_at: Instant,
+    pub(crate) last_tick_at: Instant,
+    pub(crate) settled_at: Option<Instant>,
+    pub(crate) reveal_carry_ms: u128,
+    pub(crate) revealed_chars: usize,
+    pub(crate) target_chars: usize,
+}
+
+impl TranscriptCellMotionState {
+    const TYPEWRITER_MS_PER_CHAR: u128 = 18;
+
+    fn new(entry: &TranscriptEntry, now: Instant, animate: bool) -> Self {
+        let kind = if matches!(entry, TranscriptEntry::AssistantMessage(_)) {
+            TranscriptCellMotionKind::Typewriter
+        } else {
+            TranscriptCellMotionKind::IntroFade
+        };
+        let target_chars = entry.body().chars().count();
+        if !animate {
+            return Self {
+                kind,
+                inserted_at: now,
+                last_tick_at: now,
+                settled_at: Some(now),
+                reveal_carry_ms: 0,
+                revealed_chars: target_chars,
+                target_chars,
+            };
+        }
+        let revealed_chars = match kind {
+            TranscriptCellMotionKind::IntroFade => target_chars,
+            TranscriptCellMotionKind::Typewriter => 0,
+        };
+        Self {
+            kind,
+            inserted_at: now,
+            last_tick_at: now,
+            settled_at: None,
+            reveal_carry_ms: 0,
+            revealed_chars,
+            target_chars,
+        }
+    }
+
+    fn refresh_target(&mut self, entry: &TranscriptEntry, now: Instant, animate: bool) {
+        self.kind = if matches!(entry, TranscriptEntry::AssistantMessage(_)) {
+            TranscriptCellMotionKind::Typewriter
+        } else {
+            TranscriptCellMotionKind::IntroFade
+        };
+        self.target_chars = entry.body().chars().count();
+        if !animate {
+            self.revealed_chars = self.target_chars;
+            self.reveal_carry_ms = 0;
+            self.settled_at = Some(now);
+            self.last_tick_at = now;
+            return;
+        }
+        if self.kind == TranscriptCellMotionKind::IntroFade {
+            self.revealed_chars = self.target_chars;
+            self.reveal_carry_ms = 0;
+            self.last_tick_at = now;
+            if self.settled_at.is_none() {
+                self.settled_at = Some(now);
+            }
+            return;
+        }
+
+        self.last_tick_at = now;
+        self.settled_at = None;
+    }
+
+    fn advance(&mut self, now: Instant, animate: bool) {
+        if !animate {
+            self.revealed_chars = self.target_chars;
+            self.reveal_carry_ms = 0;
+            self.last_tick_at = now;
+            self.settled_at.get_or_insert(now);
+            return;
+        }
+
+        if self.kind != TranscriptCellMotionKind::Typewriter {
+            self.last_tick_at = now;
+            self.settled_at.get_or_insert(self.inserted_at);
+            return;
+        }
+
+        if self.revealed_chars >= self.target_chars {
+            self.last_tick_at = now;
+            self.reveal_carry_ms = 0;
+            self.settled_at.get_or_insert(now);
+            return;
+        }
+
+        let elapsed_ms = now.duration_since(self.last_tick_at).as_millis();
+        self.last_tick_at = now;
+        self.reveal_carry_ms = self.reveal_carry_ms.saturating_add(elapsed_ms);
+        let step = (self.reveal_carry_ms / Self::TYPEWRITER_MS_PER_CHAR) as usize;
+        if step == 0 {
+            return;
+        }
+        self.reveal_carry_ms %= Self::TYPEWRITER_MS_PER_CHAR;
+        self.revealed_chars = self
+            .revealed_chars
+            .saturating_add(step)
+            .min(self.target_chars);
+        if self.revealed_chars >= self.target_chars {
+            self.reveal_carry_ms = 0;
+            self.settled_at.get_or_insert(now);
+        }
+    }
+
+    pub(crate) fn visible_chars(&self) -> usize {
+        match self.kind {
+            TranscriptCellMotionKind::IntroFade => self.target_chars,
+            TranscriptCellMotionKind::Typewriter => self.revealed_chars.min(self.target_chars),
+        }
+    }
 }
 
 impl ActiveToolCell {
@@ -324,6 +455,10 @@ pub(crate) struct TuiState {
     pub(crate) composer_context_hint: Option<ComposerContextHint>,
     pub(crate) toast: Option<ToastState>,
     pub(crate) transcript: Vec<TranscriptEntry>,
+    // The transcript is append-only during a live turn, so a parallel vector of
+    // per-cell presentation state stays stable without leaking UI timing into
+    // the persisted transcript payload itself.
+    pub(crate) transcript_motion: Vec<TranscriptCellMotionState>,
     pub(crate) active_tool_cells: Vec<ActiveToolCell>,
     pub(crate) active_monitors: Vec<ActiveMonitorCell>,
     pub(crate) tracked_tasks: Vec<TrackedTaskSummary>,
@@ -362,34 +497,92 @@ impl TuiState {
     }
 
     pub(crate) fn push_transcript(&mut self, entry: impl Into<TranscriptEntry>) -> usize {
+        let now = Instant::now();
         let entry = entry.into();
-        if let Some((index, last)) = self.transcript.iter_mut().enumerate().last()
-            && last.try_merge(&entry)
-        {
-            self.mark_transcript_follow();
-            return index;
+        if let Some(index) = self.transcript.len().checked_sub(1) {
+            let merged = self
+                .transcript
+                .get_mut(index)
+                .is_some_and(|last| last.try_merge(&entry));
+            if merged {
+                self.refresh_transcript_motion_state(index, now, true);
+                self.mark_transcript_follow();
+                return index;
+            }
         }
 
         self.transcript.push(entry);
+        self.sync_transcript_motion_states(false, now);
+        let index = self.transcript.len() - 1;
+        self.refresh_transcript_motion_state(index, now, true);
         self.mark_transcript_follow();
-        self.transcript.len() - 1
+        index
     }
 
     pub(crate) fn append_transcript_text(&mut self, index: usize, delta: &str) -> bool {
-        let Some(entry) = self.transcript.get_mut(index) else {
-            return false;
-        };
-        let appended = entry.append_text(delta);
+        let appended = self
+            .transcript
+            .get_mut(index)
+            .is_some_and(|entry| entry.append_text(delta));
         if appended {
+            self.refresh_transcript_motion_state(index, Instant::now(), true);
             self.mark_transcript_follow();
         }
         appended
+    }
+
+    pub(crate) fn advance_transcript_motion(&mut self, now: Instant) {
+        self.sync_transcript_motion_states(false, now);
+        let animate = self.session.motion.transcript_cell_intro;
+        for state in &mut self.transcript_motion {
+            state.advance(now, animate);
+        }
+    }
+
+    pub(crate) fn transcript_motion_state(
+        &self,
+        index: usize,
+    ) -> Option<&TranscriptCellMotionState> {
+        self.transcript_motion.get(index)
     }
 
     fn mark_transcript_follow(&mut self) {
         if self.follow_transcript {
             self.transcript_scroll = u16::MAX;
         }
+    }
+
+    fn sync_transcript_motion_states(&mut self, animate_missing: bool, now: Instant) {
+        if self.transcript_motion.len() > self.transcript.len() {
+            self.transcript_motion.truncate(self.transcript.len());
+        }
+        while self.transcript_motion.len() < self.transcript.len() {
+            let index = self.transcript_motion.len();
+            let entry = self
+                .transcript
+                .get(index)
+                .expect("transcript motion sync must stay index aligned");
+            self.transcript_motion.push(TranscriptCellMotionState::new(
+                entry,
+                now,
+                animate_missing,
+            ));
+        }
+    }
+
+    fn refresh_transcript_motion_state(&mut self, index: usize, now: Instant, animate: bool) {
+        self.sync_transcript_motion_states(false, now);
+        let Some(entry) = self.transcript.get(index) else {
+            return;
+        };
+        let Some(state) = self.transcript_motion.get_mut(index) else {
+            return;
+        };
+        state.refresh_target(
+            entry,
+            now,
+            animate && self.session.motion.transcript_cell_intro,
+        );
     }
 
     pub(crate) fn show_toast(&mut self, tone: ToastTone, message: impl Into<String>) {

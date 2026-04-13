@@ -21,6 +21,7 @@ impl CodeAgentTui {
             | SlashCommand::StatusLine
             | SlashCommand::Thinking { .. }
             | SlashCommand::Theme { .. }
+            | SlashCommand::Motion { .. }
             | SlashCommand::Help { .. }
             | SlashCommand::Diagnostics
             | SlashCommand::Steer { .. }

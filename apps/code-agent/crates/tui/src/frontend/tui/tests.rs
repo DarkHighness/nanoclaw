@@ -11,6 +11,7 @@ use super::{
     looks_like_local_image_path, merge_interrupt_steers, plain_input_submit_action,
 };
 use crate::interaction::SessionPermissionMode;
+use crate::motion::TuiMotionConfig;
 use crate::ui::{HistoryRollbackRound, LiveTaskSummary, LiveTaskWaitOutcome};
 use agent::types::{Message, MessageId, MessagePart, MessageRole, TaskId, TaskOrigin, TaskStatus};
 use crossterm::event::KeyCode;
@@ -46,6 +47,7 @@ fn startup_inspector_surfaces_backend_boot_snapshot() {
         queued_commands: 0,
         token_ledger: Default::default(),
         statusline: Default::default(),
+        motion: TuiMotionConfig::default(),
     });
     let lines = inspector_line_texts(&lines);
 

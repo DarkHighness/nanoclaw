@@ -14,6 +14,7 @@ use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
 use super::transcript::build_transcript_lines_for_width;
 use super::transcript::transcript_content_area;
+use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
     animated_progress_text_spans, live_progress_lines, render_shell_summary_body,
 };
@@ -1690,6 +1691,44 @@ fn transcript_renders_markdown_blocks_without_fence_noise() {
 }
 
 #[test]
+fn markdown_ordered_lists_keep_the_marker_and_first_word_on_one_line() {
+    let rendered = render_markdown_body("1. rerun tests", TranscriptEntryKind::AssistantMessage);
+
+    assert_eq!(line_text_for(&rendered[0]), "1.\u{00A0}rerun tests");
+}
+
+#[test]
+fn transcript_motion_preserves_theme_span_accents() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    let index = state.push_transcript(TranscriptEntry::tool(
+        TranscriptToolStatus::Finished,
+        "exec_command",
+        vec![command_tool_detail("cargo test -- --nocapture")],
+    ));
+    let motion = state
+        .transcript_motion
+        .get_mut(index)
+        .expect("expected transcript motion state");
+    motion.settled_at = Some(Instant::now());
+
+    let rendered = build_transcript_lines(&state);
+    let line = rendered
+        .iter()
+        .find(|line| line_text_for(line).contains("Ran cargo test -- --nocapture"))
+        .expect("expected rendered command headline line");
+
+    assert!(line.spans.iter().any(|span| {
+        span.content.as_ref() == "Ran" && span.style.fg == Some(palette().assistant)
+    }));
+    assert!(line.spans.iter().any(|span| {
+        span.content.as_ref() == "cargo" && span.style.fg == Some(palette().header)
+    }));
+}
+
+#[test]
 fn transcript_keeps_fenced_block_label_as_first_visible_line() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
@@ -2498,7 +2537,7 @@ fn footer_context_renders_configured_status_items() {
         footer
             .spans
             .iter()
-            .any(|span| { span.content.as_ref().contains("session_") })
+            .any(|span| { span.content.as_ref().contains("sid session_123456") })
     );
 }
 

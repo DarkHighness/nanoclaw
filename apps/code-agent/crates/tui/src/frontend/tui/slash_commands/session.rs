@@ -55,6 +55,19 @@ impl CodeAgentTui {
                 }
                 Ok(false)
             }
+            SlashCommand::Motion { enabled } => {
+                match enabled {
+                    Some(enabled) => self.apply_tui_motion(
+                        crate::motion::TuiMotionField::TranscriptCellIntro,
+                        enabled,
+                        true,
+                    ),
+                    None => {
+                        self.toggle_tui_motion(crate::motion::TuiMotionField::TranscriptCellIntro)
+                    }
+                }
+                Ok(false)
+            }
             SlashCommand::Help { query } => {
                 let skills = self.ui_state.snapshot().session.skills;
                 let title = query

@@ -80,6 +80,7 @@ impl CodeAgentTui {
         self.maybe_finish_operator_task().await?;
         self.ui_state.mutate(|state| {
             let _ = state.expire_toast_if_due();
+            state.advance_transcript_motion(Instant::now());
         });
         self.sync_runtime_control_state();
         self.sync_skill_summaries();

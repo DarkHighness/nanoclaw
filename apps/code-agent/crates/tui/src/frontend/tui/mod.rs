@@ -19,12 +19,13 @@ mod terminal_shell;
 mod tool_review;
 
 use crate::backend::{CodeAgentUiSession, preview_id};
-use crate::config::persist_tui_theme_selection;
+use crate::config::{persist_tui_motion_selection, persist_tui_theme_selection};
 use crate::interaction::{
     ApprovalPrompt, ModelReasoningEffortOutcome, PermissionProfile, PermissionRequestDecision,
     PermissionRequestPrompt, SessionPermissionMode, UserInputAnswer, UserInputPrompt,
     UserInputSubmission,
 };
+use crate::motion::TuiMotionField;
 use crate::statusline::status_line_fields;
 use crate::theme::{ThemeCatalog, active_theme_id, install_theme_catalog, set_active_theme};
 use crate::ui::{

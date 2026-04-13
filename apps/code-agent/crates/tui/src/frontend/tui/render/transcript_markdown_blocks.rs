@@ -144,6 +144,10 @@ fn normalize_markdown_line(mut line: Line<'static>) -> Line<'static> {
         );
     }
 
+    if let Some(space_index) = markdown_list_break_guard_index(&plain) {
+        replace_line_char(&mut line, space_index, '\u{00A0}');
+    }
+
     line
 }
 
@@ -163,6 +167,45 @@ fn strip_line_prefix_chars(line: &mut Line<'static>, prefix_len: usize) {
             .collect::<String>();
         line.spans[0].content = trimmed.into();
         remaining = 0;
+    }
+}
+
+fn markdown_list_break_guard_index(plain: &str) -> Option<usize> {
+    let trimmed = plain.trim_start();
+    let leading = plain
+        .chars()
+        .count()
+        .saturating_sub(trimmed.chars().count());
+    let (digits, _) = trimmed.split_once(". ")?;
+    digits
+        .chars()
+        .all(|ch| ch.is_ascii_digit())
+        .then_some(leading + digits.chars().count() + 1)
+}
+
+fn replace_line_char(line: &mut Line<'static>, target_index: usize, replacement: char) {
+    let mut index = 0usize;
+    for span in &mut line.spans {
+        let span_len = span.content.chars().count();
+        if target_index >= index + span_len {
+            index += span_len;
+            continue;
+        }
+        let local_index = target_index - index;
+        let replaced = span
+            .content
+            .chars()
+            .enumerate()
+            .map(|(char_index, ch)| {
+                if char_index == local_index {
+                    replacement
+                } else {
+                    ch
+                }
+            })
+            .collect::<String>();
+        span.content = replaced.into();
+        break;
     }
 }
 

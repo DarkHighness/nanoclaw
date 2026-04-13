@@ -13,6 +13,7 @@ use crate::backend::{
     SessionMonitorManager, StartupDiagnosticsSnapshot, UserInputCoordinator, list_mcp_servers,
 };
 use crate::interaction::{PendingControlKind, PendingControlReason, SessionPermissionMode};
+use crate::motion::TuiMotionConfig;
 use crate::statusline::StatusLineConfig;
 use agent::mcp::{
     ConnectedMcpServer, McpCatalog, McpResource, McpResourceTemplate, McpServerConfig,
@@ -561,6 +562,7 @@ fn startup_snapshot(workspace_root: &std::path::Path) -> SessionStartupSnapshot 
         host_process_surfaces_allowed: true,
         startup_diagnostics: StartupDiagnosticsSnapshot::default(),
         statusline: StatusLineConfig::default(),
+        motion: TuiMotionConfig::default(),
     }
 }
 

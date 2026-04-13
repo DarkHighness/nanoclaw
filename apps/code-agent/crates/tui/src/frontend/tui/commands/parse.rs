@@ -30,6 +30,9 @@ impl From<SlashSubcommand> for SlashCommand {
             SlashSubcommand::Statusline => Self::StatusLine,
             SlashSubcommand::Thinking { effort } => Self::Thinking { effort },
             SlashSubcommand::Theme { name } => Self::Theme { name },
+            SlashSubcommand::Motion { enabled } => Self::Motion {
+                enabled: enabled.map(MotionToggleArg::enabled),
+            },
             SlashSubcommand::Image { path } => Self::Image {
                 path: join_required_tail(path),
             },

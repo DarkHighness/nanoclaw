@@ -1,5 +1,6 @@
 use super::super::state::{
-    ToolSelectionTarget, TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState,
+    ToolSelectionTarget, TranscriptCellMotionKind, TranscriptCellMotionState, TranscriptEntry,
+    TranscriptToolEntry, TranscriptToolStatus, TuiState,
 };
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
@@ -21,6 +22,7 @@ use ratatui::layout::{Alignment, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+use std::f32::consts::TAU;
 use std::time::Duration;
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
@@ -29,6 +31,7 @@ const WELCOME_SIDE_PADDING: u16 = 4;
 const TRANSCRIPT_CELL_GAP_LINES: usize = 1;
 const TRANSCRIPT_TURN_GAP_LINES: usize = 1;
 const TRANSCRIPT_TOP_PADDING: u16 = 1;
+const TRANSCRIPT_INTRO_FADE_MS: u128 = 260;
 
 pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     frame.render_widget(
@@ -130,6 +133,8 @@ pub(super) fn build_transcript_lines_for_width(
                     .then_some(tool_timeline_animation)
                     .flatten(),
                 selected,
+                state.transcript_motion_state(index),
+                frame_time,
             );
             lines.extend(cell_lines);
         }
@@ -153,6 +158,8 @@ pub(super) fn build_transcript_lines_for_width(
                     .then_some(tool_timeline_animation)
                     .flatten(),
                 selected,
+                None,
+                frame_time,
             ));
             if index + 1 < state.active_tool_cells.len() {
                 lines.push(Line::raw(""));
@@ -180,6 +187,8 @@ pub(super) fn build_transcript_lines_for_width(
                 state.show_tool_details,
                 Some(animation_frame_ms(active.started_at, frame_time)),
                 false,
+                None,
+                frame_time,
             ));
             if index + 1 < state.active_monitors.len() {
                 lines.push(Line::raw(""));
@@ -202,6 +211,8 @@ pub(super) fn build_transcript_lines_for_width(
                     .then_some(tool_timeline_animation)
                     .flatten(),
                 false,
+                None,
+                frame_time,
             ));
         }
     }
@@ -277,7 +288,7 @@ pub(super) enum TranscriptEntryKind {
 }
 
 pub(super) fn format_transcript_cell(entry: &TranscriptEntry) -> Vec<Line<'static>> {
-    format_transcript_cell_with_mode(entry, true, None, false)
+    format_transcript_cell_with_mode(entry, true, None, false, None, Instant::now())
 }
 
 fn format_transcript_cell_with_mode(
@@ -285,6 +296,8 @@ fn format_transcript_cell_with_mode(
     show_tool_details: bool,
     animation_frame: Option<u128>,
     selected: bool,
+    motion: Option<&TranscriptCellMotionState>,
+    now: Instant,
 ) -> Vec<Line<'static>> {
     let marker = entry.marker();
     let kind = entry_kind_from_cell(entry);
@@ -295,6 +308,8 @@ fn format_transcript_cell_with_mode(
             render_collapsed_tool_entry(entry, marker, accent, kind, animation_frame, selected),
             selected,
             accent,
+            motion,
+            now,
         );
     }
     if should_collapse_shell_details(entry, show_tool_details) {
@@ -302,12 +317,16 @@ fn format_transcript_cell_with_mode(
             render_collapsed_shell_summary(entry, marker, accent, kind, animation_frame),
             selected,
             accent,
+            motion,
+            now,
         );
     }
     compose_rendered_transcript_cell(
-        render_transcript_body(entry, marker, kind, animation_frame),
+        render_transcript_body(entry, marker, kind, animation_frame, motion),
         selected,
         accent,
+        motion,
+        now,
     )
 }
 
@@ -341,6 +360,8 @@ fn compose_rendered_transcript_cell(
     cell: RenderedTranscriptCell,
     selected: bool,
     accent: ratatui::style::Color,
+    motion: Option<&TranscriptCellMotionState>,
+    now: Instant,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     append_cell_section(&mut lines, cell.header, false);
@@ -350,6 +371,9 @@ fn compose_rendered_transcript_cell(
     append_cell_section(&mut lines, cell.meta, has_content);
     if lines.is_empty() {
         lines.push(Line::from(Span::raw("")));
+    }
+    if let Some(motion) = motion {
+        apply_transcript_motion_chrome(&mut lines, motion, now);
     }
     if selected {
         apply_selected_transcript_cell_chrome(&mut lines, accent);
@@ -372,13 +396,17 @@ fn render_transcript_body(
     marker: &str,
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
+    motion: Option<&TranscriptCellMotionState>,
 ) -> RenderedTranscriptCell {
     if matches!(
         kind,
         TranscriptEntryKind::UserPrompt | TranscriptEntryKind::AssistantMessage
     ) {
         let accent = entry_accent(entry, kind);
-        let mut cell = RenderedTranscriptCell::with_body(render_markdown_body(entry.body(), kind));
+        let mut cell = RenderedTranscriptCell::with_body(render_markdown_body(
+            &motion_trimmed_entry_body(entry, motion),
+            kind,
+        ));
         prefix_transcript_marker(&mut cell.body, marker, accent, kind);
         return cell;
     }
@@ -396,6 +424,118 @@ fn render_transcript_body(
     let accent = entry_accent(entry, kind);
     prefix_transcript_marker(&mut cell.header, marker, accent, kind);
     cell
+}
+
+fn motion_trimmed_entry_body(
+    entry: &TranscriptEntry,
+    motion: Option<&TranscriptCellMotionState>,
+) -> String {
+    let Some(motion) = motion else {
+        return entry.body().to_string();
+    };
+    if motion.kind != TranscriptCellMotionKind::Typewriter {
+        return entry.body().to_string();
+    }
+    entry.body().chars().take(motion.visible_chars()).collect()
+}
+
+fn apply_transcript_motion_chrome(
+    lines: &mut [Line<'static>],
+    motion: &TranscriptCellMotionState,
+    now: Instant,
+) {
+    let intensity = transcript_motion_intro_intensity(motion, now);
+    if intensity <= 0.0 {
+        return;
+    }
+
+    let pulse = transcript_motion_pulse(motion, now);
+    let bg = blend_color(
+        palette().transcript_surface(),
+        palette().elevated_surface(),
+        (0.18 + pulse * 0.18) * intensity,
+    );
+    let dim = intensity >= 0.38;
+
+    for line in lines.iter_mut() {
+        for span in &mut line.spans {
+            let mut style = span.style.bg(bg);
+            // Keep the resolved foreground from the active theme instead of
+            // blending every span toward a fixed fallback color. This preserves
+            // theme-specific syntax and markdown accents while still giving the
+            // newly arrived text a brief dim/shimmer entrance.
+            if dim && !span.content.trim().is_empty() {
+                style = style.add_modifier(ratatui::style::Modifier::DIM);
+            }
+            span.style = style;
+        }
+    }
+}
+
+fn transcript_motion_intro_intensity(motion: &TranscriptCellMotionState, now: Instant) -> f32 {
+    if motion.kind == TranscriptCellMotionKind::Typewriter
+        && motion.visible_chars() < motion.target_chars
+    {
+        return 1.0;
+    }
+
+    let started_at = motion.settled_at.unwrap_or(motion.inserted_at);
+    let elapsed = now.duration_since(started_at).as_millis();
+    if elapsed >= TRANSCRIPT_INTRO_FADE_MS {
+        0.0
+    } else {
+        1.0 - (elapsed as f32 / TRANSCRIPT_INTRO_FADE_MS as f32)
+    }
+}
+
+fn transcript_motion_pulse(motion: &TranscriptCellMotionState, now: Instant) -> f32 {
+    let anchor = motion.settled_at.unwrap_or(motion.inserted_at);
+    let phase = now.duration_since(anchor).as_millis() as f32 / 180.0;
+    0.72 + 0.28 * ((phase * TAU).sin().abs())
+}
+
+fn blend_color(
+    base: ratatui::style::Color,
+    target: ratatui::style::Color,
+    amount: f32,
+) -> ratatui::style::Color {
+    let amount = amount.clamp(0.0, 1.0);
+    let (base_r, base_g, base_b) = color_channels(base);
+    let (target_r, target_g, target_b) = color_channels(target);
+    ratatui::style::Color::Rgb(
+        interpolate_channel(base_r, target_r, amount),
+        interpolate_channel(base_g, target_g, amount),
+        interpolate_channel(base_b, target_b, amount),
+    )
+}
+
+fn interpolate_channel(base: u8, target: u8, amount: f32) -> u8 {
+    let blended = base as f32 + (target as f32 - base as f32) * amount;
+    blended.round().clamp(0.0, 255.0) as u8
+}
+
+fn color_channels(color: ratatui::style::Color) -> (u8, u8, u8) {
+    match color {
+        ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+        ratatui::style::Color::Black => (0, 0, 0),
+        ratatui::style::Color::Red => (255, 0, 0),
+        ratatui::style::Color::Green => (0, 255, 0),
+        ratatui::style::Color::Yellow => (255, 255, 0),
+        ratatui::style::Color::Blue => (0, 0, 255),
+        ratatui::style::Color::Magenta => (255, 0, 255),
+        ratatui::style::Color::Cyan => (0, 255, 255),
+        ratatui::style::Color::Gray => (128, 128, 128),
+        ratatui::style::Color::DarkGray => (64, 64, 64),
+        ratatui::style::Color::LightRed => (255, 102, 102),
+        ratatui::style::Color::LightGreen => (102, 255, 102),
+        ratatui::style::Color::LightYellow => (255, 255, 102),
+        ratatui::style::Color::LightBlue => (102, 102, 255),
+        ratatui::style::Color::LightMagenta => (255, 102, 255),
+        ratatui::style::Color::LightCyan => (102, 255, 255),
+        ratatui::style::Color::White => (255, 255, 255),
+        ratatui::style::Color::Indexed(index) => (index, index, index),
+        ratatui::style::Color::Reset => color_channels(palette().text),
+    }
 }
 
 fn entry_accent(entry: &TranscriptEntry, kind: TranscriptEntryKind) -> ratatui::style::Color {

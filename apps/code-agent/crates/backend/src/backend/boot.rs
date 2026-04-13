@@ -465,6 +465,7 @@ where
             host_process_surfaces_allowed,
             startup_diagnostics,
             statusline: options.statusline.clone(),
+            motion: options.motion.clone(),
         },
         skill_catalog,
         memory_backend,
