@@ -1,4 +1,5 @@
 use crate::backend::SandboxFallbackNotice;
+use crate::theme::{ThemePalette, active_palette};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -12,18 +13,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use std::io::{self, Stdout};
-
-const BG: Color = Color::Rgb(15, 17, 20);
-const FOOTER_BG: Color = Color::Rgb(20, 22, 26);
-const BOTTOM_PANE_BG: Color = Color::Rgb(24, 27, 31);
-const TEXT: Color = Color::Rgb(235, 236, 232);
-const MUTED: Color = Color::Rgb(154, 158, 151);
-const SUBTLE: Color = Color::Rgb(98, 103, 108);
-const ACCENT: Color = Color::Rgb(108, 189, 182);
-const USER: Color = Color::Rgb(221, 188, 128);
-const HEADER: Color = Color::Rgb(244, 244, 239);
-const WARN: Color = Color::Rgb(223, 179, 88);
-const ERROR: Color = Color::Rgb(227, 125, 118);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StartupPromptSelection {
@@ -162,54 +151,62 @@ fn render_prompt(
     notice: &SandboxFallbackNotice,
     state: &StartupPromptState,
 ) {
+    let theme = active_palette();
     let area = frame.area();
     let layout = startup_prompt_layout(area);
-    frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.canvas_surface())),
+        area,
+    );
     frame.render_widget(Clear, layout.popup);
     frame.render_widget(
-        Block::default().style(Style::default().bg(FOOTER_BG)),
+        Block::default().style(Style::default().bg(theme.overlay_surface())),
         layout.popup,
     );
 
     frame.render_widget(
-        Paragraph::new(build_summary_text())
+        Paragraph::new(build_summary_text(theme))
             .alignment(Alignment::Left)
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(FOOTER_BG)),
+            .style(Style::default().fg(theme.text).bg(theme.overlay_surface())),
         layout.summary,
     );
     render_section_card(
         frame,
         layout.risk_card,
-        build_risk_card_text(),
-        Style::default().bg(BOTTOM_PANE_BG),
+        build_risk_card_text(theme),
+        Style::default().bg(theme.elevated_surface()),
+        theme,
     );
     render_section_card(
         frame,
         layout.policy_card,
-        build_policy_card_text(notice),
-        Style::default().bg(BOTTOM_PANE_BG),
+        build_policy_card_text(notice, theme),
+        Style::default().bg(theme.elevated_surface()),
+        theme,
     );
     render_section_card(
         frame,
         layout.reason_card,
-        build_reason_card_text(notice),
-        Style::default().bg(BOTTOM_PANE_BG),
+        build_reason_card_text(notice, theme),
+        Style::default().bg(theme.elevated_surface()),
+        theme,
     );
     render_section_card(
         frame,
         layout.fix_card,
-        build_fix_card_text(notice),
-        Style::default().bg(BOTTOM_PANE_BG),
+        build_fix_card_text(notice, theme),
+        Style::default().bg(theme.elevated_surface()),
+        theme,
     );
     frame.render_widget(
-        Block::default().style(Style::default().bg(BOTTOM_PANE_BG)),
+        Block::default().style(Style::default().bg(theme.elevated_surface())),
         layout.action_area,
     );
     frame.render_widget(
-        Paragraph::new(build_prompt_text())
+        Paragraph::new(build_prompt_text(theme))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(TEXT).bg(BOTTOM_PANE_BG)),
+            .style(Style::default().fg(theme.text).bg(theme.elevated_surface())),
         layout.action_prompt,
     );
     render_action_button(
@@ -218,7 +215,8 @@ fn render_prompt(
         "Esc",
         "Abort Startup",
         state.selection == StartupPromptSelection::Abort,
-        ERROR,
+        theme.error,
+        theme,
     );
     render_action_button(
         frame,
@@ -226,12 +224,13 @@ fn render_prompt(
         "Y",
         "Continue Without Sandbox",
         state.selection == StartupPromptSelection::Continue,
-        ACCENT,
+        theme.accent,
+        theme,
     );
     frame.render_widget(
-        Paragraph::new(build_footer_text())
+        Paragraph::new(build_footer_text(theme))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(MUTED).bg(FOOTER_BG)),
+            .style(Style::default().fg(theme.muted).bg(theme.overlay_surface())),
         layout.footer,
     );
 }
@@ -241,6 +240,7 @@ fn render_section_card(
     area: Rect,
     text: Text<'static>,
     style: Style,
+    theme: ThemePalette,
 ) {
     frame.render_widget(Block::default().style(style), area);
     let inner = area.inner(Margin {
@@ -250,7 +250,7 @@ fn render_section_card(
     frame.render_widget(
         Paragraph::new(text)
             .wrap(Wrap { trim: false })
-            .style(style.fg(TEXT)),
+            .style(style.fg(theme.text)),
         inner,
     );
 }
@@ -262,11 +262,14 @@ fn render_action_button(
     label: &'static str,
     selected: bool,
     accent: Color,
+    theme: ThemePalette,
 ) {
     frame.render_widget(
-        Paragraph::new(build_action_button_line(shortcut, label, selected, accent))
-            .alignment(Alignment::Center)
-            .style(Style::default().bg(BOTTOM_PANE_BG)),
+        Paragraph::new(build_action_button_line(
+            shortcut, label, selected, accent, theme,
+        ))
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(theme.elevated_surface())),
         area,
     );
 }
@@ -276,140 +279,169 @@ fn build_action_button_line(
     label: &'static str,
     selected: bool,
     accent: Color,
+    theme: ThemePalette,
 ) -> Line<'static> {
     let marker = if selected { "› " } else { "  " };
     let shortcut_style = if selected {
         Style::default()
-            .fg(BG)
+            .fg(theme.canvas_surface())
             .bg(accent)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(accent).add_modifier(Modifier::BOLD)
     };
     let label_style = if selected {
-        Style::default().fg(HEADER).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.header)
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(TEXT)
+        Style::default().fg(theme.text)
     };
     Line::from(vec![
         Span::styled(
             marker,
-            Style::default().fg(if selected { accent } else { SUBTLE }),
+            Style::default().fg(if selected { accent } else { theme.subtle }),
         ),
         Span::styled(format!(" {shortcut} "), shortcut_style),
-        Span::styled(" ", Style::default().fg(SUBTLE)),
+        Span::styled(" ", Style::default().fg(theme.subtle)),
         Span::styled(label, label_style),
     ])
 }
 
-fn build_summary_text() -> Text<'static> {
+fn build_summary_text(theme: ThemePalette) -> Text<'static> {
     Text::from(vec![
         Line::from(vec![
             Span::styled(
                 "startup safety check",
-                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(" · ", Style::default().fg(theme.subtle)),
             Span::styled(
                 "sandbox enforcement unavailable",
-                Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.header)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
             Span::styled(
                 "HIGH RISK",
-                Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" · ", Style::default().fg(SUBTLE)),
+            Span::styled(" · ", Style::default().fg(theme.subtle)),
             Span::styled(
                 "continuing will disable sandbox enforcement for this run.",
-                Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![Span::styled(
             "Review the degraded surfaces and host-side fixes below before you continue.",
-            Style::default().fg(MUTED),
+            Style::default().fg(theme.muted),
         )]),
     ])
 }
 
-fn build_risk_card_text() -> Text<'static> {
+fn build_risk_card_text(theme: ThemePalette) -> Text<'static> {
     Text::from(vec![
-        build_section_label("What Changes Now", ERROR),
+        build_section_label("What Changes Now", theme.error),
         Line::raw(""),
         Line::from(vec![Span::styled(
             "Sandbox enforcement is disabled for this run.",
-            Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::raw(""),
-        bullet_line("shell access stays degraded"),
-        bullet_line("command hooks start degraded until host-process surfaces return"),
-        bullet_line("stdio MCP starts degraded until host-process surfaces return"),
-        bullet_line("managed code-intel helpers start degraded until host-process surfaces return"),
+        bullet_line("shell access stays degraded", theme),
+        bullet_line(
+            "command hooks start degraded until host-process surfaces return",
+            theme,
+        ),
+        bullet_line(
+            "stdio MCP starts degraded until host-process surfaces return",
+            theme,
+        ),
+        bullet_line(
+            "managed code-intel helpers start degraded until host-process surfaces return",
+            theme,
+        ),
     ])
 }
 
-fn build_policy_card_text(notice: &SandboxFallbackNotice) -> Text<'static> {
+fn build_policy_card_text(notice: &SandboxFallbackNotice, theme: ThemePalette) -> Text<'static> {
     Text::from(vec![
-        build_section_label("Current Policy", USER),
+        build_section_label("Current Policy", theme.user),
         Line::raw(""),
-        detail_line(&notice.policy_summary),
+        detail_line(&notice.policy_summary, theme),
     ])
 }
 
-fn build_reason_card_text(notice: &SandboxFallbackNotice) -> Text<'static> {
+fn build_reason_card_text(notice: &SandboxFallbackNotice, theme: ThemePalette) -> Text<'static> {
     Text::from(vec![
-        build_section_label("Why This Failed", ACCENT),
+        build_section_label("Why This Failed", theme.accent),
         Line::raw(""),
-        detail_line(&notice.reason),
+        detail_line(&notice.reason, theme),
     ])
 }
 
-fn build_fix_card_text(notice: &SandboxFallbackNotice) -> Text<'static> {
-    let mut lines = vec![build_section_label("Fix On Host", WARN), Line::raw("")];
+fn build_fix_card_text(notice: &SandboxFallbackNotice, theme: ThemePalette) -> Text<'static> {
+    let mut lines = vec![
+        build_section_label("Fix On Host", theme.warn),
+        Line::raw(""),
+    ];
     lines.extend(notice.setup_steps.iter().enumerate().map(|(index, step)| {
         Line::from(vec![
             Span::styled(
                 format!("{}. ", index + 1),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(step.clone(), Style::default().fg(TEXT)),
+            Span::styled(step.clone(), Style::default().fg(theme.text)),
         ])
     }));
     Text::from(lines)
 }
 
-fn build_prompt_text() -> Text<'static> {
+fn build_prompt_text(theme: ThemePalette) -> Text<'static> {
     Text::from(vec![Line::from(vec![
         Span::styled(
             "startup",
-            Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
+        Span::styled(" · ", Style::default().fg(theme.subtle)),
         Span::styled(
             "Choose one option to continue startup.",
-            Style::default().fg(HEADER).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.header)
+                .add_modifier(Modifier::BOLD),
         ),
     ])])
 }
 
-fn build_footer_text() -> Text<'static> {
+fn build_footer_text(theme: ThemePalette) -> Text<'static> {
     Text::from(vec![Line::from(vec![
-        Span::styled("safe default", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("abort startup", Style::default().fg(ERROR)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("Tab", Style::default().fg(ACCENT)),
-        Span::styled(" switch", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("Enter", Style::default().fg(HEADER)),
-        Span::styled(" confirm", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("y", Style::default().fg(ACCENT)),
-        Span::styled(" continue", Style::default().fg(MUTED)),
-        Span::styled(" · ", Style::default().fg(SUBTLE)),
-        Span::styled("esc", Style::default().fg(ERROR)),
-        Span::styled(" abort", Style::default().fg(MUTED)),
+        Span::styled("safe default", Style::default().fg(theme.muted)),
+        Span::styled(" · ", Style::default().fg(theme.subtle)),
+        Span::styled("abort startup", Style::default().fg(theme.error)),
+        Span::styled(" · ", Style::default().fg(theme.subtle)),
+        Span::styled("Tab", Style::default().fg(theme.accent)),
+        Span::styled(" switch", Style::default().fg(theme.muted)),
+        Span::styled(" · ", Style::default().fg(theme.subtle)),
+        Span::styled("Enter", Style::default().fg(theme.header)),
+        Span::styled(" confirm", Style::default().fg(theme.muted)),
+        Span::styled(" · ", Style::default().fg(theme.subtle)),
+        Span::styled("y", Style::default().fg(theme.accent)),
+        Span::styled(" continue", Style::default().fg(theme.muted)),
+        Span::styled(" · ", Style::default().fg(theme.subtle)),
+        Span::styled("esc", Style::default().fg(theme.error)),
+        Span::styled(" abort", Style::default().fg(theme.muted)),
     ])])
 }
 
@@ -420,17 +452,17 @@ fn build_section_label(label: &'static str, color: Color) -> Line<'static> {
     )])
 }
 
-fn bullet_line(text: &str) -> Line<'static> {
+fn bullet_line(text: &str, theme: ThemePalette) -> Line<'static> {
     Line::from(vec![
-        Span::styled("• ", Style::default().fg(SUBTLE)),
-        Span::styled(text.to_string(), Style::default().fg(TEXT)),
+        Span::styled("• ", Style::default().fg(theme.subtle)),
+        Span::styled(text.to_string(), Style::default().fg(theme.text)),
     ])
 }
 
-fn detail_line(text: &str) -> Line<'static> {
+fn detail_line(text: &str, theme: ThemePalette) -> Line<'static> {
     Line::from(vec![Span::styled(
         text.to_string(),
-        Style::default().fg(TEXT),
+        Style::default().fg(theme.text),
     )])
 }
 
@@ -542,13 +574,15 @@ fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACCENT, BG, HEADER, StartupPromptSelection, StartupPromptState, TEXT,
-        build_action_button_line, build_fix_card_text, build_footer_text, build_policy_card_text,
-        build_reason_card_text, build_risk_card_text, build_summary_text, startup_prompt_layout,
+        StartupPromptSelection, StartupPromptState, build_action_button_line, build_fix_card_text,
+        build_footer_text, build_policy_card_text, build_reason_card_text, build_risk_card_text,
+        build_summary_text, startup_prompt_layout,
     };
     use crate::backend::SandboxFallbackNotice;
+    use crate::theme::ThemePalette;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
     use ratatui::text::Text;
 
     #[test]
@@ -600,18 +634,21 @@ mod tests {
 
     #[test]
     fn startup_prompt_selected_button_uses_high_contrast_label() {
-        let line = build_action_button_line("Y", "Continue Without Sandbox", true, ACCENT);
-        assert_eq!(line.spans[1].style.bg, Some(ACCENT));
-        assert_eq!(line.spans[1].style.fg, Some(BG));
-        assert_eq!(line.spans[3].style.fg, Some(HEADER));
+        let theme = test_theme();
+        let line =
+            build_action_button_line("Y", "Continue Without Sandbox", true, theme.accent, theme);
+        assert_eq!(line.spans[1].style.bg, Some(theme.accent));
+        assert_eq!(line.spans[1].style.fg, Some(theme.canvas_surface()));
+        assert_eq!(line.spans[3].style.fg, Some(theme.header));
     }
 
     #[test]
     fn startup_prompt_unselected_button_keeps_badge_background_clear() {
-        let line = build_action_button_line("Esc", "Abort Startup", false, ACCENT);
+        let theme = test_theme();
+        let line = build_action_button_line("Esc", "Abort Startup", false, theme.accent, theme);
         assert_eq!(line.spans[1].style.bg, None);
-        assert_eq!(line.spans[1].style.fg, Some(ACCENT));
-        assert_eq!(line.spans[3].style.fg, Some(TEXT));
+        assert_eq!(line.spans[1].style.fg, Some(theme.accent));
+        assert_eq!(line.spans[3].style.fg, Some(theme.text));
     }
 
     #[test]
@@ -626,10 +663,11 @@ mod tests {
             ],
         };
 
-        let policy = flatten_text(build_policy_card_text(&notice));
-        let reason = flatten_text(build_reason_card_text(&notice));
-        let fix = flatten_text(build_fix_card_text(&notice));
-        let risk = flatten_text(build_risk_card_text());
+        let theme = test_theme();
+        let policy = flatten_text(build_policy_card_text(&notice, theme));
+        let reason = flatten_text(build_reason_card_text(&notice, theme));
+        let fix = flatten_text(build_fix_card_text(&notice, theme));
+        let risk = flatten_text(build_risk_card_text(theme));
 
         assert!(policy.iter().any(|line| line == "Current Policy"));
         assert!(policy.iter().any(|line| line.contains("workspace-write")));
@@ -653,7 +691,7 @@ mod tests {
 
     #[test]
     fn startup_prompt_summary_marks_the_risk_as_severe() {
-        let lines = flatten_text(build_summary_text());
+        let lines = flatten_text(build_summary_text(test_theme()));
         assert!(lines.iter().any(|line| line.contains("HIGH RISK")));
         assert!(
             lines
@@ -664,11 +702,30 @@ mod tests {
 
     #[test]
     fn startup_prompt_footer_stays_short_and_operator_facing() {
-        let line = flatten_text(build_footer_text()).join(" ");
+        let line = flatten_text(build_footer_text(test_theme())).join(" ");
         assert!(line.contains("safe default"));
         assert!(line.contains("abort startup"));
         assert!(line.contains("Tab switch"));
         assert!(line.contains("Enter confirm"));
+    }
+
+    fn test_theme() -> ThemePalette {
+        ThemePalette {
+            bg: Color::Rgb(15, 17, 20),
+            main_bg: Color::Rgb(18, 20, 24),
+            footer_bg: Color::Rgb(20, 22, 26),
+            bottom_pane_bg: Color::Rgb(24, 27, 31),
+            border_active: Color::Rgb(86, 142, 196),
+            text: Color::Rgb(235, 236, 232),
+            muted: Color::Rgb(154, 158, 151),
+            subtle: Color::Rgb(98, 103, 108),
+            accent: Color::Rgb(108, 189, 182),
+            user: Color::Rgb(221, 188, 128),
+            assistant: Color::Rgb(133, 191, 123),
+            error: Color::Rgb(227, 125, 118),
+            warn: Color::Rgb(223, 179, 88),
+            header: Color::Rgb(244, 244, 239),
+        }
     }
 
     fn key(code: KeyCode) -> KeyEvent {

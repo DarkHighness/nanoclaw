@@ -7,6 +7,7 @@ use code_agent_backend::{
     build_sandbox_fallback_notice, build_session_with_approval_mode,
     build_session_with_approval_mode_and_progress, inject_process_env, inspect_sandbox_preflight,
 };
+use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
     CodeAgentTui, SharedUiState, StartupLoadingScreen, confirm_unsandboxed_startup_screen,
 };
@@ -33,6 +34,11 @@ fn try_main() -> Result<()> {
     inject_process_env(&env_map);
     let _tracing_guard = init_tracing(&workspace_root)?;
     let options = AppOptions::from_env_and_args(&workspace_root, &env_map)?;
+    // Startup loading and the unsandboxed-risk prompt both render before the
+    // main `CodeAgentTui` exists, so install the configured theme catalog as
+    // soon as config parsing succeeds instead of letting those early surfaces
+    // fall back to the builtin default theme.
+    install_theme_catalog(options.theme_catalog.clone());
 
     let runtime = build_host_tokio_runtime(HostRuntimeLimits {
         worker_threads: options.tokio_worker_threads,
