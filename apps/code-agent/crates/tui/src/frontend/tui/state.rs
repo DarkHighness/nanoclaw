@@ -608,11 +608,7 @@ fn selectable_tool_targets(
     let mut selectable = transcript
         .iter()
         .enumerate()
-        .filter_map(|(index, entry)| {
-            entry
-                .tool_entry()
-                .map(|_| ToolSelectionTarget::Transcript(index))
-        })
+        .map(|(index, _)| ToolSelectionTarget::Transcript(index))
         .collect::<Vec<_>>();
     selectable.extend(
         active_tool_cells

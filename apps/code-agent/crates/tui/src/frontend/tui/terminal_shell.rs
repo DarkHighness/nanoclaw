@@ -197,21 +197,27 @@ impl CodeAgentTui {
             KeyCode::BackTab => {
                 let _ = self.apply_composer_completion(true);
             }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let _ = self.handle_tool_selection_navigation(true);
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let _ = self.navigate_input_history(true);
             }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let _ = self.handle_tool_selection_navigation(false);
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let _ = self.navigate_input_history(false);
             }
             KeyCode::Up => self.handle_vertical_navigation(true),
             KeyCode::Down => self.handle_vertical_navigation(false),
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                let _ = self.handle_transcript_horizontal_navigation(true);
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                let _ = self.handle_transcript_horizontal_navigation(false);
+            }
             KeyCode::Left => {
-                if !self.handle_transcript_horizontal_navigation(true) {
+                if !self.handle_tool_selection_navigation(true) {
                     let _ = self.move_input_cursor_horizontal(true);
                 }
             }
             KeyCode::Right => {
-                if !self.handle_transcript_horizontal_navigation(false) {
+                if !self.handle_tool_selection_navigation(false) {
                     let _ = self.move_input_cursor_horizontal(false);
                 }
             }
@@ -311,6 +317,21 @@ impl CodeAgentTui {
             return;
         }
         if self.composer_completion_modal_active() {
+            return;
+        }
+        let snapshot = self.ui_state.snapshot();
+        if snapshot.input.is_empty()
+            && snapshot.main_pane == state::MainPaneMode::Transcript
+            && snapshot.history_rollback.is_none()
+            && snapshot.pending_control_picker.is_none()
+            && snapshot.tool_review_overlay().is_none()
+            && snapshot.statusline_picker.is_none()
+            && snapshot.thinking_effort_picker.is_none()
+            && snapshot.theme_picker.is_none()
+        {
+            self.ui_state.mutate(|state| {
+                state.scroll_focused(if backwards { -1 } else { 1 });
+            });
             return;
         }
         if self.navigate_input_history(backwards)
@@ -414,17 +435,12 @@ impl CodeAgentTui {
         if !snapshot.input.is_empty()
             || snapshot.main_pane != state::MainPaneMode::Transcript
             || snapshot.history_rollback.is_some()
+            || snapshot.pending_control_picker.is_some()
             || snapshot.tool_review_overlay().is_some()
         {
             return false;
         }
-        if snapshot.selected_tool_entry().is_none()
-            && snapshot
-                .transcript
-                .iter()
-                .all(|entry| entry.tool_entry().is_none())
-            && snapshot.active_tool_cells.is_empty()
-        {
+        if snapshot.transcript.is_empty() && snapshot.active_tool_cells.is_empty() {
             return false;
         }
 
@@ -440,16 +456,12 @@ impl CodeAgentTui {
         if !snapshot.input.is_empty()
             || snapshot.main_pane != state::MainPaneMode::Transcript
             || snapshot.history_rollback.is_some()
+            || snapshot.pending_control_picker.is_some()
             || snapshot.tool_review_overlay().is_some()
         {
             return false;
         }
-        if snapshot
-            .transcript
-            .iter()
-            .all(|entry| entry.tool_entry().is_none())
-            && snapshot.active_tool_cells.is_empty()
-        {
+        if snapshot.transcript.is_empty() && snapshot.active_tool_cells.is_empty() {
             return false;
         }
 
@@ -462,15 +474,16 @@ impl CodeAgentTui {
 
     fn refresh_tool_selection_status(&self) {
         let snapshot = self.ui_state.snapshot();
-        let Some(tool) = snapshot.selected_tool_entry() else {
-            return;
-        };
         self.ui_state.mutate(|state| {
-            state.status = format!(
-                "Selected {} [{}]",
-                tool.tool_name,
-                selected_tool_status_label(tool.status)
-            );
+            if let Some(tool) = snapshot.selected_tool_entry() {
+                state.status = format!(
+                    "Selected {} [{}]",
+                    tool.tool_name,
+                    selected_tool_status_label(tool.status)
+                );
+            } else if snapshot.tool_selection.is_some() {
+                state.status = "Browsing transcript".to_string();
+            }
         });
     }
 
@@ -618,7 +631,7 @@ impl CodeAgentTui {
         {
             self.ui_state.mutate(|state| {
                 state.clear_tool_selection();
-                state.status = "Cleared tool selection".to_string();
+                state.status = "Cleared transcript selection".to_string();
             });
             return Ok(());
         }

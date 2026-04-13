@@ -355,7 +355,7 @@ fn history_rollback_overlay_opens_on_latest_candidate_and_wraps_navigation() {
 }
 
 #[test]
-fn transcript_selection_moves_between_tool_entries_only() {
+fn transcript_selection_moves_between_all_transcript_cells() {
     let mut state = TuiState::default();
     state.transcript = vec![
         TranscriptEntry::AssistantMessage("assistant".to_string()),
@@ -378,7 +378,19 @@ fn transcript_selection_moves_between_tool_entries_only() {
     assert!(state.move_tool_selection(false));
     assert_eq!(
         state.tool_selection,
+        Some(ToolSelectionTarget::Transcript(0))
+    );
+
+    assert!(state.move_tool_selection(false));
+    assert_eq!(
+        state.tool_selection,
         Some(ToolSelectionTarget::Transcript(1))
+    );
+
+    assert!(state.move_tool_selection(false));
+    assert_eq!(
+        state.tool_selection,
+        Some(ToolSelectionTarget::Transcript(2))
     );
 
     assert!(state.move_tool_selection(false));
@@ -390,7 +402,7 @@ fn transcript_selection_moves_between_tool_entries_only() {
     assert!(state.move_tool_selection(false));
     assert_eq!(
         state.tool_selection,
-        Some(ToolSelectionTarget::Transcript(1))
+        Some(ToolSelectionTarget::Transcript(0))
     );
 }
 
@@ -428,16 +440,19 @@ fn selected_tool_review_overlay_uses_review_from_selected_entry() {
 }
 
 #[test]
-fn tool_selection_cycles_across_committed_and_live_tools() {
+fn transcript_selection_cycles_across_committed_cells_and_live_tools() {
     let mut state = TuiState::default();
-    state.transcript = vec![TranscriptEntry::tool(
-        TranscriptToolStatus::Finished,
-        "write",
-        vec![ToolDetail::LabeledValue {
-            label: ToolDetailLabel::Effect,
-            value: "Updated src/lib.rs".to_string(),
-        }],
-    )];
+    state.transcript = vec![
+        TranscriptEntry::AssistantMessage("assistant".to_string()),
+        TranscriptEntry::tool(
+            TranscriptToolStatus::Finished,
+            "write",
+            vec![ToolDetail::LabeledValue {
+                label: ToolDetailLabel::Effect,
+                value: "Updated src/lib.rs".to_string(),
+            }],
+        ),
+    ];
     state.active_tool_cells = vec![ActiveToolCell::new(
         "call-1",
         TranscriptToolEntry::new(
@@ -451,6 +466,12 @@ fn tool_selection_cycles_across_committed_and_live_tools() {
     assert_eq!(
         state.tool_selection,
         Some(ToolSelectionTarget::Transcript(0))
+    );
+
+    assert!(state.move_tool_selection(false));
+    assert_eq!(
+        state.tool_selection,
+        Some(ToolSelectionTarget::Transcript(1))
     );
 
     assert!(state.move_tool_selection(false));

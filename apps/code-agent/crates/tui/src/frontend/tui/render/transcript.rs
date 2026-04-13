@@ -28,6 +28,7 @@ use unicode_width::UnicodeWidthStr;
 const WELCOME_SIDE_PADDING: u16 = 4;
 const TRANSCRIPT_CELL_GAP_LINES: usize = 1;
 const TRANSCRIPT_TURN_GAP_LINES: usize = 1;
+const TRANSCRIPT_TOP_PADDING: u16 = 1;
 
 pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState) {
     frame.render_widget(
@@ -52,14 +53,28 @@ pub(super) fn render_transcript(frame: &mut ratatui::Frame<'_>, area: Rect, stat
     // string padding shrinks the effective line budget and then `Paragraph`
     // wraps the already-padded text a second time, which causes early wraps
     // and short dividers. Keep spacing in the cell renderer instead.
-    let lines = build_transcript_lines_for_width(state, area.width);
-    let scroll = shared::clamp_scroll(state.transcript_scroll, lines.len(), area.height);
+    let content_area = transcript_content_area(area);
+    let lines = build_transcript_lines_for_width(state, content_area.width);
+    let scroll = shared::clamp_scroll(state.transcript_scroll, lines.len(), content_area.height);
     let transcript = Paragraph::new(Text::from(lines))
         .scroll((scroll, state.transcript_horizontal_scroll))
         .alignment(Alignment::Left)
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(palette().text).bg(palette().main_bg));
-    frame.render_widget(transcript, area);
+    frame.render_widget(transcript, content_area);
+}
+
+pub(super) fn transcript_content_area(area: Rect) -> Rect {
+    if area.height <= TRANSCRIPT_TOP_PADDING {
+        area
+    } else {
+        Rect::new(
+            area.x,
+            area.y + TRANSCRIPT_TOP_PADDING,
+            area.width,
+            area.height - TRANSCRIPT_TOP_PADDING,
+        )
+    }
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ use super::tool_review_overlay::{build_tool_review_list_text, build_tool_review_
 use super::transcript::TranscriptEntryKind;
 use super::transcript::build_transcript_lines;
 use super::transcript::build_transcript_lines_for_width;
+use super::transcript::transcript_content_area;
 use super::transcript_shell::{
     animated_progress_text_spans, live_progress_lines, render_shell_summary_body,
 };
@@ -150,6 +151,17 @@ fn transcript_inserts_turn_dividers_between_user_turns() {
     let divider_text = line_text_for(divider);
     assert_eq!(divider_text.chars().count(), 24);
     assert!(divider_text.chars().all(|ch| ch == '─'));
+}
+
+#[test]
+fn transcript_content_area_reserves_top_breathing_room() {
+    let area = Rect::new(0, 0, 80, 20);
+
+    let content = transcript_content_area(area);
+
+    assert_eq!(content.y, 1);
+    assert_eq!(content.width, 80);
+    assert_eq!(content.height, 19);
 }
 
 #[test]
