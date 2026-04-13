@@ -89,6 +89,20 @@ pub struct TokenUsageRecord {
     pub ledger: TokenLedgerSnapshot,
 }
 
+impl TokenUsageRecord {
+    #[must_use]
+    pub fn prefix_cache_hit_rate(&self) -> Option<f64> {
+        self.ledger.cumulative_usage.prefix_cache_hit_rate()
+    }
+
+    #[must_use]
+    pub fn prefix_cache_hit_rate_basis_points(&self) -> Option<u32> {
+        self.ledger
+            .cumulative_usage
+            .prefix_cache_hit_rate_basis_points()
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionTokenUsageReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,6 +115,18 @@ pub struct SessionTokenUsageReport {
     pub tasks: Vec<TokenUsageRecord>,
     #[serde(default)]
     pub aggregate_usage: TokenUsage,
+}
+
+impl SessionTokenUsageReport {
+    #[must_use]
+    pub fn aggregate_prefix_cache_hit_rate(&self) -> Option<f64> {
+        self.aggregate_usage.prefix_cache_hit_rate()
+    }
+
+    #[must_use]
+    pub fn aggregate_prefix_cache_hit_rate_basis_points(&self) -> Option<u32> {
+        self.aggregate_usage.prefix_cache_hit_rate_basis_points()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

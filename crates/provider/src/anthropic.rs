@@ -921,6 +921,7 @@ mod tests {
             }) if reason == "tool_use"
                 && message_id.as_str() == "msg_1"
                 && *usage == TokenUsage::from_input_output(120, 30, 20)
+                && usage.prefix_cache_hit_rate_basis_points() == Some(1667)
         ));
     }
 }

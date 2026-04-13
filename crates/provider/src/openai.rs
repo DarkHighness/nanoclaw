@@ -1314,6 +1314,7 @@ mod tests {
             })) if message_id.as_str() == "msg_1"
                 && response_id.as_str() == "resp_1"
                 && *usage == TokenUsage::from_input_output(120, 30, 20)
+                && usage.prefix_cache_hit_rate_basis_points() == Some(1667)
         ));
     }
 

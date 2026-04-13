@@ -44,6 +44,33 @@ impl TokenUsage {
             .cache_read_tokens
             .saturating_add(other.cache_read_tokens);
     }
+
+    #[must_use]
+    pub const fn prefix_cache_eligible_tokens(&self) -> u64 {
+        self.input_tokens
+    }
+
+    #[must_use]
+    pub fn prefix_cache_hit_rate(&self) -> Option<f64> {
+        let total = self.prefix_cache_eligible_tokens();
+        if total == 0 {
+            return None;
+        }
+        Some(self.cache_read_tokens as f64 / total as f64)
+    }
+
+    #[must_use]
+    pub fn prefix_cache_hit_rate_basis_points(&self) -> Option<u32> {
+        let total = self.prefix_cache_eligible_tokens();
+        if total == 0 {
+            return None;
+        }
+        let numerator = self
+            .cache_read_tokens
+            .saturating_mul(10_000)
+            .saturating_add(total / 2);
+        Some((numerator / total).min(u64::from(u32::MAX)) as u32)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -67,4 +94,40 @@ pub struct TokenLedgerSnapshot {
 pub enum TokenUsagePhase {
     RequestStarted,
     ResponseCompleted,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TokenUsage;
+
+    #[test]
+    fn prefix_cache_hit_rate_is_none_without_input_tokens() {
+        let usage = TokenUsage::default();
+
+        assert_eq!(usage.prefix_cache_hit_rate(), None);
+        assert_eq!(usage.prefix_cache_hit_rate_basis_points(), None);
+    }
+
+    #[test]
+    fn prefix_cache_hit_rate_uses_input_tokens_as_denominator() {
+        let usage = TokenUsage::from_input_output(120, 30, 20);
+
+        assert_eq!(usage.prefix_cache_eligible_tokens(), 120);
+        assert_eq!(usage.prefix_cache_hit_rate_basis_points(), Some(1667));
+        assert!(
+            usage
+                .prefix_cache_hit_rate()
+                .is_some_and(|ratio| (ratio - (1.0 / 6.0)).abs() < f64::EPSILON)
+        );
+    }
+
+    #[test]
+    fn prefix_cache_hit_rate_accumulates_across_turns() {
+        let mut aggregate = TokenUsage::from_input_output(120, 30, 20);
+        aggregate.accumulate(&TokenUsage::from_input_output(80, 20, 40));
+
+        assert_eq!(aggregate.input_tokens, 200);
+        assert_eq!(aggregate.cache_read_tokens, 60);
+        assert_eq!(aggregate.prefix_cache_hit_rate_basis_points(), Some(3000));
+    }
 }

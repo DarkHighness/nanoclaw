@@ -938,6 +938,16 @@ impl SessionSummaryTokenUsage {
     pub fn is_zero(&self) -> bool {
         self.context_window.is_none() && self.cumulative_usage.is_zero()
     }
+
+    #[must_use]
+    pub fn prefix_cache_hit_rate(&self) -> Option<f64> {
+        self.cumulative_usage.prefix_cache_hit_rate()
+    }
+
+    #[must_use]
+    pub fn prefix_cache_hit_rate_basis_points(&self) -> Option<u32> {
+        self.cumulative_usage.prefix_cache_hit_rate_basis_points()
+    }
 }
 
 impl From<TokenLedgerSnapshot> for SessionSummaryTokenUsage {

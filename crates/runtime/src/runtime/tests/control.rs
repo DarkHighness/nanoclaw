@@ -240,8 +240,22 @@ async fn runtime_tracks_token_usage_and_context_window() {
         TokenUsage::from_input_output(120, 30, 20)
     );
     assert_eq!(
+        token_events[1]
+            .1
+            .cumulative_usage
+            .prefix_cache_hit_rate_basis_points(),
+        Some(1667)
+    );
+    assert_eq!(
         runtime.token_ledger().cumulative_usage,
         TokenUsage::from_input_output(120, 30, 20)
+    );
+    assert_eq!(
+        runtime
+            .token_ledger()
+            .cumulative_usage
+            .prefix_cache_hit_rate_basis_points(),
+        Some(1667)
     );
 
     let events = store.events(&runtime.session_id()).await.unwrap();
