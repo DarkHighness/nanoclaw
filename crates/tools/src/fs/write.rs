@@ -5,7 +5,7 @@ use crate::fs::{
     compute_diff_preview, load_optional_text_file, resolve_tool_path_against_workspace_root,
 };
 use crate::registry::Tool;
-use crate::{Result, ToolExecutionContext};
+use crate::{CheckpointFileMutation, CheckpointMutationRequest, Result, ToolExecutionContext};
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,8 @@ enum WriteToolOutput {
         requested_path: String,
         resolved_path: String,
         summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkpoint_id: Option<types::CheckpointId>,
         snapshot_before: Option<String>,
         snapshot_after: Option<String>,
         file_diffs: Vec<Value>,
@@ -138,6 +140,29 @@ impl Tool for WriteTool {
         )
         .into_iter()
         .collect::<Vec<_>>();
+        let checkpoint = if existing.as_deref() != outcome.next_content.as_deref() {
+            match &ctx.checkpoint_handler {
+                Some(handler) => Some(
+                    handler
+                        .record_mutation(
+                            ctx,
+                            CheckpointMutationRequest {
+                                summary: outcome.summary.clone(),
+                                changed_files: vec![CheckpointFileMutation {
+                                    requested_path: input.path.clone(),
+                                    resolved_path: resolved.clone(),
+                                    before_text: existing.clone(),
+                                    after_text: outcome.next_content.clone(),
+                                }],
+                            },
+                        )
+                        .await?,
+                ),
+                None => None,
+            }
+        } else {
+            None
+        };
         if let Some(observer) = &self.activity_observer {
             observer.did_change(resolved.clone());
             observer.did_save(resolved.clone());
@@ -146,6 +171,9 @@ impl Tool for WriteTool {
             requested_path: input.path.clone(),
             resolved_path: resolved.display().to_string(),
             summary: outcome.summary.clone(),
+            checkpoint_id: checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.checkpoint_id.clone()),
             snapshot_before: outcome.snapshot_before.clone(),
             snapshot_after: outcome.snapshot_after.clone(),
             file_diffs: file_diffs.clone(),
@@ -161,6 +189,9 @@ impl Tool for WriteTool {
             text.push_str("\n\n[diff_preview]\n");
             text.push_str(&previews);
         }
+        if let Some(checkpoint) = checkpoint.as_ref() {
+            text.push_str(&format!("\n\n[checkpoint {}]", checkpoint.checkpoint_id));
+        }
         Ok(ToolResult {
             id: call_id,
             call_id: external_call_id,
@@ -173,6 +204,7 @@ impl Tool for WriteTool {
             continuation: None,
             metadata: Some(serde_json::json!({
                 "path": resolved,
+                "checkpoint_id": checkpoint.as_ref().map(|checkpoint| checkpoint.checkpoint_id.clone()),
                 "snapshot_before": outcome.snapshot_before,
                 "snapshot_after": outcome.snapshot_after,
                 "file_diffs": file_diffs,

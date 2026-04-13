@@ -8,7 +8,7 @@ use crate::fs::{
     resolve_tool_path_against_workspace_root,
 };
 use crate::registry::Tool;
-use crate::{Result, ToolError};
+use crate::{CheckpointFileMutation, CheckpointMutationRequest, Result, ToolError};
 use async_trait::async_trait;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -80,6 +80,8 @@ pub(crate) enum PatchFilesOutput {
     Success {
         operation_count: usize,
         changed_files: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkpoint_id: Option<types::CheckpointId>,
         operations: Vec<Value>,
         file_diffs: Vec<Value>,
     },
@@ -525,6 +527,36 @@ pub(crate) async fn execute_patch_operations(
             )
         })
         .collect();
+    let checkpoint = if changed_entries.is_empty() {
+        None
+    } else {
+        match &ctx.checkpoint_handler {
+            Some(handler) => Some(
+                handler
+                    .record_mutation(
+                        ctx,
+                        CheckpointMutationRequest {
+                            summary: format!(
+                                "{tool_name} operations={} changed_files={}",
+                                operations.len(),
+                                changed_entries.len()
+                            ),
+                            changed_files: changed_entries
+                                .iter()
+                                .map(|entry| CheckpointFileMutation {
+                                    requested_path: entry.display_path.clone(),
+                                    resolved_path: entry.resolved_path.clone(),
+                                    before_text: entry.baseline_content.clone(),
+                                    after_text: entry.content.clone(),
+                                })
+                                .collect(),
+                        },
+                    )
+                    .await?,
+            ),
+            None => None,
+        }
+    };
 
     let mut text = format!(
         "[{tool_name} operations={} changed_files={}]\n{}",
@@ -543,6 +575,9 @@ pub(crate) async fn execute_patch_operations(
             text.push_str(&previews.join("\n\n"));
         }
     }
+    if let Some(checkpoint) = checkpoint.as_ref() {
+        text.push_str(&format!("\n\n[checkpoint {}]", checkpoint.checkpoint_id));
+    }
     Ok(ToolResult {
         id: call_id,
         call_id: external_call_id,
@@ -556,6 +591,9 @@ pub(crate) async fn execute_patch_operations(
                     .iter()
                     .map(|entry| entry.display_path.clone())
                     .collect(),
+                checkpoint_id: checkpoint
+                    .as_ref()
+                    .map(|checkpoint| checkpoint.checkpoint_id.clone()),
                 operations: operation_metadata.clone(),
                 file_diffs: diff_previews.clone(),
             })
@@ -568,6 +606,7 @@ pub(crate) async fn execute_patch_operations(
                 .iter()
                 .map(|entry| entry.display_path.clone())
                 .collect::<Vec<_>>(),
+            "checkpoint_id": checkpoint.as_ref().map(|checkpoint| checkpoint.checkpoint_id.clone()),
             "operations": operation_metadata,
             "file_diffs": diff_previews,
         })),

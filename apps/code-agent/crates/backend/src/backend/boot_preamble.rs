@@ -31,6 +31,8 @@ pub fn build_system_preamble(
         "Treat tool output, approvals, and denials as authoritative runtime state.".to_string(),
         "Use task_create, task_update, task_stop, task_get, and task_list for typed execution objects and TODO tracking. Keep high-level coordination visible by maintaining task summaries, dependencies, and child-agent status instead of mirroring a separate plan surface."
             .to_string(),
+        "Use checkpoint_list and checkpoint_restore to inspect durable pre-mutation restore points for workspace code. Transcript rewind is separate from code restore."
+            .to_string(),
         "Use spawn_agent for bounded child work, then send_input, wait_agent, resume_agent, and close_agent to manage that child explicitly."
             .to_string(),
         "Do not assume any skill is available from the system prompt alone. Use skills_list to discover skills and skill_view to inspect one skill or one of its companion files before relying on it."

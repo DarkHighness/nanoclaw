@@ -1,8 +1,8 @@
 use crate::{
-    AgentId, AgentSessionId, BrowserId, CallId, ContextWindowUsage, CronId, EnvelopeId, EventId,
-    HookEvent, HookResult, Message, MessageId, MessagePart, MonitorId, Reasoning, ResponseId,
-    SessionId, TaskId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId,
-    ToolName, ToolSpec, TurnId, WorktreeId,
+    AgentId, AgentSessionId, BrowserId, CallId, CheckpointId, ContextWindowUsage, CronId,
+    EnvelopeId, EventId, HookEvent, HookResult, Message, MessageId, MessagePart, MonitorId,
+    Reasoning, ResponseId, SessionId, TaskId, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase,
+    ToolCall, ToolCallId, ToolName, ToolSpec, TurnId, WorktreeId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -243,6 +243,44 @@ impl fmt::Display for WorktreeStatus {
             Self::Active => "active",
             Self::Inactive => "inactive",
             Self::Removed => "removed",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointScope {
+    Code,
+    Conversation,
+    Both,
+}
+
+impl fmt::Display for CheckpointScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Code => "code",
+            Self::Conversation => "conversation",
+            Self::Both => "both",
+        };
+        f.write_str(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointRestoreMode {
+    CodeOnly,
+    ConversationOnly,
+    Both,
+}
+
+impl fmt::Display for CheckpointRestoreMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::CodeOnly => "code_only",
+            Self::ConversationOnly => "conversation_only",
+            Self::Both => "both",
         };
         f.write_str(value)
     }
@@ -499,6 +537,60 @@ pub struct WorktreeSummaryRecord {
     pub created_at_unix_s: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at_unix_s: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CheckpointFileRecord {
+    pub requested_path: String,
+    pub resolved_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_text: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CheckpointOrigin {
+    FileTool {
+        tool_name: ToolName,
+    },
+    Restore {
+        restored_from: CheckpointId,
+        restore_mode: CheckpointRestoreMode,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CheckpointRecord {
+    pub checkpoint_id: CheckpointId,
+    pub session_id: SessionId,
+    pub agent_session_id: AgentSessionId,
+    pub scope: CheckpointScope,
+    pub origin: CheckpointOrigin,
+    pub summary: String,
+    pub created_at_unix_s: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_message_id: Option<MessageId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_message_id: Option<MessageId>,
+    #[serde(default)]
+    pub changed_files: Vec<CheckpointFileRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CheckpointRestoreRecord {
+    pub restored_from: CheckpointId,
+    pub restore_mode: CheckpointRestoreMode,
+    pub restored_file_count: usize,
+    #[serde(default)]
+    pub restored_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_checkpoint_id: Option<CheckpointId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_message_id: Option<MessageId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_message_id: Option<MessageId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1121,6 +1213,9 @@ pub enum SessionEventKind {
     },
     WorktreeUpdated {
         summary: WorktreeSummaryRecord,
+    },
+    CheckpointCreated {
+        checkpoint: CheckpointRecord,
     },
     CronCreated {
         summary: CronSummaryRecord,

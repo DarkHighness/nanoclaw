@@ -17,6 +17,7 @@ pub mod agentic;
 pub mod annotations;
 #[cfg(feature = "browser-tools")]
 pub mod browser;
+mod checkpoint;
 #[cfg(feature = "code-intel")]
 pub mod code_intel;
 pub mod context;
@@ -37,6 +38,7 @@ pub use agentic::*;
 pub use annotations::*;
 #[cfg(feature = "browser-tools")]
 pub use browser::*;
+pub use checkpoint::*;
 #[cfg(feature = "code-intel")]
 pub use code_intel::*;
 pub use context::*;

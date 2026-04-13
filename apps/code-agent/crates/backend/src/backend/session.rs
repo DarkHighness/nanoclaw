@@ -188,23 +188,32 @@ impl CodeAgentSession {
         session_memory_refresh: SharedSessionMemoryRefreshState,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
-        let side_question_context = Some(Self::side_question_context_from_runtime(
-            &runtime,
-            None::<Message>,
-        ));
-        let control_plane = runtime.control_plane();
-        session_memory_refresh.lock().unwrap().active_session_id = Some(runtime.session_id());
+        let runtime = Arc::new(AsyncMutex::new(runtime));
+        let checkpoint_manager = Arc::new(super::SessionCheckpointManager::new(store.clone()));
+        session_tool_context.write().unwrap().checkpoint_handler = Some(checkpoint_manager.clone());
+        let (side_question_context, control_plane, session_id) = {
+            let runtime_guard = runtime.blocking_lock();
+            (
+                Some(Self::side_question_context_from_runtime(
+                    &runtime_guard,
+                    None::<Message>,
+                )),
+                runtime_guard.control_plane(),
+                runtime_guard.session_id(),
+            )
+        };
+        session_memory_refresh.lock().unwrap().active_session_id = Some(session_id.clone());
         let initial_captured_message_id = side_question_context
             .as_ref()
             .and_then(|snapshot| snapshot.transcript.last())
             .map(|message| message.message_id.clone());
         let session_episodic_capture = Arc::new(Mutex::new(SessionEpisodicCaptureState {
-            active_session_id: Some(runtime.session_id()),
+            active_session_id: Some(session_id),
             last_captured_message_id: initial_captured_message_id,
             ..SessionEpisodicCaptureState::default()
         }));
         Self {
-            runtime: Arc::new(AsyncMutex::new(runtime)),
+            runtime,
             control_plane,
             model_backend,
             subagent_executor,

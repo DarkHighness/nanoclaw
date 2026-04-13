@@ -736,6 +736,33 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
                 values.push(child_agent_id.to_string());
             }
         }
+        SessionEventKind::CheckpointCreated { checkpoint } => {
+            values.push(checkpoint.checkpoint_id.to_string());
+            values.push(checkpoint.scope.to_string());
+            values.push(checkpoint.summary.clone());
+            if let Some(rollback_message_id) = checkpoint.rollback_message_id.as_ref() {
+                values.push(rollback_message_id.to_string());
+            }
+            if let Some(prompt_message_id) = checkpoint.prompt_message_id.as_ref() {
+                values.push(prompt_message_id.to_string());
+            }
+            match &checkpoint.origin {
+                types::CheckpointOrigin::FileTool { tool_name } => {
+                    values.push(tool_name.to_string());
+                }
+                types::CheckpointOrigin::Restore {
+                    restored_from,
+                    restore_mode,
+                } => {
+                    values.push(restored_from.to_string());
+                    values.push(restore_mode.to_string());
+                }
+            }
+            for file in &checkpoint.changed_files {
+                values.push(file.requested_path.clone());
+                values.push(file.resolved_path.display().to_string());
+            }
+        }
         SessionEventKind::CronCreated {
             summary,
             task_template,

@@ -122,7 +122,7 @@ pub(super) fn build_history_rollback_summary_text(state: &TuiState) -> Text<'sta
             ),
         ]),
         Line::from(vec![Span::styled(
-            "Rollback restores the selected draft and rewinds the transcript to the start of that turn.",
+            "Transcript rollback restores the selected draft and rewinds visible conversation only. Workspace files stay unchanged until a checkpoint restore is applied.",
             Style::default().fg(palette().muted),
         )]),
     ])
@@ -175,7 +175,7 @@ pub(super) fn build_history_rollback_list_text(state: &TuiState) -> Text<'static
             Span::styled("  Effect ", Style::default().fg(palette().muted)),
             Span::styled(
                 format!(
-                    "rewind {} turn(s) · remove {} message(s)",
+                    "rewind transcript {} turn(s) · remove {} message(s)",
                     candidate.removed_turn_count, candidate.removed_message_count
                 ),
                 Style::default().fg(palette().muted),
@@ -224,7 +224,7 @@ fn build_history_rollback_help_text() -> Text<'static> {
         Span::styled(" select turn", Style::default().fg(palette().muted)),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled("enter", Style::default().fg(palette().accent)),
-        Span::styled(" rollback", Style::default().fg(palette().muted)),
+        Span::styled(" rewind transcript", Style::default().fg(palette().muted)),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled("q", Style::default().fg(palette().accent)),
         Span::styled(" close", Style::default().fg(palette().muted)),

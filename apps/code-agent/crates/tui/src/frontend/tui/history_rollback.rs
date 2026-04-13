@@ -83,7 +83,8 @@ impl CodeAgentTui {
 
         self.ui_state.mutate(|state| {
             state.prime_history_rollback();
-            state.status = "History rollback armed. Press Esc again to choose a turn".to_string();
+            state.status =
+                "Transcript rollback armed. Press Esc again to choose a turn".to_string();
             state.push_activity("armed history rollback");
         });
         Ok(())
@@ -104,7 +105,7 @@ impl CodeAgentTui {
             let opened = state.open_history_rollback_overlay(candidates);
             if opened {
                 state.status =
-                    "History rollback overlay opened. Select a turn to rewind to".to_string();
+                    "Transcript rollback overlay opened. Select a turn to rewind to".to_string();
                 state.push_activity("opened history rollback overlay");
             }
         });

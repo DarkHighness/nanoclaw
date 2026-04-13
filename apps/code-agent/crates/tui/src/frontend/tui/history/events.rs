@@ -543,6 +543,10 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
             ),
             worktree_summary_lines(summary),
         ),
+        SessionEventKind::CheckpointCreated { checkpoint } => info_summary_entry(
+            format!("Saved checkpoint {}", checkpoint.checkpoint_id),
+            checkpoint_summary_lines(checkpoint),
+        ),
         SessionEventKind::CronCreated { summary, .. } => info_summary_entry(
             format!("Created automation {}", summary.cron_id),
             cron_summary_lines(summary),
@@ -669,6 +673,26 @@ fn worktree_status_label(status: agent::types::WorktreeStatus) -> &'static str {
         agent::types::WorktreeStatus::Inactive => "Updated inactive",
         agent::types::WorktreeStatus::Removed => "Removed",
     }
+}
+
+fn checkpoint_summary_lines(checkpoint: &agent::types::CheckpointRecord) -> Vec<String> {
+    let mut lines = vec![
+        format!("scope {}", checkpoint.scope),
+        format!("files {}", checkpoint.changed_files.len()),
+        format!("summary {}", preview_text(&checkpoint.summary, 72)),
+    ];
+    match &checkpoint.origin {
+        agent::types::CheckpointOrigin::FileTool { tool_name } => {
+            lines.push(format!("tool {}", tool_name));
+        }
+        agent::types::CheckpointOrigin::Restore {
+            restored_from,
+            restore_mode,
+        } => {
+            lines.push(format!("restore {} {}", restored_from, restore_mode));
+        }
+    }
+    lines
 }
 
 fn worktree_summary_lines(summary: &agent::types::WorktreeSummaryRecord) -> [String; 4] {

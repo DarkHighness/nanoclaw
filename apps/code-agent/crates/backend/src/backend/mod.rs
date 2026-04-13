@@ -7,6 +7,7 @@ mod boot_runtime;
 mod boot_sandbox;
 #[cfg(feature = "browser-tools")]
 mod browser_manager;
+mod checkpoint_manager;
 #[cfg(feature = "automation-tools")]
 mod cron_manager;
 mod events;
@@ -61,6 +62,7 @@ pub use boot_sandbox::{
 };
 #[cfg(feature = "browser-tools")]
 pub(crate) use browser_manager::SessionBrowserManager;
+pub(crate) use checkpoint_manager::SessionCheckpointManager;
 #[cfg(feature = "automation-tools")]
 pub(crate) use cron_manager::SessionCronManager;
 pub use events::{SessionEventObserver, SessionEventPublisher, SessionEventStream};

@@ -134,6 +134,7 @@ define_string_identifier!(CronId);
 define_string_identifier!(MonitorId);
 define_string_identifier!(BrowserId);
 define_string_identifier!(WorktreeId);
+define_string_identifier!(CheckpointId);
 define_string_identifier!(PluginId);
 define_string_identifier!(PluginDriverId);
 define_string_identifier!(HookName);

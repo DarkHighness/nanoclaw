@@ -1,3 +1,4 @@
+use crate::CheckpointHandler;
 use crate::PermissionRequestHandler;
 use crate::Result;
 #[cfg(feature = "agentic-tools")]
@@ -41,6 +42,7 @@ pub struct ToolExecutionContext {
     pub write_guard: Option<Arc<dyn ToolWriteGuard>>,
     pub user_input_handler: Option<Arc<dyn UserInputHandler>>,
     pub permission_request_handler: Option<Arc<dyn PermissionRequestHandler>>,
+    pub checkpoint_handler: Option<Arc<dyn CheckpointHandler>>,
     #[cfg(feature = "agentic-tools")]
     pub task_manager: Option<Arc<dyn TaskManager>>,
 }
@@ -69,7 +71,11 @@ impl fmt::Debug for ToolExecutionContext {
             .field("task_id", &self.task_id)
             .field("tool_name", &self.tool_name)
             .field("tool_call_id", &self.tool_call_id)
-            .field("model_visibility", &self.model_visibility);
+            .field("model_visibility", &self.model_visibility)
+            .field(
+                "checkpoint_handler",
+                &self.checkpoint_handler.as_ref().map(|_| "<handler>"),
+            );
         #[cfg(feature = "agentic-tools")]
         debug.field(
             "task_manager",
