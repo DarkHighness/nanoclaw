@@ -1,6 +1,7 @@
 use super::{
     DEFAULT_BRAVE_API_BASE_URL, DEFAULT_DUCKDUCKGO_HTML_ENDPOINT, DEFAULT_EXA_API_BASE_URL,
-    DEFAULT_SEARCH_ENDPOINT, WebSearchBackend, WebSearchBackendCapabilities, WebSearchBackendType,
+    DEFAULT_FIRECRAWL_API_BASE_URL, DEFAULT_SEARCH_ENDPOINT, DEFAULT_TAVILY_API_BASE_URL,
+    WebSearchBackend, WebSearchBackendCapabilities, WebSearchBackendType,
 };
 use crate::{Result, ToolError};
 use agent_env::vars;
@@ -12,17 +13,23 @@ pub(super) mod bing;
 pub(super) mod brave;
 pub(super) mod duckduckgo;
 pub(super) mod exa;
+pub(super) mod firecrawl;
+pub(super) mod tavily;
 
 use bing::BingRssSearchBackend;
 use brave::BraveApiSearchBackend;
 use duckduckgo::DuckDuckGoHtmlSearchBackend;
 use exa::ExaApiSearchBackend;
+use firecrawl::FirecrawlApiSearchBackend;
+use tavily::TavilyApiSearchBackend;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum WebSearchBackendKind {
     BingRss,
     BraveApi,
     ExaApi,
+    TavilyApi,
+    FirecrawlApi,
     DuckDuckGoHtml,
 }
 
@@ -32,6 +39,8 @@ impl WebSearchBackendKind {
             Self::BingRss => "bing_rss",
             Self::BraveApi => "brave_api",
             Self::ExaApi => "exa_api",
+            Self::TavilyApi => "tavily_api",
+            Self::FirecrawlApi => "firecrawl_api",
             Self::DuckDuckGoHtml => "duckduckgo_html",
         }
     }
@@ -39,7 +48,7 @@ impl WebSearchBackendKind {
     pub(super) fn retrieval_mode(self) -> &'static str {
         match self {
             Self::BingRss => "rss",
-            Self::BraveApi | Self::ExaApi => "json_api",
+            Self::BraveApi | Self::ExaApi | Self::TavilyApi | Self::FirecrawlApi => "json_api",
             Self::DuckDuckGoHtml => "html_scrape",
         }
     }
@@ -47,7 +56,9 @@ impl WebSearchBackendKind {
     pub(super) fn backend_type(self) -> WebSearchBackendType {
         match self {
             Self::BingRss => WebSearchBackendType::RssFeed,
-            Self::BraveApi | Self::ExaApi => WebSearchBackendType::HostedApi,
+            Self::BraveApi | Self::ExaApi | Self::TavilyApi | Self::FirecrawlApi => {
+                WebSearchBackendType::HostedApi
+            }
             Self::DuckDuckGoHtml => WebSearchBackendType::HtmlScrape,
         }
     }
@@ -75,6 +86,20 @@ impl WebSearchBackendKind {
                 pagination: false,
                 extra_snippets: true,
             },
+            Self::TavilyApi => WebSearchBackendCapabilities {
+                locale: false,
+                freshness: true,
+                source_mode: true,
+                pagination: false,
+                extra_snippets: false,
+            },
+            Self::FirecrawlApi => WebSearchBackendCapabilities {
+                locale: true,
+                freshness: true,
+                source_mode: true,
+                pagination: false,
+                extra_snippets: false,
+            },
             Self::DuckDuckGoHtml => WebSearchBackendCapabilities {
                 locale: false,
                 freshness: false,
@@ -90,6 +115,8 @@ impl WebSearchBackendKind {
             Self::BingRss => &["bing", "bing_rss"],
             Self::BraveApi => &["brave", "brave_api"],
             Self::ExaApi => &["exa", "exa_api"],
+            Self::TavilyApi => &["tavily", "tavily_api"],
+            Self::FirecrawlApi => &["firecrawl", "firecrawl_api"],
             Self::DuckDuckGoHtml => &["duckduckgo", "duckduckgo_html", "ddg"],
         }
     }
@@ -103,6 +130,12 @@ impl WebSearchBackendKind {
             Self::ExaApi => {
                 "NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY is required for the exa_api backend"
             }
+            Self::TavilyApi => {
+                "TAVILY_API_KEY or NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY is required for the tavily_api backend"
+            }
+            Self::FirecrawlApi => {
+                "FIRECRAWL_API_KEY or NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY is required for the firecrawl_api backend"
+            }
             Self::DuckDuckGoHtml => "duckduckgo_html backend is not registered",
         }
     }
@@ -111,6 +144,10 @@ impl WebSearchBackendKind {
         match self {
             Self::BraveApi => Some("NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY"),
             Self::ExaApi => Some("NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY"),
+            Self::TavilyApi => Some("TAVILY_API_KEY or NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY"),
+            Self::FirecrawlApi => {
+                Some("FIRECRAWL_API_KEY or NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY")
+            }
             Self::BingRss | Self::DuckDuckGoHtml => None,
         }
     }
@@ -193,6 +230,44 @@ impl WebSearchBackendRegistry {
                         agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_EXA_API_ENDPOINT),
                         DEFAULT_EXA_API_BASE_URL,
                         "Exa API endpoint",
+                    )?,
+                    api_key,
+                )),
+            );
+        }
+
+        if let Some(api_key) =
+            agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY)
+                .or_else(|| agent_env::get_non_empty(vars::TAVILY_API_KEY))
+        {
+            backends.insert(
+                WebSearchBackendKind::TavilyApi,
+                Arc::new(TavilyApiSearchBackend::new(
+                    parse_backend_url(
+                        agent_env::get_non_empty(
+                            vars::NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_ENDPOINT,
+                        ),
+                        DEFAULT_TAVILY_API_BASE_URL,
+                        "Tavily API endpoint",
+                    )?,
+                    api_key,
+                )),
+            );
+        }
+
+        if let Some(api_key) =
+            agent_env::get_non_empty(vars::NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY)
+                .or_else(|| agent_env::get_non_empty(vars::FIRECRAWL_API_KEY))
+        {
+            backends.insert(
+                WebSearchBackendKind::FirecrawlApi,
+                Arc::new(FirecrawlApiSearchBackend::new(
+                    parse_backend_url(
+                        agent_env::get_non_empty(
+                            vars::NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_ENDPOINT,
+                        ),
+                        DEFAULT_FIRECRAWL_API_BASE_URL,
+                        "Firecrawl API endpoint",
                     )?,
                     api_key,
                 )),
@@ -327,9 +402,11 @@ impl WebSearchBackendRegistry {
             .find(|kind| self.backends.contains_key(kind))
     }
 
-    fn auto_priority() -> [WebSearchBackendKind; 4] {
+    fn auto_priority() -> [WebSearchBackendKind; 6] {
         [
             WebSearchBackendKind::ExaApi,
+            WebSearchBackendKind::TavilyApi,
+            WebSearchBackendKind::FirecrawlApi,
             WebSearchBackendKind::BraveApi,
             WebSearchBackendKind::BingRss,
             WebSearchBackendKind::DuckDuckGoHtml,
@@ -354,6 +431,12 @@ pub(super) fn parse_backend_selector(
         ))),
         Some("exa") | Some("exa_api") => Ok(Some(WebSearchBackendSelector::Kind(
             WebSearchBackendKind::ExaApi,
+        ))),
+        Some("tavily") | Some("tavily_api") => Ok(Some(WebSearchBackendSelector::Kind(
+            WebSearchBackendKind::TavilyApi,
+        ))),
+        Some("firecrawl") | Some("firecrawl_api") => Ok(Some(WebSearchBackendSelector::Kind(
+            WebSearchBackendKind::FirecrawlApi,
         ))),
         Some("duckduckgo") | Some("duckduckgo_html") | Some("ddg") => Ok(Some(
             WebSearchBackendSelector::Kind(WebSearchBackendKind::DuckDuckGoHtml),

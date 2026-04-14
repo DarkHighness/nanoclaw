@@ -32,12 +32,16 @@ use engines::{WebSearchBackendKind, WebSearchBackendRegistry};
 const DEFAULT_SEARCH_ENDPOINT: &str = "https://www.bing.com/search";
 const DEFAULT_BRAVE_API_BASE_URL: &str = "https://api.search.brave.com";
 const DEFAULT_EXA_API_BASE_URL: &str = "https://api.exa.ai";
+const DEFAULT_TAVILY_API_BASE_URL: &str = "https://api.tavily.com";
+const DEFAULT_FIRECRAWL_API_BASE_URL: &str = "https://api.firecrawl.dev";
 const DEFAULT_DUCKDUCKGO_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const DEFAULT_RESULT_SNIPPET_MAX_CHARS: usize = 280;
 const BRAVE_WEB_PAGE_SIZE: usize = 20;
 const BRAVE_NEWS_PAGE_SIZE: usize = 50;
 const BRAVE_MAX_PAGE_OFFSET: usize = 9;
 const EXA_MAX_RESULTS: usize = 100;
+const TAVILY_MAX_RESULTS: usize = 20;
+const FIRECRAWL_MAX_RESULTS: usize = 100;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct WebSearchToolInput {
@@ -1271,9 +1275,14 @@ mod tests {
         WebSearchToolInput, parse_feed_results,
     };
     use crate::web::common::WebToolPolicy;
+    use crate::web::search::engines::firecrawl::FirecrawlApiSearchBackend;
+    use crate::web::search::engines::tavily::TavilyApiSearchBackend;
     use crate::{Tool, ToolExecutionContext};
     use std::collections::BTreeSet;
     use std::sync::Arc;
+    use time::Duration;
+    use time::OffsetDateTime;
+    use time::format_description::well_known::{Rfc2822, Rfc3339};
     use types::{ToolCallId, ToolVisibilityContext};
     use wiremock::matchers::{body_partial_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1409,6 +1418,18 @@ mod tests {
             Some(WebSearchBackendSelector::Kind(WebSearchBackendKind::ExaApi))
         );
         assert_eq!(
+            parse_backend_selector(Some("tavily")).unwrap(),
+            Some(WebSearchBackendSelector::Kind(
+                WebSearchBackendKind::TavilyApi
+            ))
+        );
+        assert_eq!(
+            parse_backend_selector(Some("firecrawl")).unwrap(),
+            Some(WebSearchBackendSelector::Kind(
+                WebSearchBackendKind::FirecrawlApi
+            ))
+        );
+        assert_eq!(
             parse_backend_selector(Some("ddg")).unwrap(),
             Some(WebSearchBackendSelector::Kind(
                 WebSearchBackendKind::DuckDuckGoHtml
@@ -1450,6 +1471,39 @@ mod tests {
         assert_eq!(backend.backend_name(), "exa_api");
     }
 
+    #[test]
+    fn backend_registry_auto_prefers_tavily_before_brave_when_exa_is_absent() {
+        let registry = WebSearchBackendRegistry::from_backends(
+            WebSearchBackendSelector::Auto,
+            vec![
+                (
+                    WebSearchBackendKind::BraveApi,
+                    Arc::new(super::BraveApiSearchBackend::new(
+                        reqwest::Url::parse("https://api.search.brave.com").unwrap(),
+                        "token".to_string(),
+                    )) as Arc<dyn super::WebSearchBackend>,
+                ),
+                (
+                    WebSearchBackendKind::TavilyApi,
+                    Arc::new(TavilyApiSearchBackend::new(
+                        reqwest::Url::parse("https://api.tavily.com").unwrap(),
+                        "token".to_string(),
+                    )) as Arc<dyn super::WebSearchBackend>,
+                ),
+                (
+                    WebSearchBackendKind::FirecrawlApi,
+                    Arc::new(FirecrawlApiSearchBackend::new(
+                        reqwest::Url::parse("https://api.firecrawl.dev").unwrap(),
+                        "token".to_string(),
+                    )) as Arc<dyn super::WebSearchBackend>,
+                ),
+            ],
+        );
+
+        let (_, backend) = registry.resolve(None).unwrap();
+        assert_eq!(backend.backend_name(), "tavily_api");
+    }
+
     #[tokio::test]
     async fn web_search_backends_reports_catalog_and_default_resolution() {
         let registry = WebSearchBackendRegistry::from_backends(
@@ -1485,8 +1539,16 @@ mod tests {
         assert!(text.contains("default_selector> auto"));
         assert!(text.contains("resolved_default_backend> exa_api"));
         assert!(text.contains("backend> exa_api"));
+        assert!(text.contains("backend> tavily_api"));
+        assert!(text.contains("backend> firecrawl_api"));
         assert!(text.contains("backend> brave_api"));
         assert!(text.contains("missing_requirement> NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY"));
+        assert!(text.contains(
+            "missing_requirement> TAVILY_API_KEY or NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY"
+        ));
+        assert!(text.contains(
+            "missing_requirement> FIRECRAWL_API_KEY or NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY"
+        ));
         let structured = result.structured_content.unwrap();
         assert_eq!(structured["default_selector"], "auto");
         assert_eq!(structured["resolved_default_backend"], "exa_api");
@@ -1495,10 +1557,22 @@ mod tests {
         assert_eq!(structured["backends"][0]["name"], "exa_api");
         assert_eq!(structured["backends"][0]["configured"], true);
         assert_eq!(structured["backends"][0]["selected_by_default"], true);
-        assert_eq!(structured["backends"][1]["name"], "brave_api");
+        assert_eq!(structured["backends"][1]["name"], "tavily_api");
         assert_eq!(structured["backends"][1]["configured"], false);
         assert_eq!(
             structured["backends"][1]["missing_requirement"],
+            "TAVILY_API_KEY or NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY"
+        );
+        assert_eq!(structured["backends"][2]["name"], "firecrawl_api");
+        assert_eq!(structured["backends"][2]["configured"], false);
+        assert_eq!(
+            structured["backends"][2]["missing_requirement"],
+            "FIRECRAWL_API_KEY or NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY"
+        );
+        assert_eq!(structured["backends"][3]["name"], "brave_api");
+        assert_eq!(structured["backends"][3]["configured"], false);
+        assert_eq!(
+            structured["backends"][3]["missing_requirement"],
             "NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY"
         );
     }
@@ -1512,6 +1586,9 @@ mod tests {
     }
 
     fn brave_results(start: usize, end: usize) -> Vec<serde_json::Value> {
+        let published_at = (OffsetDateTime::now_utc() - Duration::days(1))
+            .format(&Rfc3339)
+            .unwrap();
         (start..=end)
             .map(|index| {
                 serde_json::json!({
@@ -1522,7 +1599,7 @@ mod tests {
                         format!("follow-up {index}"),
                         format!("detail {index}")
                     ],
-                    "page_age": "2026-03-25T09:00:00Z",
+                    "page_age": published_at,
                     "meta_url": {
                         "hostname": "example.com"
                     }
@@ -1644,6 +1721,9 @@ mod tests {
     #[tokio::test]
     async fn web_search_exa_backend_overfetches_for_offset_windows() {
         let server = MockServer::start().await;
+        let published_at = (OffsetDateTime::now_utc() - Duration::days(1))
+            .format(&Rfc3339)
+            .unwrap();
         Mock::given(method("POST"))
             .and(path("/search"))
             .and(header("x-api-key", "exa-token"))
@@ -1665,28 +1745,28 @@ mod tests {
                                     "url": "https://example.com/1",
                                     "summary": "summary 1",
                                     "highlights": ["highlight 1a", "highlight 1b"],
-                                    "publishedDate": "2026-03-25T09:00:00Z"
+                                    "publishedDate": published_at
                                 },
                                 {
                                     "title": "Two",
                                     "url": "https://example.com/2",
                                     "summary": "summary 2",
                                     "highlights": ["highlight 2a"],
-                                    "publishedDate": "2026-03-25T09:00:00Z"
+                                    "publishedDate": published_at
                                 },
                                 {
                                     "title": "Three",
                                     "url": "https://example.com/3",
                                     "summary": "summary 3",
                                     "highlights": ["highlight 3a", "highlight 3b"],
-                                    "publishedDate": "2026-03-25T09:00:00Z"
+                                    "publishedDate": published_at
                                 },
                                 {
                                     "title": "Four",
                                     "url": "https://example.com/4",
                                     "summary": "summary 4",
                                     "highlights": ["highlight 4a"],
-                                    "publishedDate": "2026-03-25T09:00:00Z"
+                                    "publishedDate": published_at
                                 }
                             ]
                         })
@@ -2085,23 +2165,29 @@ mod tests {
     #[tokio::test]
     async fn web_search_applies_best_effort_freshness_filter() {
         let server = MockServer::start().await;
+        let recent_pub_date = (OffsetDateTime::now_utc() - Duration::days(1))
+            .format(&Rfc2822)
+            .unwrap();
+        let old_pub_date = (OffsetDateTime::now_utc() - Duration::days(45))
+            .format(&Rfc2822)
+            .unwrap();
         Mock::given(method("GET"))
             .and(path("/search"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/rss+xml")
-                    .set_body_string(
+                    .set_body_string(format!(
                         r#"
                     <rss><channel>
                         <item>
                             <title>Recent</title>
                             <link>https://example.com/recent</link>
-                            <pubDate>Tue, 25 Mar 2026 09:00:00 GMT</pubDate>
+                            <pubDate>{recent_pub_date}</pubDate>
                         </item>
                         <item>
                             <title>Old</title>
                             <link>https://example.com/old</link>
-                            <pubDate>Tue, 25 Feb 2026 09:00:00 GMT</pubDate>
+                            <pubDate>{old_pub_date}</pubDate>
                         </item>
                         <item>
                             <title>Undated</title>
@@ -2109,7 +2195,7 @@ mod tests {
                         </item>
                     </channel></rss>
                 "#,
-                    ),
+                    )),
             )
             .mount(&server)
             .await;

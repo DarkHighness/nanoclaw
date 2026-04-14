@@ -42,6 +42,14 @@ pub mod vars {
         "ANTHROPIC_API_KEY",
         "Anthropic API key for Anthropic provider requests.",
     );
+    pub const TAVILY_API_KEY: EnvVar = EnvVar::new(
+        "TAVILY_API_KEY",
+        "Tavily API key for Tavily-hosted search requests.",
+    );
+    pub const FIRECRAWL_API_KEY: EnvVar = EnvVar::new(
+        "FIRECRAWL_API_KEY",
+        "Firecrawl API key for Firecrawl-hosted search requests.",
+    );
     pub const ANTHROPIC_BASE_URL: EnvVar = EnvVar::new(
         "ANTHROPIC_BASE_URL",
         "Anthropic API base URL override. Useful for proxies, gateways, or local-compatible endpoints.",
@@ -149,7 +157,7 @@ pub mod vars {
     );
     pub const NANOCLAW_CORE_WEB_SEARCH_BACKEND: EnvVar = EnvVar::new(
         "NANOCLAW_CORE_WEB_SEARCH_BACKEND",
-        "Search backend selection for the local web_search tool (`auto`, `bing_rss`, `brave_api`, `exa_api`, or `duckduckgo_html`). Defaults to `auto` when unset.",
+        "Search backend selection for the local web_search tool (`auto`, `bing_rss`, `brave_api`, `exa_api`, `tavily_api`, `firecrawl_api`, or `duckduckgo_html`). Defaults to `auto` when unset.",
     );
     pub const NANOCLAW_CORE_WEB_SEARCH_API_ENDPOINT: EnvVar = EnvVar::new(
         "NANOCLAW_CORE_WEB_SEARCH_API_ENDPOINT",
@@ -175,6 +183,22 @@ pub mod vars {
         "NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY",
         "API key for the Exa hosted web_search backend.",
     );
+    pub const NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_ENDPOINT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_ENDPOINT",
+        "HTTP/HTTPS API endpoint override for the Tavily hosted web_search backend.",
+    );
+    pub const NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY",
+        "API key override for the Tavily hosted web_search backend. Falls back to TAVILY_API_KEY when unset.",
+    );
+    pub const NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_ENDPOINT: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_ENDPOINT",
+        "HTTP/HTTPS API endpoint override for the Firecrawl hosted web_search backend.",
+    );
+    pub const NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY",
+        "API key override for the Firecrawl hosted web_search backend. Falls back to FIRECRAWL_API_KEY when unset.",
+    );
     pub const NANOCLAW_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT: EnvVar = EnvVar::new(
         "NANOCLAW_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT",
         "HTTP/HTTPS HTML endpoint override for the DuckDuckGo fallback web_search backend.",
@@ -186,6 +210,8 @@ pub mod vars {
         OPENAI_API_KEY,
         OPENAI_BASE_URL,
         ANTHROPIC_API_KEY,
+        TAVILY_API_KEY,
+        FIRECRAWL_API_KEY,
         ANTHROPIC_BASE_URL,
         RUST_LOG,
         NANOCLAW_CORE_PROVIDER,
@@ -219,6 +245,10 @@ pub mod vars {
         NANOCLAW_CORE_WEB_SEARCH_BRAVE_API_KEY,
         NANOCLAW_CORE_WEB_SEARCH_EXA_API_ENDPOINT,
         NANOCLAW_CORE_WEB_SEARCH_EXA_API_KEY,
+        NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_ENDPOINT,
+        NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY,
+        NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_ENDPOINT,
+        NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY,
         NANOCLAW_CORE_WEB_SEARCH_DUCKDUCKGO_ENDPOINT,
     ];
 }

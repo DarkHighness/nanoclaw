@@ -264,6 +264,9 @@ as an interactive session.
 - `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`: provider credentials
 - `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`: provider-specific API base URL overrides
 - `NANOCLAW_CORE_DISABLED_TOOLS`: comma-separated tool names removed from the final runtime registry after startup registration; unknown names are reported in startup diagnostics warnings
+- `NANOCLAW_CORE_WEB_SEARCH_BACKEND`: select `auto`, `exa_api`, `tavily_api`, `firecrawl_api`, `brave_api`, `bing_rss`, or `duckduckgo_html`
+- `NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY` / `TAVILY_API_KEY`: enable the Tavily hosted `web_search` backend
+- `NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY` / `FIRECRAWL_API_KEY`: enable the Firecrawl hosted `web_search` backend
 
 Example app-local TUI settings:
 
