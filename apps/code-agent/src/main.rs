@@ -5,11 +5,11 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use code_agent_backend::{
     AppOptions, CodeAgentUiSession, LoadedSession, PersistedSessionSearchMatch,
-    PersistedSessionSummary, SandboxFallbackNotice, SessionApprovalMode, SessionExportArtifact,
-    SessionExportKind, SessionHistoryClient, SessionStartupSnapshot, UIAsyncCommand, UIQuery,
-    build_sandbox_fallback_notice, build_session_with_approval_mode,
-    build_session_with_approval_mode_and_progress, inject_process_env, inspect_sandbox_preflight,
-    message_to_text,
+    PersistedSessionSummary, SandboxFallbackNotice, SessionApprovalMode, SessionArchiveArtifact,
+    SessionExportArtifact, SessionExportKind, SessionHistoryClient, SessionImportArtifact,
+    SessionStartupSnapshot, UIAsyncCommand, UIQuery, build_sandbox_fallback_notice,
+    build_session_with_approval_mode, build_session_with_approval_mode_and_progress,
+    inject_process_env, inspect_sandbox_preflight, message_to_text,
 };
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
@@ -60,6 +60,10 @@ enum CliCommand {
     Sessions(SessionSearchArgs),
     /// Inspect a persisted session transcript and metadata.
     Session(SessionLookupArgs),
+    /// Export a restorable session archive.
+    Export(SessionExportArgs),
+    /// Import a session archive into the local store.
+    Import(SessionImportArgs),
     /// Export persisted session events as JSONL.
     #[command(name = "export-events")]
     ExportSession(SessionExportArgs),
@@ -110,6 +114,12 @@ struct SessionExportArgs {
     args: Vec<String>,
 }
 
+#[derive(Debug, Args)]
+struct SessionImportArgs {
+    #[arg(value_name = "PATH")]
+    path: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LaunchMode {
     Default,
@@ -124,6 +134,13 @@ enum ReadOnlyCommand {
     },
     Session {
         selector: SessionSelector,
+    },
+    ExportArchive {
+        selector: SessionSelector,
+        output_path: String,
+    },
+    ImportArchive {
+        input_path: String,
     },
     ExportSession {
         selector: SessionSelector,
@@ -175,6 +192,8 @@ impl Cli {
             Some(
                 CliCommand::Sessions(_)
                 | CliCommand::Session(_)
+                | CliCommand::Export(_)
+                | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_),
             ) => {}
@@ -193,6 +212,8 @@ impl Cli {
             Some(
                 CliCommand::Sessions(_)
                 | CliCommand::Session(_)
+                | CliCommand::Export(_)
+                | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_),
             ) => Ok(LaunchMode::Default),
@@ -207,6 +228,16 @@ impl Cli {
             })),
             Some(CliCommand::Session(command)) => Ok(Some(ReadOnlyCommand::Session {
                 selector: command.selector("session")?,
+            })),
+            Some(CliCommand::Export(command)) => {
+                let (selector, output_path) = command.selector_and_path("export")?;
+                Ok(Some(ReadOnlyCommand::ExportArchive {
+                    selector,
+                    output_path,
+                }))
+            }
+            Some(CliCommand::Import(command)) => Ok(Some(ReadOnlyCommand::ImportArchive {
+                input_path: command.path.clone(),
             })),
             Some(CliCommand::ExportSession(command)) => {
                 let (selector, output_path) = command.selector_and_path("export-events")?;
@@ -335,6 +366,20 @@ async fn run_read_only_command(
                 .with_context(|| format!("missing session summary for {session_ref}"))?;
             let loaded = history.load_session(&session_ref).await?;
             write_loaded_session_details(&mut stdout, &summary, &loaded)?;
+        }
+        ReadOnlyCommand::ExportArchive {
+            selector,
+            output_path,
+        } => {
+            let session_ref = resolve_history_selector(&history, &selector, "export").await?;
+            let artifact = history
+                .export_session_archive(&session_ref, &output_path)
+                .await?;
+            write_archive_artifact(&mut stdout, &artifact)?;
+        }
+        ReadOnlyCommand::ImportArchive { input_path } => {
+            let artifact = history.import_session_archive(&input_path).await?;
+            write_import_artifact(&mut stdout, &artifact)?;
         }
         ReadOnlyCommand::ExportSession {
             selector,
@@ -570,7 +615,7 @@ fn emit_history_store_warning(history: &SessionHistoryClient) {
     let mut stderr = io::stderr().lock();
     if let Err(error) = writeln!(
         stderr,
-        "warning: {warning}\nwarning: read-only session commands are using {}",
+        "warning: {warning}\nwarning: session history commands are using {}",
         history.store_label()
     ) {
         warn!(error = %error, "failed to print session history store warning");
@@ -716,6 +761,36 @@ fn write_export_artifact(
         artifact.session_id,
         artifact.output_path.display(),
         artifact.item_count,
+    )
+}
+
+fn write_archive_artifact(
+    writer: &mut impl Write,
+    artifact: &SessionArchiveArtifact,
+) -> io::Result<()> {
+    writeln!(
+        writer,
+        "Exported archive for {} to {} ({} sessions, {} events, {} notes).",
+        artifact.root_session_id,
+        artifact.output_path.display(),
+        artifact.session_count,
+        artifact.event_count,
+        artifact.session_note_count,
+    )
+}
+
+fn write_import_artifact(
+    writer: &mut impl Write,
+    artifact: &SessionImportArtifact,
+) -> io::Result<()> {
+    writeln!(
+        writer,
+        "Imported archive {} for {} ({} sessions, {} events, {} notes).",
+        artifact.input_path.display(),
+        artifact.root_session_id,
+        artifact.session_count,
+        artifact.event_count,
+        artifact.session_note_count,
     )
 }
 
@@ -1102,6 +1177,38 @@ mod tests {
             cli.read_only_command().unwrap(),
             Some(ReadOnlyCommand::Session {
                 selector: SessionSelector::Last
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_export_archive_with_relative_path() {
+        let cli = Cli::parse_from([
+            "code-agent",
+            "export",
+            "019d8aae-c699-75c3-b9de-6890b6f4d21a",
+            "tmp/session-archive.json",
+        ]);
+
+        assert_eq!(
+            cli.read_only_command().unwrap(),
+            Some(ReadOnlyCommand::ExportArchive {
+                selector: SessionSelector::Reference(
+                    "019d8aae-c699-75c3-b9de-6890b6f4d21a".to_string()
+                ),
+                output_path: "tmp/session-archive.json".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_import_archive_path() {
+        let cli = Cli::parse_from(["code-agent", "import", "tmp/session-archive.json"]);
+
+        assert_eq!(
+            cli.read_only_command().unwrap(),
+            Some(ReadOnlyCommand::ImportArchive {
+                input_path: "tmp/session-archive.json".to_string(),
             })
         );
     }

@@ -74,7 +74,9 @@ pub use permission_request::{
 };
 pub use session::CodeAgentSession;
 pub use session_history::{message_to_text, preview_id};
-pub use session_store_history::SessionHistoryClient;
+pub use session_store_history::{
+    SessionArchiveArtifact, SessionHistoryClient, SessionImportArtifact,
+};
 pub(crate) use task_manager::SessionTaskManager;
 pub use tool_approval_policy::build_code_agent_tool_approval_policy;
 pub use user_input::{

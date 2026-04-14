@@ -5,11 +5,12 @@ use crate::backend::session_memory_note::session_memory_note_title;
 use crate::ui::{
     LoadedSession, PersistedSessionSearchMatch, PersistedSessionSummary, SessionExportArtifact,
 };
-use agent::types::SessionId;
+use agent::types::{SessionEventEnvelope, SessionEventKind, SessionId};
 use anyhow::{Context, Result, anyhow};
 use futures::{StreamExt, stream};
 use nanoclaw_config::CoreConfig;
-use std::collections::{BTreeMap, BTreeSet};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,6 +22,43 @@ use tracing::warn;
 // catalog with bounded fan-out instead of widening the store schema for a
 // frontend-friendly cue.
 const SESSION_NOTE_TITLE_LOAD_CONCURRENCY_LIMIT: usize = 8;
+const SESSION_ARCHIVE_FORMAT: &str = "nanoclaw.session-archive";
+const SESSION_ARCHIVE_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionArchiveArtifact {
+    pub root_session_id: SessionId,
+    pub output_path: PathBuf,
+    pub session_count: usize,
+    pub event_count: usize,
+    pub session_note_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionImportArtifact {
+    pub root_session_id: SessionId,
+    pub input_path: PathBuf,
+    pub session_count: usize,
+    pub event_count: usize,
+    pub session_note_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SessionArchiveDocument {
+    format: String,
+    version: u32,
+    root_session_id: SessionId,
+    sessions: Vec<SessionArchiveSession>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SessionArchiveSession {
+    session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_note: Option<String>,
+    #[serde(default)]
+    events: Vec<SessionEventEnvelope>,
+}
 
 pub struct SessionHistoryClient {
     store: Arc<dyn SessionStore>,
@@ -174,6 +212,105 @@ impl SessionHistoryClient {
         .await
     }
 
+    pub async fn export_session_archive(
+        &self,
+        session_ref: &str,
+        relative_or_absolute: &str,
+    ) -> Result<SessionArchiveArtifact> {
+        let resolved_ref = self.resolve_session_ref(session_ref).await?;
+        let archive = self
+            .build_session_archive(&SessionId::from(resolved_ref.clone()))
+            .await?;
+        let output_path = resolve_history_path(&self.workspace_root, relative_or_absolute);
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&output_path, serde_json::to_vec_pretty(&archive)?).await?;
+        let (session_count, event_count, session_note_count) = archive_stats(&archive);
+        Ok(SessionArchiveArtifact {
+            root_session_id: archive.root_session_id,
+            output_path,
+            session_count,
+            event_count,
+            session_note_count,
+        })
+    }
+
+    pub async fn import_session_archive(
+        &self,
+        relative_or_absolute: &str,
+    ) -> Result<SessionImportArtifact> {
+        let input_path = resolve_history_path(&self.workspace_root, relative_or_absolute);
+        let archive: SessionArchiveDocument = serde_json::from_slice(
+            &fs::read(&input_path)
+                .await
+                .with_context(|| format!("failed to read archive {}", input_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse archive {}", input_path.display()))?;
+        validate_archive(&archive)?;
+        self.ensure_archive_sessions_absent(&archive).await?;
+
+        let mut all_events = Vec::new();
+        for session in &archive.sessions {
+            all_events.extend(session.events.iter().cloned());
+        }
+        self.store.append_batch(all_events).await?;
+
+        for session in &archive.sessions {
+            if let Some(note) = session.session_note.as_deref() {
+                self.write_session_note_text(&session.session_id, note)
+                    .await?;
+            }
+        }
+
+        let (session_count, event_count, session_note_count) = archive_stats(&archive);
+        Ok(SessionImportArtifact {
+            root_session_id: archive.root_session_id,
+            input_path,
+            session_count,
+            event_count,
+            session_note_count,
+        })
+    }
+
+    async fn build_session_archive(
+        &self,
+        root_session_id: &SessionId,
+    ) -> Result<SessionArchiveDocument> {
+        let mut pending = VecDeque::from([root_session_id.clone()]);
+        let mut visited = BTreeSet::new();
+        let mut sessions = Vec::new();
+
+        while let Some(session_id) = pending.pop_front() {
+            if !visited.insert(session_id.clone()) {
+                continue;
+            }
+
+            let events = self
+                .store
+                .events(&session_id)
+                .await
+                .with_context(|| format!("failed to load session events for {session_id}"))?;
+            for child_session_id in referenced_child_session_ids(&events, &session_id) {
+                if !visited.contains(&child_session_id) {
+                    pending.push_back(child_session_id);
+                }
+            }
+            sessions.push(SessionArchiveSession {
+                session_note: self.load_session_note_text(&session_id).await?,
+                session_id,
+                events,
+            });
+        }
+
+        Ok(SessionArchiveDocument {
+            format: SESSION_ARCHIVE_FORMAT.to_string(),
+            version: SESSION_ARCHIVE_VERSION,
+            root_session_id: root_session_id.clone(),
+            sessions,
+        })
+    }
+
     async fn load_session_note_titles<I>(&self, session_ids: I) -> BTreeMap<SessionId, String>
     where
         I: IntoIterator<Item = SessionId>,
@@ -205,6 +342,152 @@ impl SessionHistoryClient {
         .into_iter()
         .collect()
     }
+
+    async fn load_session_note_text(&self, session_id: &SessionId) -> Result<Option<String>> {
+        let path = session_memory_note_absolute_path(&self.workspace_root, session_id);
+        match fs::read_to_string(&path).await {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error)
+                .with_context(|| format!("failed to read session note {}", path.display())),
+        }
+    }
+
+    async fn write_session_note_text(&self, session_id: &SessionId, text: &str) -> Result<()> {
+        let path = session_memory_note_absolute_path(&self.workspace_root, session_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&path, text)
+            .await
+            .with_context(|| format!("failed to write session note {}", path.display()))
+    }
+
+    async fn ensure_archive_sessions_absent(&self, archive: &SessionArchiveDocument) -> Result<()> {
+        let existing = session_history::list_sessions(&self.store).await?;
+        let duplicates = archive
+            .sessions
+            .iter()
+            .filter(|session| {
+                existing
+                    .iter()
+                    .any(|summary| summary.session_id == session.session_id)
+            })
+            .map(|session| preview_id(session.session_id.as_str()))
+            .collect::<Vec<_>>();
+        if duplicates.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "archive import would overwrite existing sessions: {}",
+                duplicates.join(", ")
+            ))
+        }
+    }
+}
+
+fn resolve_history_path(workspace_root: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        workspace_root.join(path)
+    }
+}
+
+fn archive_stats(archive: &SessionArchiveDocument) -> (usize, usize, usize) {
+    let session_count = archive.sessions.len();
+    let event_count = archive
+        .sessions
+        .iter()
+        .map(|session| session.events.len())
+        .sum();
+    let session_note_count = archive
+        .sessions
+        .iter()
+        .filter(|session| session.session_note.is_some())
+        .count();
+    (session_count, event_count, session_note_count)
+}
+
+fn validate_archive(archive: &SessionArchiveDocument) -> Result<()> {
+    if archive.format != SESSION_ARCHIVE_FORMAT {
+        return Err(anyhow!(
+            "unsupported archive format {}; expected {SESSION_ARCHIVE_FORMAT}",
+            archive.format
+        ));
+    }
+    if archive.version != SESSION_ARCHIVE_VERSION {
+        return Err(anyhow!(
+            "unsupported archive version {}; expected {SESSION_ARCHIVE_VERSION}",
+            archive.version
+        ));
+    }
+    if archive.sessions.is_empty() {
+        return Err(anyhow!("archive does not contain any sessions"));
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut found_root = false;
+    for session in &archive.sessions {
+        if !seen.insert(session.session_id.clone()) {
+            return Err(anyhow!(
+                "archive contains duplicate session {}",
+                session.session_id
+            ));
+        }
+        if session.session_id == archive.root_session_id {
+            found_root = true;
+        }
+        if session.events.is_empty() {
+            return Err(anyhow!(
+                "archive session {} does not contain any events",
+                session.session_id
+            ));
+        }
+        if let Some(mismatched) = session
+            .events
+            .iter()
+            .find(|event| event.session_id != session.session_id)
+        {
+            return Err(anyhow!(
+                "archive session {} contains mismatched event for {}",
+                session.session_id,
+                mismatched.session_id
+            ));
+        }
+    }
+    if !found_root {
+        return Err(anyhow!(
+            "archive root session {} is missing from the archive payload",
+            archive.root_session_id
+        ));
+    }
+    Ok(())
+}
+
+fn referenced_child_session_ids(
+    events: &[SessionEventEnvelope],
+    current_session_id: &SessionId,
+) -> BTreeSet<SessionId> {
+    let mut child_session_ids = BTreeSet::new();
+    for event in events {
+        match &event.event {
+            SessionEventKind::SubagentStart { handle, .. }
+            | SessionEventKind::SubagentStop { handle, .. } => {
+                if handle.session_id != *current_session_id {
+                    child_session_ids.insert(handle.session_id.clone());
+                }
+            }
+            SessionEventKind::AgentEnvelope { envelope } => {
+                if envelope.session_id != *current_session_id {
+                    child_session_ids.insert(envelope.session_id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    child_session_ids
 }
 
 fn resolve_session_reference_from_catalog(
@@ -310,11 +593,20 @@ fn prepend_session_title_preview(
 
 #[cfg(test)]
 mod tests {
-    use super::{prepend_session_title_preview, resolve_session_reference_from_catalog};
+    use super::{
+        SessionHistoryClient, prepend_session_title_preview, resolve_session_reference_from_catalog,
+    };
+    use crate::backend::session_memory_compaction::session_memory_note_absolute_path;
     use crate::ui::{PersistedSessionSearchMatch, ResumeSupport};
-    use agent::types::{SessionId, SessionSummaryTokenUsage};
+    use agent::types::{
+        AgentHandle, AgentId, AgentSessionId, AgentStatus, AgentTaskSpec, Message,
+        SessionEventEnvelope, SessionEventKind, SessionId, SessionSummaryTokenUsage,
+        SubmittedPromptSnapshot, TaskId, TaskOrigin,
+    };
+    use nanoclaw_config::CoreConfig;
     use std::collections::BTreeMap;
     use store::{SessionSearchResult, SessionSummary};
+    use tempfile::tempdir;
 
     fn session_summary(session_ref: &str) -> SessionSummary {
         SessionSummary {
@@ -388,5 +680,186 @@ mod tests {
             "workspace"
         ));
         assert_eq!(result.preview_matches.len(), 2);
+    }
+
+    fn child_task(
+        child_session_id: &SessionId,
+        child_agent_session_id: &AgentSessionId,
+    ) -> SessionEventEnvelope {
+        SessionEventEnvelope::new(
+            SessionId::from("session-root"),
+            AgentSessionId::from("agent-root"),
+            None,
+            None,
+            SessionEventKind::SubagentStart {
+                handle: AgentHandle {
+                    agent_id: AgentId::from("agent-child"),
+                    parent_agent_id: Some(AgentId::from("agent-root")),
+                    session_id: child_session_id.clone(),
+                    agent_session_id: child_agent_session_id.clone(),
+                    task_id: TaskId::from("task-child"),
+                    role: "worker".to_string(),
+                    status: AgentStatus::Running,
+                    worktree_id: None,
+                    worktree_root: None,
+                },
+                task: AgentTaskSpec {
+                    task_id: TaskId::from("task-child"),
+                    role: "worker".to_string(),
+                    prompt: "inspect child".to_string(),
+                    origin: TaskOrigin::ChildAgentBacked,
+                    steer: None,
+                    allowed_tools: Vec::new(),
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                },
+            },
+        )
+    }
+
+    async fn history_client(workspace_root: &std::path::Path) -> SessionHistoryClient {
+        SessionHistoryClient::open(&CoreConfig::default(), workspace_root)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn archive_export_and_import_round_trip_root_and_child_sessions() {
+        let export_dir = tempdir().unwrap();
+        let export_client = history_client(export_dir.path()).await;
+        let root_session_id = SessionId::from("session-root");
+        let root_agent_session_id = AgentSessionId::from("agent-root");
+        let child_session_id = SessionId::from("session-child");
+        let child_agent_session_id = AgentSessionId::from("agent-child");
+        export_client
+            .store
+            .append_batch(vec![
+                SessionEventEnvelope::new(
+                    root_session_id.clone(),
+                    root_agent_session_id.clone(),
+                    None,
+                    None,
+                    SessionEventKind::UserPromptSubmit {
+                        prompt: SubmittedPromptSnapshot::from_text("inspect archive"),
+                    },
+                ),
+                child_task(&child_session_id, &child_agent_session_id),
+                SessionEventEnvelope::new(
+                    child_session_id.clone(),
+                    child_agent_session_id.clone(),
+                    None,
+                    None,
+                    SessionEventKind::TranscriptMessage {
+                        message: Message::assistant("child transcript"),
+                    },
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let session_note_path =
+            session_memory_note_absolute_path(export_dir.path(), &root_session_id);
+        tokio::fs::create_dir_all(session_note_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &session_note_path,
+            "# Session Title\n\nImported archive title\n",
+        )
+        .await
+        .unwrap();
+
+        let export_artifact = export_client
+            .export_session_archive(root_session_id.as_str(), "tmp/archive.json")
+            .await
+            .unwrap();
+        assert_eq!(export_artifact.root_session_id, root_session_id);
+        assert_eq!(export_artifact.session_count, 2);
+        assert_eq!(export_artifact.event_count, 3);
+        assert_eq!(export_artifact.session_note_count, 1);
+
+        let import_dir = tempdir().unwrap();
+        let import_client = history_client(import_dir.path()).await;
+        let import_artifact = import_client
+            .import_session_archive(export_artifact.output_path.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(import_artifact.root_session_id, root_session_id);
+        assert_eq!(import_artifact.session_count, 2);
+        assert_eq!(import_artifact.event_count, 3);
+        assert_eq!(import_artifact.session_note_count, 1);
+
+        let imported_sessions = import_client.list_sessions().await.unwrap();
+        assert_eq!(imported_sessions.len(), 2);
+        assert!(
+            imported_sessions
+                .iter()
+                .any(|summary| summary.session_ref == root_session_id.as_str())
+        );
+        assert!(
+            imported_sessions
+                .iter()
+                .any(|summary| summary.session_ref == child_session_id.as_str())
+        );
+
+        assert_eq!(
+            import_client
+                .store
+                .events(&child_session_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(session_memory_note_absolute_path(
+                import_dir.path(),
+                &root_session_id
+            ))
+            .await
+            .unwrap(),
+            "# Session Title\n\nImported archive title\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_import_rejects_existing_session_ids() {
+        let export_dir = tempdir().unwrap();
+        let export_client = history_client(export_dir.path()).await;
+        export_client
+            .store
+            .append(SessionEventEnvelope::new(
+                SessionId::from("session-root"),
+                AgentSessionId::from("agent-root"),
+                None,
+                None,
+                SessionEventKind::TranscriptMessage {
+                    message: Message::user("hello"),
+                },
+            ))
+            .await
+            .unwrap();
+        let archive = export_client
+            .export_session_archive("session-root", "tmp/archive.json")
+            .await
+            .unwrap();
+
+        let import_dir = tempdir().unwrap();
+        let import_client = history_client(import_dir.path()).await;
+        import_client
+            .import_session_archive(archive.output_path.to_str().unwrap())
+            .await
+            .unwrap();
+
+        let error = import_client
+            .import_session_archive(archive.output_path.to_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("archive import would overwrite existing sessions")
+        );
     }
 }
