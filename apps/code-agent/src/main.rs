@@ -13,7 +13,10 @@ use code_agent_backend::{
     build_session_with_approval_mode, build_session_with_approval_mode_and_progress,
     inject_process_env, inspect_sandbox_preflight, message_to_text,
 };
-use code_agent_config::{add_core_mcp_server, delete_core_mcp_server, set_core_mcp_server_enabled};
+use code_agent_config::{
+    ManagedSkillArtifact, add_core_mcp_server, add_managed_skill, delete_core_mcp_server,
+    delete_managed_skill, set_core_mcp_server_enabled, set_managed_skill_enabled,
+};
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
     CodeAgentTui, SharedUiState, StartupLoadingScreen, confirm_unsandboxed_startup_screen,
@@ -90,6 +93,8 @@ enum CliCommand {
     Diagnostics,
     /// Manage configured MCP servers.
     Mcp(McpCommandArgs),
+    /// Manage workspace-local managed skills.
+    Skill(SkillCommandArgs),
     /// List MCP prompts exposed by connected servers.
     Prompts,
     /// List MCP resources exposed by connected servers.
@@ -148,6 +153,36 @@ struct McpAddArgs {
 
 #[derive(Debug, Args)]
 struct McpNamedArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
+}
+
+#[derive(Debug, Args)]
+struct SkillCommandArgs {
+    #[command(subcommand)]
+    command: SkillSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SkillSubcommand {
+    /// Copy a skill directory into the managed workspace root.
+    Add(SkillAddArgs),
+    /// Delete a managed skill copy.
+    Delete(SkillNamedArgs),
+    /// Re-enable a previously disabled managed skill.
+    Enable(SkillNamedArgs),
+    /// Disable a managed skill without deleting it.
+    Disable(SkillNamedArgs),
+}
+
+#[derive(Debug, Args)]
+struct SkillAddArgs {
+    #[arg(value_name = "PATH")]
+    path: String,
+}
+
+#[derive(Debug, Args)]
+struct SkillNamedArgs {
     #[arg(value_name = "NAME")]
     name: String,
 }
@@ -256,11 +291,19 @@ enum LaunchMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ManagementCommand {
     Mcp(McpManagementCommand),
+    Skill(SkillManagementCommand),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum McpManagementCommand {
     Add { server: agent::mcp::McpServerConfig },
+    Delete { name: String },
+    SetEnabled { name: String, enabled: bool },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SkillManagementCommand {
+    Add { path: String },
     Delete { name: String },
     SetEnabled { name: String, enabled: bool },
 }
@@ -371,6 +414,7 @@ impl Cli {
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
+                | CliCommand::Skill(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             ) => {}
@@ -398,6 +442,7 @@ impl Cli {
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
+                | CliCommand::Skill(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             ) => Ok(LaunchMode::Default),
@@ -409,6 +454,9 @@ impl Cli {
         match &self.command {
             Some(CliCommand::Mcp(command)) => {
                 Ok(Some(ManagementCommand::Mcp(command.management_command()?)))
+            }
+            Some(CliCommand::Skill(command)) => {
+                Ok(Some(ManagementCommand::Skill(command.management_command())))
             }
             Some(
                 CliCommand::Exec(_)
@@ -482,6 +530,7 @@ impl Cli {
                 | CliCommand::Fork(_)
                 | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
+                | CliCommand::Skill(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             )
@@ -507,6 +556,7 @@ impl Cli {
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
+                | CliCommand::Skill(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             )
@@ -533,7 +583,8 @@ impl Cli {
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
-                | CliCommand::Mcp(_),
+                | CliCommand::Mcp(_)
+                | CliCommand::Skill(_),
             )
             | None => None,
         }
@@ -570,6 +621,27 @@ impl McpCommandArgs {
                 name: command.name.clone(),
                 enabled: false,
             }),
+        }
+    }
+}
+
+impl SkillCommandArgs {
+    fn management_command(&self) -> SkillManagementCommand {
+        match &self.command {
+            SkillSubcommand::Add(command) => SkillManagementCommand::Add {
+                path: command.path.clone(),
+            },
+            SkillSubcommand::Delete(command) => SkillManagementCommand::Delete {
+                name: command.name.clone(),
+            },
+            SkillSubcommand::Enable(command) => SkillManagementCommand::SetEnabled {
+                name: command.name.clone(),
+                enabled: true,
+            },
+            SkillSubcommand::Disable(command) => SkillManagementCommand::SetEnabled {
+                name: command.name.clone(),
+                enabled: false,
+            },
         }
     }
 }
@@ -866,6 +938,24 @@ async fn run_management_command(workspace_root: PathBuf, command: ManagementComm
                     &name,
                     &path,
                     Some(enabled),
+                )?;
+            }
+        },
+        ManagementCommand::Skill(command) => match command {
+            SkillManagementCommand::Add { path } => {
+                let artifact = add_managed_skill(&workspace_root, Path::new(&path)).await?;
+                write_skill_management_artifact(&mut stdout, "Added", &artifact)?;
+            }
+            SkillManagementCommand::Delete { name } => {
+                let artifact = delete_managed_skill(&workspace_root, &name).await?;
+                write_skill_management_artifact(&mut stdout, "Deleted", &artifact)?;
+            }
+            SkillManagementCommand::SetEnabled { name, enabled } => {
+                let artifact = set_managed_skill_enabled(&workspace_root, &name, enabled).await?;
+                write_skill_management_artifact(
+                    &mut stdout,
+                    if enabled { "Enabled" } else { "Disabled" },
+                    &artifact,
                 )?;
             }
         },
@@ -1578,6 +1668,20 @@ fn write_mcp_management_artifact(
     }
 }
 
+fn write_skill_management_artifact(
+    writer: &mut impl Write,
+    verb: &str,
+    artifact: &ManagedSkillArtifact,
+) -> io::Result<()> {
+    writeln!(
+        writer,
+        "{verb} managed skill `{}` at {} (enabled: {}).",
+        artifact.skill_name,
+        artifact.skill_path.display(),
+        artifact.enabled,
+    )
+}
+
 fn write_archive_artifact(
     writer: &mut impl Write,
     artifact: &SessionArchiveArtifact,
@@ -1972,8 +2076,8 @@ mod tests {
     use super::{
         Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ManagementCommand,
         McpManagementCommand, ReadOnlyCommand, SandboxFallbackAction, SessionSelector,
-        choose_sandbox_fallback_action, format_sandbox_abort_message, format_session_counts,
-        format_token_count, launch_headless_one_shot, write_exit_summary,
+        SkillManagementCommand, choose_sandbox_fallback_action, format_sandbox_abort_message,
+        format_session_counts, format_token_count, launch_headless_one_shot, write_exit_summary,
         write_mcp_prompt_summaries, write_mcp_resource_summaries, write_session_search_results,
         write_session_summaries, write_startup_diagnostics,
     };
@@ -2113,6 +2217,33 @@ mod tests {
                 name: "docs".to_string(),
                 enabled: false,
             }))
+        );
+    }
+
+    #[test]
+    fn clap_parses_skill_add() {
+        let cli = Cli::parse_from(["code-agent", "skill", "add", "./skills/review"]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Skill(SkillManagementCommand::Add {
+                path: "./skills/review".to_string(),
+            }))
+        );
+    }
+
+    #[test]
+    fn clap_parses_skill_disable() {
+        let cli = Cli::parse_from(["code-agent", "skill", "disable", "review"]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Skill(
+                SkillManagementCommand::SetEnabled {
+                    name: "review".to_string(),
+                    enabled: false,
+                }
+            ))
         );
     }
 

@@ -207,6 +207,10 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp add docs --type s
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp disable docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp enable docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp delete docs
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill add ./my-skill
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill disable review
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill enable review
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill delete review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- diagnostics
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- prompts
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- resources
@@ -219,9 +223,15 @@ changing the workspace package name.
 
 The store-backed `sessions`, `session`, `agent-sessions`, `agent-session`,
 `tasks`, `task`, `export`, `import`, `export-events`, `export-transcript`, and
-`mcp add|delete|enable|disable` commands operate directly on workspace state,
-so they do not require a provider API key just to browse, inspect, archive,
-restore, or update persisted MCP configuration.
+`mcp add|delete|enable|disable`, plus the managed `skill add|delete|enable|disable`
+commands operate directly on workspace state, so they do not require a
+provider API key just to browse, inspect, archive, restore, or update local
+configuration.
+
+`skill` management only targets the workspace-local managed root
+`.nanoclaw/skills`. Disabling a managed skill moves it under
+`.nanoclaw/skills/.disabled`, which keeps the skill on disk without letting the
+normal skill loader surface it.
 
 The live `diagnostics`, `prompts`, and `resources` commands boot the normal
 runtime surface without entering the TUI. They therefore use the same
