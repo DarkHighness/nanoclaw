@@ -21,6 +21,7 @@ mod session_history;
 mod session_memory_compaction;
 mod session_memory_note;
 mod session_resume;
+mod session_store_history;
 mod store;
 mod task_history;
 mod task_manager;
@@ -73,6 +74,7 @@ pub use permission_request::{
 };
 pub use session::CodeAgentSession;
 pub use session_history::{message_to_text, preview_id};
+pub use session_store_history::SessionHistoryClient;
 pub(crate) use task_manager::SessionTaskManager;
 pub use tool_approval_policy::build_code_agent_tool_approval_policy;
 pub use user_input::{

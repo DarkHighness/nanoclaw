@@ -4,15 +4,18 @@ use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use code_agent_backend::{
-    AppOptions, CodeAgentUiSession, LoadedSession, SandboxFallbackNotice, SessionApprovalMode,
-    SessionStartupSnapshot, UIAsyncCommand, UIQuery, build_sandbox_fallback_notice,
-    build_session_with_approval_mode, build_session_with_approval_mode_and_progress,
-    inject_process_env, inspect_sandbox_preflight,
+    AppOptions, CodeAgentUiSession, LoadedSession, PersistedSessionSearchMatch,
+    PersistedSessionSummary, SandboxFallbackNotice, SessionApprovalMode, SessionExportArtifact,
+    SessionExportKind, SessionHistoryClient, SessionStartupSnapshot, UIAsyncCommand, UIQuery,
+    build_sandbox_fallback_notice, build_session_with_approval_mode,
+    build_session_with_approval_mode_and_progress, inject_process_env, inspect_sandbox_preflight,
+    message_to_text,
 };
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
     CodeAgentTui, SharedUiState, StartupLoadingScreen, confirm_unsandboxed_startup_screen,
 };
+use nanoclaw_config::CoreConfig;
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -53,14 +56,28 @@ enum CliCommand {
     Resume(SessionLaunchArgs),
     /// Start a fresh session seeded from a persisted session transcript.
     Fork(SessionLaunchArgs),
+    /// List persisted sessions, or search them when a query is provided.
+    Sessions(SessionSearchArgs),
+    /// Inspect a persisted session transcript and metadata.
+    Session(SessionLookupArgs),
+    /// Export persisted session events as JSONL.
+    ExportSession(SessionExportArgs),
+    /// Export a persisted session transcript as plain text.
+    ExportTranscript(SessionExportArgs),
 }
 
-#[derive(Debug, Args)]
-struct SessionLaunchArgs {
+#[derive(Debug, Args, Default)]
+struct SessionLookupArgs {
     #[arg(value_name = "SESSION_ID", conflicts_with = "last")]
     session_ref: Option<String>,
     #[arg(long, conflicts_with = "session_ref")]
     last: bool,
+}
+
+#[derive(Debug, Args)]
+struct SessionLaunchArgs {
+    #[command(flatten)]
+    selector: SessionLookupArgs,
     #[arg(
         value_name = "PROMPT",
         allow_hyphen_values = true,
@@ -69,11 +86,51 @@ struct SessionLaunchArgs {
     prompt: Vec<String>,
 }
 
+#[derive(Debug, Args, Default)]
+struct SessionSearchArgs {
+    #[arg(
+        value_name = "QUERY",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    query: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct SessionExportArgs {
+    #[arg(long)]
+    last: bool,
+    #[arg(
+        value_name = "ARG",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    args: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LaunchMode {
     Default,
     Resume(SessionSelector),
     Fork(SessionSelector),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ReadOnlyCommand {
+    Sessions {
+        query: Option<String>,
+    },
+    Session {
+        selector: SessionSelector,
+    },
+    ExportSession {
+        selector: SessionSelector,
+        output_path: String,
+    },
+    ExportTranscript {
+        selector: SessionSelector,
+        output_path: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,6 +170,12 @@ impl Cli {
                 args.extend(command.prompt.clone());
             }
             None => args.extend(self.prompt.clone()),
+            Some(
+                CliCommand::Sessions(_)
+                | CliCommand::Session(_)
+                | CliCommand::ExportSession(_)
+                | CliCommand::ExportTranscript(_),
+            ) => {}
         }
         args
     }
@@ -120,15 +183,49 @@ impl Cli {
     fn launch_mode(&self) -> Result<LaunchMode> {
         match &self.command {
             Some(CliCommand::Resume(command)) => {
-                Ok(LaunchMode::Resume(command.selector("resume")?))
+                Ok(LaunchMode::Resume(command.selector.selector("resume")?))
             }
-            Some(CliCommand::Fork(command)) => Ok(LaunchMode::Fork(command.selector("fork")?)),
+            Some(CliCommand::Fork(command)) => {
+                Ok(LaunchMode::Fork(command.selector.selector("fork")?))
+            }
+            Some(
+                CliCommand::Sessions(_)
+                | CliCommand::Session(_)
+                | CliCommand::ExportSession(_)
+                | CliCommand::ExportTranscript(_),
+            ) => Ok(LaunchMode::Default),
             None => Ok(LaunchMode::Default),
+        }
+    }
+
+    fn read_only_command(&self) -> Result<Option<ReadOnlyCommand>> {
+        match &self.command {
+            Some(CliCommand::Sessions(command)) => Ok(Some(ReadOnlyCommand::Sessions {
+                query: command.query(),
+            })),
+            Some(CliCommand::Session(command)) => Ok(Some(ReadOnlyCommand::Session {
+                selector: command.selector("session")?,
+            })),
+            Some(CliCommand::ExportSession(command)) => {
+                let (selector, output_path) = command.selector_and_path("export-session")?;
+                Ok(Some(ReadOnlyCommand::ExportSession {
+                    selector,
+                    output_path,
+                }))
+            }
+            Some(CliCommand::ExportTranscript(command)) => {
+                let (selector, output_path) = command.selector_and_path("export-transcript")?;
+                Ok(Some(ReadOnlyCommand::ExportTranscript {
+                    selector,
+                    output_path,
+                }))
+            }
+            Some(CliCommand::Resume(_) | CliCommand::Fork(_)) | None => Ok(None),
         }
     }
 }
 
-impl SessionLaunchArgs {
+impl SessionLookupArgs {
     fn selector(&self, verb: &str) -> Result<SessionSelector> {
         match (&self.session_ref, self.last) {
             (Some(session_ref), false) => Ok(SessionSelector::Reference(session_ref.clone())),
@@ -137,6 +234,30 @@ impl SessionLaunchArgs {
                 bail!("`{verb}` requires a session id or `--last`; run `--help` for usage")
             }
             (Some(_), true) => unreachable!("clap enforces selector conflicts"),
+        }
+    }
+}
+
+impl SessionSearchArgs {
+    fn query(&self) -> Option<String> {
+        let query = self.query.join(" ");
+        let query = query.trim();
+        (!query.is_empty()).then(|| query.to_string())
+    }
+}
+
+impl SessionExportArgs {
+    fn selector_and_path(&self, verb: &str) -> Result<(SessionSelector, String)> {
+        match (self.last, self.args.as_slice()) {
+            (false, [session_ref, output_path]) => Ok((
+                SessionSelector::Reference(session_ref.clone()),
+                output_path.clone(),
+            )),
+            (true, [output_path]) => Ok((SessionSelector::Last, output_path.clone())),
+            (false, _) => bail!(
+                "`{verb}` requires <session-id> <path>; use `--last <path>` to export the latest session"
+            ),
+            (true, _) => bail!("`{verb} --last` requires exactly one output path"),
         }
     }
 }
@@ -157,6 +278,15 @@ fn try_main() -> Result<()> {
     let env_map = EnvMap::from_workspace_dir(&workspace_root)?;
     inject_process_env(&env_map);
     let _tracing_guard = init_tracing(&workspace_root)?;
+    if let Some(command) = cli.read_only_command()? {
+        let core = CoreConfig::load_from_dir(&workspace_root)?;
+        let runtime = build_host_tokio_runtime(HostRuntimeLimits {
+            worker_threads: core.host.tokio_worker_threads,
+            max_blocking_threads: core.host.tokio_max_blocking_threads,
+        })
+        .context("failed to build tokio runtime")?;
+        return runtime.block_on(run_read_only_command(workspace_root, core, command));
+    }
     let options =
         AppOptions::from_env_and_args_iter(&workspace_root, &env_map, cli.app_option_args())?;
     let launch_mode = cli.launch_mode()?;
@@ -173,6 +303,58 @@ fn try_main() -> Result<()> {
     .context("failed to build tokio runtime")?;
     let local = tokio::task::LocalSet::new();
     runtime.block_on(local.run_until(async_main(workspace_root, options, launch_mode)))
+}
+
+async fn run_read_only_command(
+    workspace_root: PathBuf,
+    core: CoreConfig,
+    command: ReadOnlyCommand,
+) -> Result<()> {
+    let history = SessionHistoryClient::open(&core, &workspace_root).await?;
+    emit_history_store_warning(&history);
+    let mut stdout = io::stdout().lock();
+    match command {
+        ReadOnlyCommand::Sessions { query } => {
+            if let Some(query) = query {
+                let matches = history.search_sessions(&query).await?;
+                write_session_search_results(&mut stdout, &matches)?;
+            } else {
+                let sessions = history.list_sessions().await?;
+                write_session_summaries(&mut stdout, &sessions)?;
+            }
+        }
+        ReadOnlyCommand::Session { selector } => {
+            let session_ref = resolve_history_selector(&history, &selector, "inspect").await?;
+            let summary = history
+                .list_sessions()
+                .await?
+                .into_iter()
+                .find(|summary| summary.session_ref == session_ref)
+                .with_context(|| format!("missing session summary for {session_ref}"))?;
+            let loaded = history.load_session(&session_ref).await?;
+            write_loaded_session_details(&mut stdout, &summary, &loaded)?;
+        }
+        ReadOnlyCommand::ExportSession {
+            selector,
+            output_path,
+        } => {
+            let session_ref = resolve_history_selector(&history, &selector, "export").await?;
+            let artifact = history.export_session(&session_ref, &output_path).await?;
+            write_export_artifact(&mut stdout, &artifact)?;
+        }
+        ReadOnlyCommand::ExportTranscript {
+            selector,
+            output_path,
+        } => {
+            let session_ref = resolve_history_selector(&history, &selector, "export").await?;
+            let artifact = history
+                .export_session_transcript(&session_ref, &output_path)
+                .await?;
+            write_export_artifact(&mut stdout, &artifact)?;
+        }
+    }
+    stdout.flush()?;
+    Ok(())
 }
 
 fn print_fatal_error(error: &anyhow::Error) {
@@ -363,6 +545,206 @@ async fn resolve_session_selector(
             .map(|summary| summary.session_ref)
             .with_context(|| format!("no persisted sessions available to {verb}")),
     }
+}
+
+async fn resolve_history_selector(
+    history: &SessionHistoryClient,
+    selector: &SessionSelector,
+    verb: &str,
+) -> Result<String> {
+    match selector {
+        SessionSelector::Reference(session_ref) => history.resolve_session_ref(session_ref).await,
+        SessionSelector::Last => history
+            .resolve_last_session_ref()
+            .await
+            .with_context(|| format!("no persisted sessions available to {verb}")),
+    }
+}
+
+fn emit_history_store_warning(history: &SessionHistoryClient) {
+    let Some(warning) = history.store_warning() else {
+        return;
+    };
+    let mut stderr = io::stderr().lock();
+    if let Err(error) = writeln!(
+        stderr,
+        "warning: {warning}\nwarning: read-only session commands are using {}",
+        history.store_label()
+    ) {
+        warn!(error = %error, "failed to print session history store warning");
+    }
+}
+
+fn write_session_summaries(
+    writer: &mut impl Write,
+    sessions: &[PersistedSessionSummary],
+) -> io::Result<()> {
+    if sessions.is_empty() {
+        writeln!(writer, "No persisted sessions found.")?;
+        return Ok(());
+    }
+
+    for (index, summary) in sessions.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(
+            writer,
+            "{}  {}",
+            summary.session_ref,
+            session_title_or_prompt(summary)
+        )?;
+        writeln!(writer, "  {}", format_session_counts(summary))?;
+    }
+    Ok(())
+}
+
+fn write_session_search_results(
+    writer: &mut impl Write,
+    matches: &[PersistedSessionSearchMatch],
+) -> io::Result<()> {
+    if matches.is_empty() {
+        writeln!(writer, "No persisted sessions matched.")?;
+        return Ok(());
+    }
+
+    for (index, entry) in matches.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(
+            writer,
+            "{}  {}",
+            entry.summary.session_ref,
+            session_title_or_prompt(&entry.summary)
+        )?;
+        writeln!(
+            writer,
+            "  {} · {} matched events",
+            format_session_counts(&entry.summary),
+            entry.matched_event_count,
+        )?;
+        for preview in &entry.preview_matches {
+            writeln!(writer, "  match: {preview}")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_loaded_session_details(
+    writer: &mut impl Write,
+    summary: &PersistedSessionSummary,
+    loaded: &LoadedSession,
+) -> io::Result<()> {
+    writeln!(writer, "Session")?;
+    writeln!(writer, "  ref: {}", summary.session_ref)?;
+    if let Some(session_title) = summary.session_title.as_deref() {
+        writeln!(writer, "  title: {session_title}")?;
+    }
+    if let Some(prompt) = summary.last_user_prompt.as_deref() {
+        writeln!(writer, "  last prompt: {prompt}")?;
+    }
+    writeln!(writer, "  {}", format_session_counts(summary))?;
+    if let Some(window) = loaded
+        .token_usage
+        .session
+        .as_ref()
+        .and_then(|session_usage| session_usage.ledger.context_window)
+    {
+        writeln!(
+            writer,
+            "  context: {} / {}",
+            format_token_count(window.used_tokens as u64),
+            format_token_count(window.max_tokens as u64),
+        )?;
+    }
+    if !loaded.token_usage.aggregate_usage.is_zero() {
+        let usage = loaded.token_usage.aggregate_usage;
+        writeln!(
+            writer,
+            "  total tokens: in={} out={} prefill={} decode={} cache={}",
+            format_token_count(usage.input_tokens),
+            format_token_count(usage.output_tokens),
+            format_token_count(usage.prefill_tokens),
+            format_token_count(usage.decode_tokens),
+            format_token_count(usage.cache_read_tokens),
+        )?;
+    }
+    if !loaded.agent_session_ids.is_empty() {
+        writeln!(
+            writer,
+            "  runtime sessions: {}",
+            loaded
+                .agent_session_ids
+                .iter()
+                .map(|agent_session_id| agent_session_id.as_str().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+    }
+    if loaded.transcript.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Transcript")?;
+        writeln!(writer, "  <empty>")?;
+        return Ok(());
+    }
+
+    writeln!(writer)?;
+    writeln!(writer, "Transcript")?;
+    for (index, message) in loaded.transcript.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(writer, "{}", message_to_text(message))?;
+    }
+    Ok(())
+}
+
+fn write_export_artifact(
+    writer: &mut impl Write,
+    artifact: &SessionExportArtifact,
+) -> io::Result<()> {
+    let kind = match artifact.kind {
+        SessionExportKind::EventsJsonl => "events",
+        SessionExportKind::TranscriptText => "transcript",
+    };
+    writeln!(
+        writer,
+        "Exported {kind} for {} to {} ({} items).",
+        artifact.session_id,
+        artifact.output_path.display(),
+        artifact.item_count,
+    )
+}
+
+fn session_title_or_prompt(summary: &PersistedSessionSummary) -> &str {
+    summary
+        .session_title
+        .as_deref()
+        .or(summary.last_user_prompt.as_deref())
+        .unwrap_or("no prompt yet")
+}
+
+fn format_session_counts(summary: &PersistedSessionSummary) -> String {
+    let mut rendered = format!(
+        "{} messages · {} events · {} agent sessions",
+        format_token_count(summary.transcript_message_count as u64),
+        format_token_count(summary.event_count as u64),
+        format_token_count(summary.worker_session_count as u64),
+    );
+    if let Some(token_usage) = summary
+        .token_usage
+        .as_ref()
+        .filter(|token_usage| !token_usage.is_zero())
+    {
+        rendered.push_str(&format!(
+            " · tokens in={} out={} cache={}",
+            format_token_count(token_usage.cumulative_usage.input_tokens),
+            format_token_count(token_usage.cumulative_usage.output_tokens),
+            format_token_count(token_usage.cumulative_usage.cache_read_tokens),
+        ));
+    }
+    rendered
 }
 
 async fn emit_ui_exit_summary(session: &CodeAgentUiSession) {
@@ -578,21 +960,23 @@ mod diagnostic_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, LaunchMode, SandboxFallbackAction, SessionSelector, choose_sandbox_fallback_action,
-        format_sandbox_abort_message, format_token_count, launch_headless_one_shot,
-        write_exit_summary,
+        Cli, LaunchMode, ReadOnlyCommand, SandboxFallbackAction, SessionSelector,
+        choose_sandbox_fallback_action, format_sandbox_abort_message, format_session_counts,
+        format_token_count, launch_headless_one_shot, write_exit_summary,
+        write_session_search_results, write_session_summaries,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::runtime::SubagentProfileResolver;
     use agent::tools::{NetworkPolicy, SandboxMode, SubagentLaunchSpec};
-    use agent::types::TokenUsage;
     use agent::types::{AgentTaskSpec, HookEvent, HookHandler, HookRegistration, HttpHookHandler};
+    use agent::types::{SessionSummaryTokenUsage, TokenUsage};
     use agent_env::EnvMap;
     use clap::Parser;
     use code_agent_backend::{
-        AppOptions, CodeAgentSubagentProfileResolver, SandboxFallbackNotice, build_sandbox_policy,
+        AppOptions, CodeAgentSubagentProfileResolver, PersistedSessionSearchMatch,
+        PersistedSessionSummary, ResumeSupport, SandboxFallbackNotice, build_sandbox_policy,
         dedup_mcp_servers, driver_host_output_lines, merge_driver_host_inputs, parse_bool_flag,
         resolve_mcp_servers, tool_context_for_profile,
     };
@@ -616,6 +1000,30 @@ mod tests {
         assert!(!parse_bool_flag("off").unwrap());
         assert!(parse_bool_flag("1").unwrap());
         assert!(parse_bool_flag("maybe").is_err());
+    }
+
+    fn persisted_summary(session_ref: &str) -> PersistedSessionSummary {
+        PersistedSessionSummary {
+            session_ref: session_ref.to_string(),
+            first_timestamp_ms: 1,
+            last_timestamp_ms: 2,
+            event_count: 12,
+            worker_session_count: 3,
+            transcript_message_count: 7,
+            session_title: Some("Session title".to_string()),
+            last_user_prompt: Some("inspect repository".to_string()),
+            token_usage: Some(SessionSummaryTokenUsage {
+                context_window: None,
+                cumulative_usage: TokenUsage {
+                    input_tokens: 1_234,
+                    output_tokens: 56,
+                    prefill_tokens: 0,
+                    decode_tokens: 0,
+                    cache_read_tokens: 789,
+                },
+            }),
+            resume_support: ResumeSupport::Reattachable,
+        }
     }
 
     #[test]
@@ -673,10 +1081,105 @@ mod tests {
     }
 
     #[test]
+    fn clap_parses_sessions_search_query() {
+        let cli = Cli::parse_from(["code-agent", "sessions", "recent", "planner", "work"]);
+
+        assert_eq!(
+            cli.read_only_command().unwrap(),
+            Some(ReadOnlyCommand::Sessions {
+                query: Some("recent planner work".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_session_last_lookup() {
+        let cli = Cli::parse_from(["code-agent", "session", "--last"]);
+
+        assert_eq!(
+            cli.read_only_command().unwrap(),
+            Some(ReadOnlyCommand::Session {
+                selector: SessionSelector::Last
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_export_transcript_with_relative_path() {
+        let cli = Cli::parse_from([
+            "code-agent",
+            "export-transcript",
+            "019d8aae-c699-75c3-b9de-6890b6f4d21a",
+            "tmp/session.txt",
+        ]);
+
+        assert_eq!(
+            cli.read_only_command().unwrap(),
+            Some(ReadOnlyCommand::ExportTranscript {
+                selector: SessionSelector::Reference(
+                    "019d8aae-c699-75c3-b9de-6890b6f4d21a".to_string()
+                ),
+                output_path: "tmp/session.txt".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn token_counts_render_with_grouping() {
         assert_eq!(format_token_count(0), "0");
         assert_eq!(format_token_count(965650), "965,650");
         assert_eq!(format_token_count(2672768), "2,672,768");
+    }
+
+    #[test]
+    fn session_count_summary_includes_grouped_token_usage() {
+        assert_eq!(
+            format_session_counts(&persisted_summary("session-a")),
+            "7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789"
+        );
+    }
+
+    #[test]
+    fn session_summary_writer_renders_full_ids() {
+        let mut output = Vec::new();
+        write_session_summaries(&mut output, &[persisted_summary("session-a")]).unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert_eq!(
+            rendered,
+            concat!(
+                "session-a  Session title\n",
+                "  7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789\n",
+            )
+        );
+    }
+
+    #[test]
+    fn session_search_writer_includes_match_previews() {
+        let mut output = Vec::new();
+        write_session_search_results(
+            &mut output,
+            &[PersistedSessionSearchMatch {
+                summary: persisted_summary("session-a"),
+                matched_event_count: 2,
+                preview_matches: vec![
+                    "session title: Session title".to_string(),
+                    "user> inspect repository".to_string(),
+                ],
+            }],
+        )
+        .unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert_eq!(
+            rendered,
+            concat!(
+                "session-a  Session title\n",
+                "  7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789 · 2 matched events\n",
+                "  match: session title: Session title\n",
+                "  match: user> inspect repository\n",
+            )
+        );
     }
 
     #[test]

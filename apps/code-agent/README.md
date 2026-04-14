@@ -188,12 +188,21 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- resume 019d8aae-c699-
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- resume --last
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- fork 019d8aae-c699-75c3-b9de-6890b6f4d21a
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- fork --last
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- sessions
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- sessions "prompt text"
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- session --last
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-session --last tmp/session.jsonl
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-transcript 019d8aae-c699-75c3-b9de-6890b6f4d21a tmp/session.txt
 ```
 
 On exit, the app prints aggregate token usage plus resume and fork hints for the
 active session to stderr. The command name in that hint follows the executable
 you launched, so packaged installs can surface `nanoclaw resume ...` without
 changing the workspace package name.
+
+The read-only `sessions`, `session`, `export-session`, and `export-transcript`
+commands inspect the persisted session store directly, so they do not require a
+provider API key just to browse or export history.
 
 ## Environment
 
