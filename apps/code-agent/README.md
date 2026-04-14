@@ -203,8 +203,11 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- export --last tmp/ses
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- import tmp/session-archive.json
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-events --last tmp/session.jsonl
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-transcript 019d8aae-c699-75c3-b9de-6890b6f4d21a tmp/session.txt
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp add docs --type stdio --env TOKEN=secret -- npx -y remote-mcp
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp disable docs
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp enable docs
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp delete docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- diagnostics
-cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- prompts
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- resources
 ```
@@ -215,13 +218,13 @@ you launched, so packaged installs can surface `nanoclaw resume ...` without
 changing the workspace package name.
 
 The store-backed `sessions`, `session`, `agent-sessions`, `agent-session`,
-`tasks`, `task`, `export`, `import`, `export-events`, and `export-transcript`
-commands operate directly on the persisted session store, so they do not
-require a provider API key just to browse, inspect, archive, or restore
-history.
+`tasks`, `task`, `export`, `import`, `export-events`, `export-transcript`, and
+`mcp add|delete|enable|disable` commands operate directly on workspace state,
+so they do not require a provider API key just to browse, inspect, archive,
+restore, or update persisted MCP configuration.
 
-The live `diagnostics`, `mcp`, `prompts`, and `resources` commands boot the
-normal runtime surface without entering the TUI. They therefore use the same
+The live `diagnostics`, `prompts`, and `resources` commands boot the normal
+runtime surface without entering the TUI. They therefore use the same
 workspace config, sandbox checks, plugin activation, and MCP connection setup
 as an interactive session.
 

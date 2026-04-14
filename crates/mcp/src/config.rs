@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use types::McpServerName;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum McpTransportConfig {
@@ -23,5 +27,7 @@ pub enum McpTransportConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: McpServerName,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub transport: McpTransportConfig,
 }

@@ -1,8 +1,8 @@
 use agent::AgentWorkspaceLayout;
 use agent::runtime::{HostRuntimeLimits, build_host_tokio_runtime};
 use agent_env::EnvMap;
-use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use anyhow::{Context, Result, anyhow, bail};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use code_agent_backend::{
     AppOptions, CodeAgentUiSession, LoadedAgentSession, LoadedSession, LoadedTask,
     McpPromptSummary, McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary,
@@ -13,11 +13,13 @@ use code_agent_backend::{
     build_session_with_approval_mode, build_session_with_approval_mode_and_progress,
     inject_process_env, inspect_sandbox_preflight, message_to_text,
 };
+use code_agent_config::{add_core_mcp_server, delete_core_mcp_server, set_core_mcp_server_enabled};
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
     CodeAgentTui, SharedUiState, StartupLoadingScreen, confirm_unsandboxed_startup_screen,
 };
 use nanoclaw_config::CoreConfig;
+use std::collections::BTreeMap;
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -86,12 +88,68 @@ enum CliCommand {
     ExportTranscript(SessionExportArgs),
     /// Print the current startup diagnostics snapshot.
     Diagnostics,
-    /// List connected MCP servers.
-    Mcp,
+    /// Manage configured MCP servers.
+    Mcp(McpCommandArgs),
     /// List MCP prompts exposed by connected servers.
     Prompts,
     /// List MCP resources exposed by connected servers.
     Resources,
+}
+
+#[derive(Debug, Args)]
+struct McpCommandArgs {
+    #[command(subcommand)]
+    command: McpSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum McpSubcommand {
+    /// Add a configured MCP server.
+    Add(McpAddArgs),
+    /// Delete a configured MCP server.
+    Delete(McpNamedArgs),
+    /// Enable a configured MCP server.
+    Enable(McpNamedArgs),
+    /// Disable a configured MCP server.
+    Disable(McpNamedArgs),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum McpAddTransportKind {
+    Stdio,
+    Http,
+}
+
+#[derive(Debug, Args)]
+struct McpAddArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[arg(long = "type", value_enum)]
+    transport: McpAddTransportKind,
+    #[arg(long, value_name = "COMMAND")]
+    command: Option<String>,
+    #[arg(long = "arg", value_name = "ARG")]
+    args: Vec<String>,
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    env: Vec<(String, String)>,
+    #[arg(long, value_name = "PATH")]
+    cwd: Option<String>,
+    #[arg(long, value_name = "URL")]
+    url: Option<String>,
+    #[arg(long = "header", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    headers: Vec<(String, String)>,
+    #[arg(
+        value_name = "COMMAND",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    command_argv: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct McpNamedArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
 }
 
 #[derive(Debug, Args, Default)]
@@ -196,6 +254,18 @@ enum LaunchMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+enum ManagementCommand {
+    Mcp(McpManagementCommand),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum McpManagementCommand {
+    Add { server: agent::mcp::McpServerConfig },
+    Delete { name: String },
+    SetEnabled { name: String, enabled: bool },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ReadOnlyCommand {
     Sessions {
         query: Option<String>,
@@ -235,7 +305,6 @@ enum ReadOnlyCommand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LiveInspectCommand {
     Diagnostics,
-    Mcp,
     Prompts,
     Resources,
 }
@@ -301,7 +370,7 @@ impl Cli {
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Diagnostics
-                | CliCommand::Mcp
+                | CliCommand::Mcp(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             ) => {}
@@ -328,11 +397,38 @@ impl Cli {
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Diagnostics
-                | CliCommand::Mcp
+                | CliCommand::Mcp(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             ) => Ok(LaunchMode::Default),
             None => Ok(LaunchMode::Default),
+        }
+    }
+
+    fn management_command(&self) -> Result<Option<ManagementCommand>> {
+        match &self.command {
+            Some(CliCommand::Mcp(command)) => {
+                Ok(Some(ManagementCommand::Mcp(command.management_command()?)))
+            }
+            Some(
+                CliCommand::Exec(_)
+                | CliCommand::Resume(_)
+                | CliCommand::Fork(_)
+                | CliCommand::Sessions(_)
+                | CliCommand::Session(_)
+                | CliCommand::AgentSessions(_)
+                | CliCommand::AgentSession(_)
+                | CliCommand::Tasks(_)
+                | CliCommand::Task(_)
+                | CliCommand::Export(_)
+                | CliCommand::Import(_)
+                | CliCommand::ExportSession(_)
+                | CliCommand::ExportTranscript(_)
+                | CliCommand::Diagnostics
+                | CliCommand::Prompts
+                | CliCommand::Resources,
+            )
+            | None => Ok(None),
         }
     }
 
@@ -385,7 +481,7 @@ impl Cli {
                 CliCommand::Resume(_)
                 | CliCommand::Fork(_)
                 | CliCommand::Diagnostics
-                | CliCommand::Mcp
+                | CliCommand::Mcp(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             )
@@ -410,7 +506,7 @@ impl Cli {
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Diagnostics
-                | CliCommand::Mcp
+                | CliCommand::Mcp(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             )
@@ -421,7 +517,6 @@ impl Cli {
     fn live_inspect_command(&self) -> Option<LiveInspectCommand> {
         match self.command {
             Some(CliCommand::Diagnostics) => Some(LiveInspectCommand::Diagnostics),
-            Some(CliCommand::Mcp) => Some(LiveInspectCommand::Mcp),
             Some(CliCommand::Prompts) => Some(LiveInspectCommand::Prompts),
             Some(CliCommand::Resources) => Some(LiveInspectCommand::Resources),
             Some(
@@ -437,7 +532,8 @@ impl Cli {
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
-                | CliCommand::ExportTranscript(_),
+                | CliCommand::ExportTranscript(_)
+                | CliCommand::Mcp(_),
             )
             | None => None,
         }
@@ -454,6 +550,101 @@ impl SessionLookupArgs {
             }
             (Some(_), true) => unreachable!("clap enforces selector conflicts"),
         }
+    }
+}
+
+impl McpCommandArgs {
+    fn management_command(&self) -> Result<McpManagementCommand> {
+        match &self.command {
+            McpSubcommand::Add(command) => Ok(McpManagementCommand::Add {
+                server: command.server_config()?,
+            }),
+            McpSubcommand::Delete(command) => Ok(McpManagementCommand::Delete {
+                name: command.name.clone(),
+            }),
+            McpSubcommand::Enable(command) => Ok(McpManagementCommand::SetEnabled {
+                name: command.name.clone(),
+                enabled: true,
+            }),
+            McpSubcommand::Disable(command) => Ok(McpManagementCommand::SetEnabled {
+                name: command.name.clone(),
+                enabled: false,
+            }),
+        }
+    }
+}
+
+impl McpAddArgs {
+    fn server_config(&self) -> Result<agent::mcp::McpServerConfig> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            bail!("`mcp add` requires a non-empty server name");
+        }
+        let transport = match self.transport {
+            McpAddTransportKind::Stdio => self.stdio_transport()?,
+            McpAddTransportKind::Http => self.http_transport()?,
+        };
+        Ok(agent::mcp::McpServerConfig {
+            name: name.into(),
+            enabled: true,
+            transport,
+        })
+    }
+
+    fn stdio_transport(&self) -> Result<agent::mcp::McpTransportConfig> {
+        if self.url.is_some() {
+            bail!("`mcp add --type stdio` does not accept `--url`");
+        }
+        if !self.headers.is_empty() {
+            bail!("`mcp add --type stdio` does not accept `--header`");
+        }
+        let (command, args) = if !self.command_argv.is_empty() {
+            if self.command.is_some() || !self.args.is_empty() {
+                bail!(
+                    "`mcp add --type stdio` accepts either `--command/--arg` or a trailing `-- <command> [args...]`, not both"
+                );
+            }
+            (
+                self.command_argv[0].clone(),
+                self.command_argv[1..].to_vec(),
+            )
+        } else {
+            let command = self.command.clone().ok_or_else(|| {
+                anyhow!("`mcp add --type stdio` requires `--command` or `-- <command>`")
+            })?;
+            (command, self.args.clone())
+        };
+        if command.trim().is_empty() {
+            bail!("`mcp add --type stdio` requires a non-empty command");
+        }
+        Ok(agent::mcp::McpTransportConfig::Stdio {
+            command,
+            args,
+            env: self.env.iter().cloned().collect::<BTreeMap<_, _>>(),
+            cwd: self.cwd.clone(),
+        })
+    }
+
+    fn http_transport(&self) -> Result<agent::mcp::McpTransportConfig> {
+        if self.command.is_some()
+            || !self.args.is_empty()
+            || !self.env.is_empty()
+            || self.cwd.is_some()
+            || !self.command_argv.is_empty()
+        {
+            bail!("`mcp add --type http` only accepts `--url` and optional `--header KEY=VALUE`");
+        }
+        let url = self
+            .url
+            .clone()
+            .ok_or_else(|| anyhow!("`mcp add --type http` requires `--url`"))?;
+        if url.trim().is_empty() {
+            bail!("`mcp add --type http` requires a non-empty URL");
+        }
+        Ok(agent::mcp::McpTransportConfig::StreamableHttp {
+            url,
+            headers: self.headers.iter().cloned().collect::<BTreeMap<_, _>>(),
+        })
     }
 }
 
@@ -552,6 +743,17 @@ impl SessionExportArgs {
     }
 }
 
+fn parse_key_value_arg(raw: &str) -> Result<(String, String), String> {
+    let Some((key, value)) = raw.split_once('=') else {
+        return Err("expected KEY=VALUE".to_string());
+    };
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("expected non-empty KEY in KEY=VALUE".to_string());
+    }
+    Ok((key.to_string(), value.to_string()))
+}
+
 fn main() -> ExitCode {
     match try_main() {
         Ok(()) => ExitCode::SUCCESS,
@@ -568,6 +770,11 @@ fn try_main() -> Result<()> {
     let env_map = EnvMap::from_workspace_dir(&workspace_root)?;
     inject_process_env(&env_map);
     let _tracing_guard = init_tracing(&workspace_root)?;
+    if let Some(command) = cli.management_command()? {
+        let runtime = build_host_tokio_runtime(HostRuntimeLimits::default())
+            .context("failed to build tokio runtime")?;
+        return runtime.block_on(run_management_command(workspace_root, command));
+    }
     if let Some(command) = cli.read_only_command()? {
         let core = CoreConfig::load_from_dir(&workspace_root)?;
         let runtime = build_host_tokio_runtime(HostRuntimeLimits {
@@ -631,6 +838,40 @@ fn try_main() -> Result<()> {
     .context("failed to build tokio runtime")?;
     let local = tokio::task::LocalSet::new();
     runtime.block_on(local.run_until(async_main(workspace_root, options, launch_mode)))
+}
+
+async fn run_management_command(workspace_root: PathBuf, command: ManagementCommand) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    match command {
+        ManagementCommand::Mcp(command) => match command {
+            McpManagementCommand::Add { server } => {
+                let path = add_core_mcp_server(&workspace_root, server.clone())?;
+                write_mcp_management_artifact(
+                    &mut stdout,
+                    "Added",
+                    server.name.as_str(),
+                    &path,
+                    Some(server.enabled),
+                )?;
+            }
+            McpManagementCommand::Delete { name } => {
+                let path = delete_core_mcp_server(&workspace_root, &name)?;
+                write_mcp_management_artifact(&mut stdout, "Deleted", &name, &path, None)?;
+            }
+            McpManagementCommand::SetEnabled { name, enabled } => {
+                let path = set_core_mcp_server_enabled(&workspace_root, &name, enabled)?;
+                write_mcp_management_artifact(
+                    &mut stdout,
+                    if enabled { "Enabled" } else { "Disabled" },
+                    &name,
+                    &path,
+                    Some(enabled),
+                )?;
+            }
+        },
+    }
+    stdout.flush()?;
+    Ok(())
 }
 
 async fn run_read_only_command(
@@ -733,10 +974,6 @@ async fn run_live_inspection_command(
     match command {
         LiveInspectCommand::Diagnostics => {
             write_startup_diagnostics(&mut stdout, &session.startup_diagnostics())?;
-        }
-        LiveInspectCommand::Mcp => {
-            let servers = session.list_mcp_servers().await;
-            write_mcp_server_summaries(&mut stdout, &servers)?;
         }
         LiveInspectCommand::Prompts => {
             let prompts = session.list_mcp_prompts().await;
@@ -1319,6 +1556,28 @@ fn write_export_artifact(
     )
 }
 
+fn write_mcp_management_artifact(
+    writer: &mut impl Write,
+    verb: &str,
+    name: &str,
+    config_path: &Path,
+    enabled: Option<bool>,
+) -> io::Result<()> {
+    match enabled {
+        Some(enabled) => writeln!(
+            writer,
+            "{verb} MCP server `{name}` in {} (enabled: {}).",
+            config_path.display(),
+            enabled,
+        ),
+        None => writeln!(
+            writer,
+            "{verb} MCP server `{name}` from {}.",
+            config_path.display(),
+        ),
+    }
+}
+
 fn write_archive_artifact(
     writer: &mut impl Write,
     artifact: &SessionArchiveArtifact,
@@ -1393,20 +1652,6 @@ fn write_startup_diagnostics(
         for diagnostic in &snapshot.diagnostics {
             writeln!(writer, "  {diagnostic}")?;
         }
-    }
-    Ok(())
-}
-
-fn write_mcp_server_summaries(
-    writer: &mut impl Write,
-    servers: &[McpServerSummary],
-) -> io::Result<()> {
-    if servers.is_empty() {
-        writeln!(writer, "No MCP servers connected.")?;
-        return Ok(());
-    }
-    for server in servers {
-        write_mcp_server_summary_line(writer, server)?;
     }
     Ok(())
 }
@@ -1725,12 +1970,12 @@ mod diagnostic_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ReadOnlyCommand,
-        SandboxFallbackAction, SessionSelector, choose_sandbox_fallback_action,
-        format_sandbox_abort_message, format_session_counts, format_token_count,
-        launch_headless_one_shot, write_exit_summary, write_mcp_prompt_summaries,
-        write_mcp_resource_summaries, write_session_search_results, write_session_summaries,
-        write_startup_diagnostics,
+        Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ManagementCommand,
+        McpManagementCommand, ReadOnlyCommand, SandboxFallbackAction, SessionSelector,
+        choose_sandbox_fallback_action, format_sandbox_abort_message, format_session_counts,
+        format_token_count, launch_headless_one_shot, write_exit_summary,
+        write_mcp_prompt_summaries, write_mcp_resource_summaries, write_session_search_results,
+        write_session_summaries, write_startup_diagnostics,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
@@ -1819,6 +2064,55 @@ mod tests {
                 launch_mode: LaunchMode::Default,
                 prompt: "inspect repository".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn clap_parses_mcp_add_stdio_with_trailing_command() {
+        let cli = Cli::parse_from([
+            "code-agent",
+            "mcp",
+            "add",
+            "docs",
+            "--type",
+            "stdio",
+            "--env",
+            "TOKEN=secret",
+            "--",
+            "npx",
+            "-y",
+            "remote-mcp",
+        ]);
+
+        let Some(ManagementCommand::Mcp(McpManagementCommand::Add { server })) =
+            cli.management_command().unwrap()
+        else {
+            panic!("expected MCP management command");
+        };
+
+        assert_eq!(server.name.as_str(), "docs");
+        assert!(server.enabled);
+        assert_eq!(
+            server.transport,
+            McpTransportConfig::Stdio {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "remote-mcp".to_string()],
+                env: BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
+                cwd: None,
+            }
+        );
+    }
+
+    #[test]
+    fn clap_parses_mcp_disable() {
+        let cli = Cli::parse_from(["code-agent", "mcp", "disable", "docs"]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Mcp(McpManagementCommand::SetEnabled {
+                name: "docs".to_string(),
+                enabled: false,
+            }))
         );
     }
 
@@ -2313,6 +2607,7 @@ mod tests {
             }],
             vec![McpServerConfig {
                 name: "existing-mcp".into(),
+                enabled: true,
                 transport: McpTransportConfig::Stdio {
                     command: "stdio-server".to_string(),
                     args: Vec::new(),
@@ -2337,6 +2632,7 @@ mod tests {
                 }],
                 mcp_servers: vec![McpServerConfig {
                     name: "driver-mcp".into(),
+                    enabled: true,
                     transport: McpTransportConfig::StreamableHttp {
                         url: "https://example.test/mcp".to_string(),
                         headers: BTreeMap::new(),
@@ -2564,6 +2860,7 @@ mod tests {
             }],
             vec![McpServerConfig {
                 name: "existing-mcp".into(),
+                enabled: true,
                 transport: McpTransportConfig::Stdio {
                     command: "stdio-server".to_string(),
                     args: Vec::new(),
@@ -2624,6 +2921,7 @@ mod tests {
             &[
                 McpServerConfig {
                     name: "dup".into(),
+                    enabled: true,
                     transport: McpTransportConfig::Stdio {
                         command: "first".to_string(),
                         args: Vec::new(),
@@ -2633,6 +2931,7 @@ mod tests {
                 },
                 McpServerConfig {
                     name: "dup".into(),
+                    enabled: true,
                     transport: McpTransportConfig::Stdio {
                         command: "second".to_string(),
                         args: Vec::new(),
@@ -2658,6 +2957,24 @@ mod tests {
                 panic!("expected stdio transport");
             }
         }
+    }
+
+    #[test]
+    fn resolve_mcp_servers_skips_disabled_entries() {
+        let dir = tempdir().unwrap();
+        let resolved = resolve_mcp_servers(
+            &[McpServerConfig {
+                name: "disabled".into(),
+                enabled: false,
+                transport: McpTransportConfig::StreamableHttp {
+                    url: "https://example.test/mcp".to_string(),
+                    headers: BTreeMap::new(),
+                },
+            }],
+            dir.path(),
+        );
+
+        assert!(resolved.is_empty());
     }
 
     #[tokio::test]

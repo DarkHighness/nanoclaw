@@ -38,6 +38,10 @@ pub fn resolve_mcp_servers(
 ) -> Vec<McpServerConfig> {
     configs
         .iter()
+        // Disabled servers stay in persisted config for management commands, but
+        // runtime boot should treat them as absent so they neither connect nor
+        // appear in startup diagnostics until the operator re-enables them.
+        .filter(|server| server.enabled)
         .cloned()
         .map(|mut server| {
             if let McpTransportConfig::Stdio { cwd, .. } = &mut server.transport

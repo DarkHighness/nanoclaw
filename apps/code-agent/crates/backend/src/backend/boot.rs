@@ -1063,6 +1063,7 @@ mod tests {
             vec![
                 McpServerConfig {
                     name: "stdio".into(),
+                    enabled: true,
                     transport: McpTransportConfig::Stdio {
                         command: "stdio-server".to_string(),
                         args: Vec::new(),
@@ -1072,6 +1073,7 @@ mod tests {
                 },
                 McpServerConfig {
                     name: "http".into(),
+                    enabled: true,
                     transport: McpTransportConfig::StreamableHttp {
                         url: "https://example.test/mcp".to_string(),
                         headers: BTreeMap::new(),

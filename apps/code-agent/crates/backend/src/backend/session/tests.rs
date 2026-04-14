@@ -737,6 +737,7 @@ fn build_session_with_runtime_state(
 fn local_stdio_mcp_config(server_name: &str) -> McpServerConfig {
     McpServerConfig {
         name: server_name.into(),
+        enabled: true,
         transport: McpTransportConfig::Stdio {
             command: "fixture-mcp".to_string(),
             args: Vec::new(),

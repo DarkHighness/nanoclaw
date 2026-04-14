@@ -4,7 +4,10 @@
 //! code-agent-specific host settings layered on top of the shared core config
 //! surface.
 
+mod management;
+
 pub use code_agent_contracts::{display, motion, statusline, theme};
+pub use management::*;
 
 use crate::display::TuiDisplayConfig;
 use crate::motion::{TuiMotionConfig, TuiMotionField};

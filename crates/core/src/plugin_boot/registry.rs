@@ -189,6 +189,7 @@ mod tests {
             }],
             mcp_servers: vec![McpServerConfig {
                 name: "driver-mcp".into(),
+                enabled: true,
                 transport: McpTransportConfig::StreamableHttp {
                     url: "https://example.test/mcp".to_string(),
                     headers: BTreeMap::new(),
@@ -212,6 +213,7 @@ mod tests {
         }];
         let mut mcp_servers = vec![McpServerConfig {
             name: "existing-mcp".into(),
+            enabled: true,
             transport: McpTransportConfig::Stdio {
                 command: "stdio-server".to_string(),
                 args: Vec::new(),
