@@ -191,6 +191,10 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- fork --last
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- sessions
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- sessions "prompt text"
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- session --last
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- agent-sessions
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- agent-session 019d8aae-c699-75c3-b9de-6890b6f4d21a
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- tasks
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- task task-a
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export --last tmp/session-archive.json
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- import tmp/session-archive.json
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-events --last tmp/session.jsonl
@@ -202,10 +206,11 @@ active session to stderr. The command name in that hint follows the executable
 you launched, so packaged installs can surface `nanoclaw resume ...` without
 changing the workspace package name.
 
-The store-backed `sessions`, `session`, `export`, `import`, `export-events`,
-and `export-transcript` commands operate directly on the persisted session
-store, so they do not require a provider API key just to browse, archive, or
-restore history.
+The store-backed `sessions`, `session`, `agent-sessions`, `agent-session`,
+`tasks`, `task`, `export`, `import`, `export-events`, and `export-transcript`
+commands operate directly on the persisted session store, so they do not
+require a provider API key just to browse, inspect, archive, or restore
+history.
 
 ## Environment
 

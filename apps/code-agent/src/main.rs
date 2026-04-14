@@ -4,8 +4,9 @@ use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use code_agent_backend::{
-    AppOptions, CodeAgentUiSession, LoadedSession, PersistedSessionSearchMatch,
-    PersistedSessionSummary, SandboxFallbackNotice, SessionApprovalMode, SessionArchiveArtifact,
+    AppOptions, CodeAgentUiSession, LoadedAgentSession, LoadedSession, LoadedTask,
+    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
+    PersistedTaskSummary, SandboxFallbackNotice, SessionApprovalMode, SessionArchiveArtifact,
     SessionExportArtifact, SessionExportKind, SessionHistoryClient, SessionImportArtifact,
     SessionStartupSnapshot, UIAsyncCommand, UIQuery, build_sandbox_fallback_notice,
     build_session_with_approval_mode, build_session_with_approval_mode_and_progress,
@@ -60,6 +61,16 @@ enum CliCommand {
     Sessions(SessionSearchArgs),
     /// Inspect a persisted session transcript and metadata.
     Session(SessionLookupArgs),
+    /// List persisted agent sessions.
+    #[command(name = "agent-sessions")]
+    AgentSessions(ScopedSessionRefArgs),
+    /// Inspect a persisted agent session.
+    #[command(name = "agent-session")]
+    AgentSession(AgentSessionLookupArgs),
+    /// List persisted child tasks.
+    Tasks(ScopedSessionRefArgs),
+    /// Inspect a persisted task.
+    Task(TaskLookupArgs),
     /// Export a restorable session archive.
     Export(SessionExportArgs),
     /// Import a session archive into the local store.
@@ -102,6 +113,32 @@ struct SessionSearchArgs {
     query: Vec<String>,
 }
 
+#[derive(Debug, Args, Default)]
+struct ScopedSessionRefArgs {
+    #[arg(
+        value_name = "SESSION_ID",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    session_ref: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct AgentSessionLookupArgs {
+    #[arg(
+        value_name = "AGENT_SESSION_ID",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    agent_session_ref: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct TaskLookupArgs {
+    #[arg(value_name = "TASK_ID", allow_hyphen_values = true)]
+    task_ref: String,
+}
+
 #[derive(Debug, Args)]
 struct SessionExportArgs {
     #[arg(long)]
@@ -134,6 +171,18 @@ enum ReadOnlyCommand {
     },
     Session {
         selector: SessionSelector,
+    },
+    AgentSessions {
+        session_ref: Option<String>,
+    },
+    AgentSession {
+        agent_session_ref: String,
+    },
+    Tasks {
+        session_ref: Option<String>,
+    },
+    Task {
+        task_ref: String,
     },
     ExportArchive {
         selector: SessionSelector,
@@ -192,6 +241,10 @@ impl Cli {
             Some(
                 CliCommand::Sessions(_)
                 | CliCommand::Session(_)
+                | CliCommand::AgentSessions(_)
+                | CliCommand::AgentSession(_)
+                | CliCommand::Tasks(_)
+                | CliCommand::Task(_)
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
@@ -212,6 +265,10 @@ impl Cli {
             Some(
                 CliCommand::Sessions(_)
                 | CliCommand::Session(_)
+                | CliCommand::AgentSessions(_)
+                | CliCommand::AgentSession(_)
+                | CliCommand::Tasks(_)
+                | CliCommand::Task(_)
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
@@ -228,6 +285,18 @@ impl Cli {
             })),
             Some(CliCommand::Session(command)) => Ok(Some(ReadOnlyCommand::Session {
                 selector: command.selector("session")?,
+            })),
+            Some(CliCommand::AgentSessions(command)) => Ok(Some(ReadOnlyCommand::AgentSessions {
+                session_ref: command.session_ref(),
+            })),
+            Some(CliCommand::AgentSession(command)) => Ok(Some(ReadOnlyCommand::AgentSession {
+                agent_session_ref: command.agent_session_ref()?,
+            })),
+            Some(CliCommand::Tasks(command)) => Ok(Some(ReadOnlyCommand::Tasks {
+                session_ref: command.session_ref(),
+            })),
+            Some(CliCommand::Task(command)) => Ok(Some(ReadOnlyCommand::Task {
+                task_ref: command.task_ref.clone(),
             })),
             Some(CliCommand::Export(command)) => {
                 let (selector, output_path) = command.selector_and_path("export")?;
@@ -276,6 +345,25 @@ impl SessionSearchArgs {
         let query = self.query.join(" ");
         let query = query.trim();
         (!query.is_empty()).then(|| query.to_string())
+    }
+}
+
+impl ScopedSessionRefArgs {
+    fn session_ref(&self) -> Option<String> {
+        let session_ref = self.session_ref.join(" ");
+        let session_ref = session_ref.trim();
+        (!session_ref.is_empty()).then(|| session_ref.to_string())
+    }
+}
+
+impl AgentSessionLookupArgs {
+    fn agent_session_ref(&self) -> Result<String> {
+        let agent_session_ref = self.agent_session_ref.join(" ");
+        let agent_session_ref = agent_session_ref.trim();
+        if agent_session_ref.is_empty() {
+            bail!("`agent-session` requires an agent session id; run `--help` for usage");
+        }
+        Ok(agent_session_ref.to_string())
     }
 }
 
@@ -366,6 +454,22 @@ async fn run_read_only_command(
                 .with_context(|| format!("missing session summary for {session_ref}"))?;
             let loaded = history.load_session(&session_ref).await?;
             write_loaded_session_details(&mut stdout, &summary, &loaded)?;
+        }
+        ReadOnlyCommand::AgentSessions { session_ref } => {
+            let agent_sessions = history.list_agent_sessions(session_ref.as_deref()).await?;
+            write_agent_session_summaries(&mut stdout, &agent_sessions)?;
+        }
+        ReadOnlyCommand::AgentSession { agent_session_ref } => {
+            let loaded = history.load_agent_session(&agent_session_ref).await?;
+            write_loaded_agent_session_details(&mut stdout, &loaded)?;
+        }
+        ReadOnlyCommand::Tasks { session_ref } => {
+            let tasks = history.list_tasks(session_ref.as_deref()).await?;
+            write_task_summaries(&mut stdout, &tasks)?;
+        }
+        ReadOnlyCommand::Task { task_ref } => {
+            let loaded = history.load_task(&task_ref).await?;
+            write_loaded_task_details(&mut stdout, &loaded)?;
         }
         ReadOnlyCommand::ExportArchive {
             selector,
@@ -678,6 +782,57 @@ fn write_session_search_results(
     Ok(())
 }
 
+fn write_agent_session_summaries(
+    writer: &mut impl Write,
+    agent_sessions: &[PersistedAgentSessionSummary],
+) -> io::Result<()> {
+    if agent_sessions.is_empty() {
+        writeln!(writer, "No persisted agent sessions found.")?;
+        return Ok(());
+    }
+
+    for (index, summary) in agent_sessions.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(
+            writer,
+            "{}  {}",
+            summary.agent_session_ref,
+            format_agent_session_heading(summary)
+        )?;
+        writeln!(
+            writer,
+            "  session={} · {} messages · {} events · resume={}",
+            summary.session_ref,
+            format_token_count(summary.transcript_message_count as u64),
+            format_token_count(summary.event_count as u64),
+            summary.resume_support.label(),
+        )?;
+    }
+    Ok(())
+}
+
+fn write_task_summaries(writer: &mut impl Write, tasks: &[PersistedTaskSummary]) -> io::Result<()> {
+    if tasks.is_empty() {
+        writeln!(writer, "No persisted tasks found.")?;
+        return Ok(());
+    }
+
+    for (index, summary) in tasks.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(writer, "{}  {}", summary.task_id, summary.summary)?;
+        writeln!(
+            writer,
+            "  session={} · role={} · status={} · origin={}",
+            summary.session_ref, summary.role, summary.status, summary.origin,
+        )?;
+    }
+    Ok(())
+}
+
 fn write_loaded_session_details(
     writer: &mut impl Write,
     summary: &PersistedSessionSummary,
@@ -747,6 +902,163 @@ fn write_loaded_session_details(
     Ok(())
 }
 
+fn write_loaded_agent_session_details(
+    writer: &mut impl Write,
+    loaded: &LoadedAgentSession,
+) -> io::Result<()> {
+    let summary = &loaded.summary;
+    writeln!(writer, "Agent Session")?;
+    writeln!(writer, "  ref: {}", summary.agent_session_ref)?;
+    writeln!(writer, "  session: {}", summary.session_ref)?;
+    writeln!(writer, "  label: {}", summary.label)?;
+    writeln!(writer, "  resume: {}", summary.resume_support.label())?;
+    if let Some(session_title) = summary.session_title.as_deref() {
+        writeln!(writer, "  session title: {session_title}")?;
+    }
+    if let Some(prompt) = summary.last_user_prompt.as_deref() {
+        writeln!(writer, "  last prompt: {prompt}")?;
+    }
+    writeln!(
+        writer,
+        "  counts: {} messages · {} events",
+        format_token_count(summary.transcript_message_count as u64),
+        format_token_count(summary.event_count as u64),
+    )?;
+    if let Some(token_usage) = &loaded.token_usage {
+        if let Some(window) = token_usage.ledger.context_window {
+            writeln!(
+                writer,
+                "  context: {} / {}",
+                format_token_count(window.used_tokens as u64),
+                format_token_count(window.max_tokens as u64),
+            )?;
+        }
+        writeln!(
+            writer,
+            "  tokens: in={} out={} cache={}",
+            format_token_count(token_usage.ledger.cumulative_usage.input_tokens),
+            format_token_count(token_usage.ledger.cumulative_usage.output_tokens),
+            format_token_count(token_usage.ledger.cumulative_usage.cache_read_tokens),
+        )?;
+    }
+    if !loaded.subagents.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Spawned Subagents")?;
+        for subagent in &loaded.subagents {
+            writeln!(
+                writer,
+                "  {} role={} status={} summary={}",
+                subagent.handle.agent_session_id,
+                subagent.task.role,
+                subagent.status,
+                subagent.summary,
+            )?;
+        }
+    }
+    if loaded.transcript.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Transcript")?;
+        writeln!(writer, "  <empty>")?;
+        return Ok(());
+    }
+
+    writeln!(writer)?;
+    writeln!(writer, "Transcript")?;
+    for (index, message) in loaded.transcript.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(writer, "{}", message_to_text(message))?;
+    }
+    Ok(())
+}
+
+fn write_loaded_task_details(writer: &mut impl Write, loaded: &LoadedTask) -> io::Result<()> {
+    let summary = &loaded.summary;
+    writeln!(writer, "Task")?;
+    writeln!(writer, "  id: {}", summary.task_id)?;
+    writeln!(writer, "  session: {}", summary.session_ref)?;
+    writeln!(
+        writer,
+        "  parent agent session: {}",
+        summary.parent_agent_session_ref
+    )?;
+    writeln!(writer, "  role: {}", summary.role)?;
+    writeln!(writer, "  origin: {}", summary.origin)?;
+    writeln!(writer, "  status: {}", summary.status)?;
+    writeln!(writer, "  summary: {}", summary.summary)?;
+    writeln!(writer, "  prompt: {}", loaded.spec.prompt)?;
+    if let Some(steer) = loaded.spec.steer.as_deref() {
+        writeln!(writer, "  steer: {steer}")?;
+    }
+    if let Some(child_session_ref) = summary.child_session_ref.as_deref() {
+        writeln!(writer, "  child session: {child_session_ref}")?;
+    }
+    if let Some(child_agent_session_ref) = summary.child_agent_session_ref.as_deref() {
+        writeln!(writer, "  child agent session: {child_agent_session_ref}")?;
+    }
+    if let Some(token_usage) = &loaded.token_usage {
+        if let Some(window) = token_usage.ledger.context_window {
+            writeln!(
+                writer,
+                "  context: {} / {}",
+                format_token_count(window.used_tokens as u64),
+                format_token_count(window.max_tokens as u64),
+            )?;
+        }
+        writeln!(
+            writer,
+            "  tokens: in={} out={} cache={}",
+            format_token_count(token_usage.ledger.cumulative_usage.input_tokens),
+            format_token_count(token_usage.ledger.cumulative_usage.output_tokens),
+            format_token_count(token_usage.ledger.cumulative_usage.cache_read_tokens),
+        )?;
+    }
+    if let Some(result) = &loaded.result {
+        writeln!(writer)?;
+        writeln!(writer, "Result")?;
+        writeln!(writer, "  status: {}", result.status)?;
+        writeln!(writer, "  summary: {}", result.summary)?;
+        if !result.claimed_files.is_empty() {
+            writeln!(
+                writer,
+                "  claimed files: {}",
+                result.claimed_files.join(", ")
+            )?;
+        }
+    }
+    if let Some(error) = loaded.error.as_deref() {
+        writeln!(writer)?;
+        writeln!(writer, "Error")?;
+        writeln!(writer, "  {error}")?;
+    }
+    if !loaded.artifacts.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Artifacts")?;
+        for artifact in &loaded.artifacts {
+            writeln!(writer, "  {} {}", artifact.kind, artifact.uri)?;
+        }
+    }
+    if !loaded.messages.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Agent Messages")?;
+        for message in &loaded.messages {
+            writeln!(writer, "{}", message_to_text(&message.message))?;
+        }
+    }
+    if !loaded.child_transcript.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Child Transcript")?;
+        for (index, message) in loaded.child_transcript.iter().enumerate() {
+            if index > 0 {
+                writeln!(writer)?;
+            }
+            writeln!(writer, "{}", message_to_text(message))?;
+        }
+    }
+    Ok(())
+}
+
 fn write_export_artifact(
     writer: &mut impl Write,
     artifact: &SessionExportArtifact,
@@ -792,6 +1104,18 @@ fn write_import_artifact(
         artifact.event_count,
         artifact.session_note_count,
     )
+}
+
+fn format_agent_session_heading(summary: &PersistedAgentSessionSummary) -> String {
+    match (
+        summary.session_title.as_deref(),
+        summary.last_user_prompt.as_deref(),
+    ) {
+        (Some(title), Some(_prompt)) => format!("{} · {}", summary.label, title),
+        (Some(title), None) => format!("{} · {}", summary.label, title),
+        (None, Some(prompt)) => format!("{} · {}", summary.label, prompt),
+        (None, None) => summary.label.clone(),
+    }
 }
 
 fn session_title_or_prompt(summary: &PersistedSessionSummary) -> &str {
@@ -1177,6 +1501,54 @@ mod tests {
             cli.read_only_command().unwrap(),
             Some(ReadOnlyCommand::Session {
                 selector: SessionSelector::Last
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_agent_sessions_filter() {
+        let cli = Cli::parse_from(["code-agent", "agent-sessions", "session-a"]);
+
+        assert_eq!(
+            cli.read_only_command().unwrap(),
+            Some(ReadOnlyCommand::AgentSessions {
+                session_ref: Some("session-a".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_agent_session_lookup() {
+        let cli = Cli::parse_from(["code-agent", "agent-session", "agent-session-a"]);
+
+        assert_eq!(
+            cli.read_only_command().unwrap(),
+            Some(ReadOnlyCommand::AgentSession {
+                agent_session_ref: "agent-session-a".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_tasks_filter() {
+        let cli = Cli::parse_from(["code-agent", "tasks", "session-a"]);
+
+        assert_eq!(
+            cli.read_only_command().unwrap(),
+            Some(ReadOnlyCommand::Tasks {
+                session_ref: Some("session-a".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_task_lookup() {
+        let cli = Cli::parse_from(["code-agent", "task", "task-a"]);
+
+        assert_eq!(
+            cli.read_only_command().unwrap(),
+            Some(ReadOnlyCommand::Task {
+                task_ref: "task-a".to_string(),
             })
         );
     }

@@ -2,8 +2,11 @@ use crate::backend::session_catalog;
 use crate::backend::session_history::{self, preview_id};
 use crate::backend::session_memory_compaction::session_memory_note_absolute_path;
 use crate::backend::session_memory_note::session_memory_note_title;
+use crate::backend::task_history;
 use crate::ui::{
-    LoadedSession, PersistedSessionSearchMatch, PersistedSessionSummary, SessionExportArtifact,
+    LoadedAgentSession, LoadedSession, LoadedTask, PersistedAgentSessionSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, PersistedTaskSummary,
+    SessionExportArtifact,
 };
 use agent::types::{SessionEventEnvelope, SessionEventKind, SessionId};
 use anyhow::{Context, Result, anyhow};
@@ -180,6 +183,62 @@ impl SessionHistoryClient {
     pub async fn load_session(&self, session_ref: &str) -> Result<LoadedSession> {
         let resolved_ref = self.resolve_session_ref(session_ref).await?;
         session_history::load_session(&self.store, &resolved_ref).await
+    }
+
+    pub async fn list_agent_sessions(
+        &self,
+        session_ref: Option<&str>,
+    ) -> Result<Vec<PersistedAgentSessionSummary>> {
+        let sessions = session_history::list_sessions(&self.store).await?;
+        let session_titles = self
+            .load_session_note_titles(sessions.iter().map(|summary| summary.session_id.clone()))
+            .await;
+        let filtered_session_id = session_ref
+            .map(|session_ref| {
+                resolve_session_reference_from_catalog(&sessions, &session_titles, session_ref)
+            })
+            .transpose()?;
+        let mut agent_sessions = Vec::new();
+        for summary in sessions.into_iter().filter(|summary| {
+            filtered_session_id
+                .as_ref()
+                .is_none_or(|session_id| summary.session_id == *session_id)
+        }) {
+            let events = self.store.events(&summary.session_id).await?;
+            agent_sessions.extend(session_catalog::persisted_agent_session_summaries(
+                summary.session_id.as_str(),
+                session_titles.get(&summary.session_id).map(String::as_str),
+                &events,
+                "",
+            ));
+        }
+        agent_sessions.sort_by(|left, right| {
+            right
+                .last_timestamp_ms
+                .cmp(&left.last_timestamp_ms)
+                .then_with(|| left.agent_session_ref.cmp(&right.agent_session_ref))
+        });
+        Ok(agent_sessions)
+    }
+
+    pub async fn load_agent_session(&self, agent_session_ref: &str) -> Result<LoadedAgentSession> {
+        let summary = self.resolve_agent_session_ref(agent_session_ref).await?;
+        session_history::load_agent_session(&self.store, summary).await
+    }
+
+    pub async fn list_tasks(&self, session_ref: Option<&str>) -> Result<Vec<PersistedTaskSummary>> {
+        let resolved_session_ref = if let Some(session_ref) = session_ref {
+            Some(self.resolve_session_ref(session_ref).await?)
+        } else {
+            None
+        };
+        task_history::list_tasks(&self.store, resolved_session_ref.as_deref()).await
+    }
+
+    pub async fn load_task(&self, task_ref: &str) -> Result<LoadedTask> {
+        let tasks = self.list_tasks(None).await?;
+        let summary = task_history::resolve_task_reference(&tasks, task_ref)?.clone();
+        task_history::load_task(&self.store, summary).await
     }
 
     pub async fn export_session(
@@ -384,6 +443,14 @@ impl SessionHistoryClient {
             ))
         }
     }
+
+    async fn resolve_agent_session_ref(
+        &self,
+        agent_session_ref: &str,
+    ) -> Result<PersistedAgentSessionSummary> {
+        let agent_sessions = self.list_agent_sessions(None).await?;
+        resolve_agent_session_reference_from_catalog(&agent_sessions, agent_session_ref)
+    }
 }
 
 fn resolve_history_path(workspace_root: &Path, value: &str) -> PathBuf {
@@ -544,6 +611,87 @@ fn resolve_session_reference_from_catalog(
                     summary.session_id.as_str(),
                     title
                 ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+fn resolve_agent_session_reference_from_catalog(
+    agent_sessions: &[PersistedAgentSessionSummary],
+    agent_session_ref: &str,
+) -> Result<PersistedAgentSessionSummary> {
+    if let Some(summary) = agent_sessions
+        .iter()
+        .find(|summary| summary.agent_session_ref == agent_session_ref)
+    {
+        return Ok(summary.clone());
+    }
+
+    let prefix_matches = agent_sessions
+        .iter()
+        .filter(|summary| summary.agent_session_ref.starts_with(agent_session_ref))
+        .collect::<Vec<_>>();
+    match prefix_matches.as_slice() {
+        [summary] => return Ok((*summary).clone()),
+        [] => {}
+        _ => {
+            return Err(anyhow!(
+                "ambiguous agent session prefix {agent_session_ref}: {}",
+                prefix_matches
+                    .iter()
+                    .take(6)
+                    .map(|summary| preview_id(summary.agent_session_ref.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+
+    let mut session_matches = BTreeMap::new();
+    for summary in agent_sessions.iter().filter(|summary| {
+        session_title_matches_query(summary.session_title.as_deref(), agent_session_ref)
+    }) {
+        session_matches
+            .entry(summary.session_ref.clone())
+            .or_insert_with(Vec::new)
+            .push(summary);
+    }
+    match session_matches.len() {
+        0 => Err(anyhow!(
+            "unknown agent session id, prefix, or session title: {agent_session_ref}"
+        )),
+        1 => {
+            let summaries = session_matches.into_values().next().unwrap();
+            summaries
+                .iter()
+                .find(|summary| summary.label == "root")
+                .or_else(|| (summaries.len() == 1).then_some(&summaries[0]))
+                .map(|summary| (*summary).clone())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "ambiguous agent session title {agent_session_ref}: {}",
+                        summaries
+                            .iter()
+                            .take(6)
+                            .map(|summary| preview_id(summary.agent_session_ref.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+        }
+        _ => Err(anyhow!(
+            "ambiguous session title {agent_session_ref}: {}",
+            session_matches
+                .iter()
+                .take(6)
+                .map(|(session_ref, summaries)| {
+                    let title = summaries
+                        .first()
+                        .and_then(|summary| summary.session_title.as_deref())
+                        .unwrap_or("");
+                    session_title_reference_preview(session_ref, title)
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
