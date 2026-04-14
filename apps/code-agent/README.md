@@ -199,6 +199,10 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- export --last tmp/ses
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- import tmp/session-archive.json
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-events --last tmp/session.jsonl
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-transcript 019d8aae-c699-75c3-b9de-6890b6f4d21a tmp/session.txt
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- diagnostics
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- prompts
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- resources
 ```
 
 On exit, the app prints aggregate token usage plus resume and fork hints for the
@@ -211,6 +215,11 @@ The store-backed `sessions`, `session`, `agent-sessions`, `agent-session`,
 commands operate directly on the persisted session store, so they do not
 require a provider API key just to browse, inspect, archive, or restore
 history.
+
+The live `diagnostics`, `mcp`, `prompts`, and `resources` commands boot the
+normal runtime surface without entering the TUI. They therefore use the same
+workspace config, sandbox checks, plugin activation, and MCP connection setup
+as an interactive session.
 
 ## Environment
 

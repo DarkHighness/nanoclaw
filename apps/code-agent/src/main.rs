@@ -5,10 +5,11 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use code_agent_backend::{
     AppOptions, CodeAgentUiSession, LoadedAgentSession, LoadedSession, LoadedTask,
-    PersistedAgentSessionSummary, PersistedSessionSearchMatch, PersistedSessionSummary,
-    PersistedTaskSummary, SandboxFallbackNotice, SessionApprovalMode, SessionArchiveArtifact,
-    SessionExportArtifact, SessionExportKind, SessionHistoryClient, SessionImportArtifact,
-    SessionStartupSnapshot, UIAsyncCommand, UIQuery, build_sandbox_fallback_notice,
+    McpPromptSummary, McpResourceSummary, McpServerSummary, PersistedAgentSessionSummary,
+    PersistedSessionSearchMatch, PersistedSessionSummary, PersistedTaskSummary,
+    SandboxFallbackNotice, SessionApprovalMode, SessionArchiveArtifact, SessionExportArtifact,
+    SessionExportKind, SessionHistoryClient, SessionImportArtifact, SessionStartupSnapshot,
+    StartupDiagnosticsSnapshot, UIAsyncCommand, UIQuery, build_sandbox_fallback_notice,
     build_session_with_approval_mode, build_session_with_approval_mode_and_progress,
     inject_process_env, inspect_sandbox_preflight, message_to_text,
 };
@@ -81,6 +82,14 @@ enum CliCommand {
     /// Export a persisted session transcript as plain text.
     #[command(name = "export-transcript")]
     ExportTranscript(SessionExportArgs),
+    /// Print the current startup diagnostics snapshot.
+    Diagnostics,
+    /// List connected MCP servers.
+    Mcp,
+    /// List MCP prompts exposed by connected servers.
+    Prompts,
+    /// List MCP resources exposed by connected servers.
+    Resources,
 }
 
 #[derive(Debug, Args, Default)]
@@ -202,6 +211,14 @@ enum ReadOnlyCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+enum LiveInspectCommand {
+    Diagnostics,
+    Mcp,
+    Prompts,
+    Resources,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum SessionSelector {
     Reference(String),
     Last,
@@ -248,7 +265,11 @@ impl Cli {
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
-                | CliCommand::ExportTranscript(_),
+                | CliCommand::ExportTranscript(_)
+                | CliCommand::Diagnostics
+                | CliCommand::Mcp
+                | CliCommand::Prompts
+                | CliCommand::Resources,
             ) => {}
         }
         args
@@ -272,7 +293,11 @@ impl Cli {
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
-                | CliCommand::ExportTranscript(_),
+                | CliCommand::ExportTranscript(_)
+                | CliCommand::Diagnostics
+                | CliCommand::Mcp
+                | CliCommand::Prompts
+                | CliCommand::Resources,
             ) => Ok(LaunchMode::Default),
             None => Ok(LaunchMode::Default),
         }
@@ -322,7 +347,39 @@ impl Cli {
                     output_path,
                 }))
             }
-            Some(CliCommand::Resume(_) | CliCommand::Fork(_)) | None => Ok(None),
+            Some(
+                CliCommand::Resume(_)
+                | CliCommand::Fork(_)
+                | CliCommand::Diagnostics
+                | CliCommand::Mcp
+                | CliCommand::Prompts
+                | CliCommand::Resources,
+            )
+            | None => Ok(None),
+        }
+    }
+
+    fn live_inspect_command(&self) -> Option<LiveInspectCommand> {
+        match self.command {
+            Some(CliCommand::Diagnostics) => Some(LiveInspectCommand::Diagnostics),
+            Some(CliCommand::Mcp) => Some(LiveInspectCommand::Mcp),
+            Some(CliCommand::Prompts) => Some(LiveInspectCommand::Prompts),
+            Some(CliCommand::Resources) => Some(LiveInspectCommand::Resources),
+            Some(
+                CliCommand::Resume(_)
+                | CliCommand::Fork(_)
+                | CliCommand::Sessions(_)
+                | CliCommand::Session(_)
+                | CliCommand::AgentSessions(_)
+                | CliCommand::AgentSession(_)
+                | CliCommand::Tasks(_)
+                | CliCommand::Task(_)
+                | CliCommand::Export(_)
+                | CliCommand::Import(_)
+                | CliCommand::ExportSession(_)
+                | CliCommand::ExportTranscript(_),
+            )
+            | None => None,
         }
     }
 }
@@ -410,6 +467,26 @@ fn try_main() -> Result<()> {
     }
     let options =
         AppOptions::from_env_and_args_iter(&workspace_root, &env_map, cli.app_option_args())?;
+    if let Some(command) = cli.live_inspect_command() {
+        let mut options = options;
+        let stdin_is_terminal = io::stdin().is_terminal();
+        let stdout_is_terminal = io::stdout().is_terminal();
+        confirm_unsandboxed_startup_if_needed(
+            &workspace_root,
+            &mut options,
+            stdin_is_terminal && stdout_is_terminal,
+        )?;
+        let runtime = build_host_tokio_runtime(HostRuntimeLimits {
+            worker_threads: options.tokio_worker_threads,
+            max_blocking_threads: options.tokio_max_blocking_threads,
+        })
+        .context("failed to build tokio runtime")?;
+        return runtime.block_on(run_live_inspection_command(
+            workspace_root,
+            options,
+            command,
+        ));
+    }
     let launch_mode = cli.launch_mode()?;
     // Startup loading and the unsandboxed-risk prompt both render before the
     // main `CodeAgentTui` exists, so install the configured theme catalog as
@@ -502,6 +579,42 @@ async fn run_read_only_command(
                 .export_session_transcript(&session_ref, &output_path)
                 .await?;
             write_export_artifact(&mut stdout, &artifact)?;
+        }
+    }
+    stdout.flush()?;
+    Ok(())
+}
+
+async fn run_live_inspection_command(
+    workspace_root: PathBuf,
+    options: AppOptions,
+    command: LiveInspectCommand,
+) -> Result<()> {
+    // These commands are operator-facing inspections of the live startup
+    // surface, so build the same interactive session shape that the TUI uses
+    // instead of the more restrictive headless one-shot variant.
+    let session = build_session_with_approval_mode(
+        &options,
+        &workspace_root,
+        SessionApprovalMode::Interactive,
+    )
+    .await?;
+    let mut stdout = io::stdout().lock();
+    match command {
+        LiveInspectCommand::Diagnostics => {
+            write_startup_diagnostics(&mut stdout, &session.startup_diagnostics())?;
+        }
+        LiveInspectCommand::Mcp => {
+            let servers = session.list_mcp_servers().await;
+            write_mcp_server_summaries(&mut stdout, &servers)?;
+        }
+        LiveInspectCommand::Prompts => {
+            let prompts = session.list_mcp_prompts().await;
+            write_mcp_prompt_summaries(&mut stdout, &prompts)?;
+        }
+        LiveInspectCommand::Resources => {
+            let resources = session.list_mcp_resources().await;
+            write_mcp_resource_summaries(&mut stdout, &resources)?;
         }
     }
     stdout.flush()?;
@@ -1106,6 +1219,127 @@ fn write_import_artifact(
     )
 }
 
+fn write_startup_diagnostics(
+    writer: &mut impl Write,
+    snapshot: &StartupDiagnosticsSnapshot,
+) -> io::Result<()> {
+    writeln!(writer, "Startup Diagnostics")?;
+    writeln!(
+        writer,
+        "  tools: {} local · {} mcp",
+        snapshot.local_tool_count, snapshot.mcp_tool_count,
+    )?;
+    writeln!(
+        writer,
+        "  plugins: {} enabled / {} total",
+        snapshot.enabled_plugin_count, snapshot.total_plugin_count,
+    )?;
+    writeln!(writer, "  mcp servers: {}", snapshot.mcp_servers.len())?;
+
+    if !snapshot.mcp_servers.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "MCP Servers")?;
+        for server in &snapshot.mcp_servers {
+            write_mcp_server_summary_line(writer, server)?;
+        }
+    }
+    if !snapshot.plugin_details.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Plugin Details")?;
+        for detail in &snapshot.plugin_details {
+            writeln!(writer, "  {detail}")?;
+        }
+    }
+    if !snapshot.warnings.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Warnings")?;
+        for warning in &snapshot.warnings {
+            writeln!(writer, "  {warning}")?;
+        }
+    }
+    if !snapshot.diagnostics.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Diagnostics")?;
+        for diagnostic in &snapshot.diagnostics {
+            writeln!(writer, "  {diagnostic}")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_mcp_server_summaries(
+    writer: &mut impl Write,
+    servers: &[McpServerSummary],
+) -> io::Result<()> {
+    if servers.is_empty() {
+        writeln!(writer, "No MCP servers connected.")?;
+        return Ok(());
+    }
+    for server in servers {
+        write_mcp_server_summary_line(writer, server)?;
+    }
+    Ok(())
+}
+
+fn write_mcp_server_summary_line(
+    writer: &mut impl Write,
+    summary: &McpServerSummary,
+) -> io::Result<()> {
+    writeln!(
+        writer,
+        "{}  tools={} · prompts={} · resources={}",
+        summary.server_name, summary.tool_count, summary.prompt_count, summary.resource_count,
+    )
+}
+
+fn write_mcp_prompt_summaries(
+    writer: &mut impl Write,
+    prompts: &[McpPromptSummary],
+) -> io::Result<()> {
+    if prompts.is_empty() {
+        writeln!(writer, "No MCP prompts available.")?;
+        return Ok(());
+    }
+    for (index, summary) in prompts.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(writer, "{}/{}", summary.server_name, summary.prompt_name)?;
+        let arguments = if summary.argument_names.is_empty() {
+            "none".to_string()
+        } else {
+            summary.argument_names.join(", ")
+        };
+        writeln!(writer, "  args={}", arguments)?;
+        if !summary.description.trim().is_empty() {
+            writeln!(writer, "  {}", summary.description.trim())?;
+        }
+    }
+    Ok(())
+}
+
+fn write_mcp_resource_summaries(
+    writer: &mut impl Write,
+    resources: &[McpResourceSummary],
+) -> io::Result<()> {
+    if resources.is_empty() {
+        writeln!(writer, "No MCP resources available.")?;
+        return Ok(());
+    }
+    for (index, summary) in resources.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(writer, "{}  {}", summary.server_name, summary.uri)?;
+        let mime = summary.mime_type.as_deref().unwrap_or("unknown");
+        writeln!(writer, "  mime={mime}")?;
+        if !summary.description.trim().is_empty() {
+            writeln!(writer, "  {}", summary.description.trim())?;
+        }
+    }
+    Ok(())
+}
+
 fn format_agent_session_heading(summary: &PersistedAgentSessionSummary) -> String {
     match (
         summary.session_title.as_deref(),
@@ -1361,10 +1595,11 @@ mod diagnostic_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, LaunchMode, ReadOnlyCommand, SandboxFallbackAction, SessionSelector,
-        choose_sandbox_fallback_action, format_sandbox_abort_message, format_session_counts,
-        format_token_count, launch_headless_one_shot, write_exit_summary,
-        write_session_search_results, write_session_summaries,
+        Cli, LaunchMode, LiveInspectCommand, ReadOnlyCommand, SandboxFallbackAction,
+        SessionSelector, choose_sandbox_fallback_action, format_sandbox_abort_message,
+        format_session_counts, format_token_count, launch_headless_one_shot, write_exit_summary,
+        write_mcp_prompt_summaries, write_mcp_resource_summaries, write_session_search_results,
+        write_session_summaries, write_startup_diagnostics,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
@@ -1376,10 +1611,11 @@ mod tests {
     use agent_env::EnvMap;
     use clap::Parser;
     use code_agent_backend::{
-        AppOptions, CodeAgentSubagentProfileResolver, PersistedSessionSearchMatch,
-        PersistedSessionSummary, ResumeSupport, SandboxFallbackNotice, build_sandbox_policy,
-        dedup_mcp_servers, driver_host_output_lines, merge_driver_host_inputs, parse_bool_flag,
-        resolve_mcp_servers, tool_context_for_profile,
+        AppOptions, CodeAgentSubagentProfileResolver, McpPromptSummary, McpResourceSummary,
+        McpServerSummary, PersistedSessionSearchMatch, PersistedSessionSummary, ResumeSupport,
+        SandboxFallbackNotice, StartupDiagnosticsSnapshot, build_sandbox_policy, dedup_mcp_servers,
+        driver_host_output_lines, merge_driver_host_inputs, parse_bool_flag, resolve_mcp_servers,
+        tool_context_for_profile,
     };
     use nanoclaw_config::{
         AgentProfileConfig, AgentSandboxMode, CoreConfig, ModelCapabilitiesConfig, ModelConfig,
@@ -1606,6 +1842,26 @@ mod tests {
     }
 
     #[test]
+    fn clap_parses_diagnostics_live_command() {
+        let cli = Cli::parse_from(["code-agent", "diagnostics"]);
+
+        assert_eq!(
+            cli.live_inspect_command(),
+            Some(LiveInspectCommand::Diagnostics)
+        );
+    }
+
+    #[test]
+    fn clap_parses_resources_live_command() {
+        let cli = Cli::parse_from(["code-agent", "resources"]);
+
+        assert_eq!(
+            cli.live_inspect_command(),
+            Some(LiveInspectCommand::Resources)
+        );
+    }
+
+    #[test]
     fn token_counts_render_with_grouping() {
         assert_eq!(format_token_count(0), "0");
         assert_eq!(format_token_count(965650), "965,650");
@@ -1690,6 +1946,88 @@ mod tests {
                 "Token usage: total=965,650 input=914,229 (+ 2,672,768 cached) output=51,421\n",
                 "To continue this session, run nanoclaw resume 019d8aae-c699-75c3-b9de-6890b6f4d21a\n",
                 "To fork from this session, run nanoclaw fork 019d8aae-c699-75c3-b9de-6890b6f4d21a\n",
+            )
+        );
+    }
+
+    #[test]
+    fn startup_diagnostics_writer_lists_sections() {
+        let mut output = Vec::new();
+        write_startup_diagnostics(
+            &mut output,
+            &StartupDiagnosticsSnapshot {
+                local_tool_count: 12,
+                mcp_tool_count: 3,
+                enabled_plugin_count: 1,
+                total_plugin_count: 2,
+                mcp_servers: vec![McpServerSummary {
+                    server_name: "memory".to_string(),
+                    tool_count: 2,
+                    prompt_count: 1,
+                    resource_count: 4,
+                }],
+                plugin_details: vec!["memory slot: workspace".to_string()],
+                warnings: vec!["stdio server skipped".to_string()],
+                diagnostics: vec!["managed code intel disabled".to_string()],
+            },
+        )
+        .unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("Startup Diagnostics"));
+        assert!(rendered.contains("tools: 12 local · 3 mcp"));
+        assert!(rendered.contains("MCP Servers"));
+        assert!(rendered.contains("memory  tools=2 · prompts=1 · resources=4"));
+        assert!(rendered.contains("Warnings"));
+        assert!(rendered.contains("Diagnostics"));
+    }
+
+    #[test]
+    fn mcp_prompt_writer_renders_arguments_and_description() {
+        let mut output = Vec::new();
+        write_mcp_prompt_summaries(
+            &mut output,
+            &[McpPromptSummary {
+                server_name: "memory".to_string(),
+                prompt_name: "summarize".to_string(),
+                description: "Summarize the active note".to_string(),
+                argument_names: vec!["path*".to_string(), "limit".to_string()],
+            }],
+        )
+        .unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert_eq!(
+            rendered,
+            concat!(
+                "memory/summarize\n",
+                "  args=path*, limit\n",
+                "  Summarize the active note\n",
+            )
+        );
+    }
+
+    #[test]
+    fn mcp_resource_writer_renders_mime_and_description() {
+        let mut output = Vec::new();
+        write_mcp_resource_summaries(
+            &mut output,
+            &[McpResourceSummary {
+                server_name: "memory".to_string(),
+                uri: "memory://session/note".to_string(),
+                mime_type: Some("text/markdown".to_string()),
+                description: "Active session memory note".to_string(),
+            }],
+        )
+        .unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert_eq!(
+            rendered,
+            concat!(
+                "memory  memory://session/note\n",
+                "  mime=text/markdown\n",
+                "  Active session memory note\n",
             )
         );
     }
