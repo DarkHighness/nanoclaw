@@ -137,7 +137,7 @@ impl SharedRenderObserver {
                 state.session.token_ledger = ledger.clone();
                 if let Some(window) = ledger.context_window {
                     state.push_activity(format!(
-                        "context {} / {} tokens, input {} output {} prefill {} decode {} cache {}",
+                        "context {} / {} tokens, input {} output {} prefill {} decode {} cache {} reasoning {}",
                         window.used_tokens,
                         window.max_tokens,
                         ledger.cumulative_usage.input_tokens,
@@ -145,6 +145,7 @@ impl SharedRenderObserver {
                         ledger.cumulative_usage.prefill_tokens,
                         ledger.cumulative_usage.decode_tokens,
                         ledger.cumulative_usage.cache_read_tokens,
+                        ledger.cumulative_usage.reasoning_tokens,
                     ));
                 }
             }
@@ -1212,8 +1213,14 @@ mod tests {
                 used_tokens: 64_000,
                 max_tokens: 400_000,
             }),
-            last_usage: Some(TokenUsage::from_input_output(4_000, 300, 500)),
-            cumulative_usage: TokenUsage::from_input_output(20_000, 1_200, 3_000),
+            last_usage: Some(TokenUsage {
+                reasoning_tokens: 120,
+                ..TokenUsage::from_input_output(4_000, 300, 500)
+            }),
+            cumulative_usage: TokenUsage {
+                reasoning_tokens: 480,
+                ..TokenUsage::from_input_output(20_000, 1_200, 3_000)
+            },
         };
 
         SharedRenderObserver::new(ui_state.clone()).apply_event(SessionEvent::TokenUsageUpdated {
@@ -1229,7 +1236,7 @@ mod tests {
                 .last()
                 .expect("token usage activity should be recorded")
                 .contains(
-                    "context 64000 / 400000 tokens, input 20000 output 1200 prefill 17000 decode 1200 cache 3000"
+                    "context 64000 / 400000 tokens, input 20000 output 1200 prefill 17000 decode 1200 cache 3000 reasoning 480"
                 )
         );
     }

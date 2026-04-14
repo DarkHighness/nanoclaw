@@ -1524,12 +1524,13 @@ fn write_loaded_session_details(
         let usage = loaded.token_usage.aggregate_usage;
         writeln!(
             writer,
-            "  total tokens: in={} out={} prefill={} decode={} cache={}",
+            "  total tokens: in={} out={} prefill={} decode={} cache={}{}",
             format_token_count(usage.input_tokens),
             format_token_count(usage.output_tokens),
-            format_token_count(usage.prefill_tokens),
-            format_token_count(usage.decode_tokens),
+            format_token_count(usage.uncached_input_tokens()),
+            format_token_count(usage.visible_decode_tokens()),
             format_token_count(usage.cache_read_tokens),
+            format_reasoning_field_suffix(usage.reasoning_tokens),
         )?;
     }
     if !loaded.agent_session_ids.is_empty() {
@@ -1595,10 +1596,11 @@ fn write_loaded_agent_session_details(
         }
         writeln!(
             writer,
-            "  tokens: in={} out={} cache={}",
+            "  tokens: in={} out={} cache={}{}",
             format_token_count(token_usage.ledger.cumulative_usage.input_tokens),
             format_token_count(token_usage.ledger.cumulative_usage.output_tokens),
             format_token_count(token_usage.ledger.cumulative_usage.cache_read_tokens),
+            format_reasoning_field_suffix(token_usage.ledger.cumulative_usage.reasoning_tokens),
         )?;
     }
     if !loaded.subagents.is_empty() {
@@ -1668,10 +1670,11 @@ fn write_loaded_task_details(writer: &mut impl Write, loaded: &LoadedTask) -> io
         }
         writeln!(
             writer,
-            "  tokens: in={} out={} cache={}",
+            "  tokens: in={} out={} cache={}{}",
             format_token_count(token_usage.ledger.cumulative_usage.input_tokens),
             format_token_count(token_usage.ledger.cumulative_usage.output_tokens),
             format_token_count(token_usage.ledger.cumulative_usage.cache_read_tokens),
+            format_reasoning_field_suffix(token_usage.ledger.cumulative_usage.reasoning_tokens),
         )?;
     }
     if let Some(result) = &loaded.result {
@@ -1971,10 +1974,11 @@ fn format_session_counts(summary: &PersistedSessionSummary) -> String {
         .filter(|token_usage| !token_usage.is_zero())
     {
         rendered.push_str(&format!(
-            " · tokens in={} out={} cache={}",
+            " · tokens in={} out={} cache={}{}",
             format_token_count(token_usage.cumulative_usage.input_tokens),
             format_token_count(token_usage.cumulative_usage.output_tokens),
             format_token_count(token_usage.cumulative_usage.cache_read_tokens),
+            format_reasoning_field_suffix(token_usage.cumulative_usage.reasoning_tokens),
         ));
     }
     rendered
@@ -2020,14 +2024,15 @@ fn write_exit_summary(
     token_usage: &SessionTokenUsageReport,
 ) -> io::Result<()> {
     let usage = token_usage.aggregate_usage;
-    let total_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
+    let total_tokens = usage.visible_total_tokens();
     writeln!(
         writer,
-        "Token usage: total={} input={}{} output={}",
+        "Token usage: total={} input={}{} output={}{}",
         format_token_count(total_tokens),
-        format_token_count(usage.input_tokens),
+        format_token_count(usage.uncached_input_tokens()),
         format_cached_suffix(usage.cache_read_tokens),
         format_token_count(usage.output_tokens),
+        format_reasoning_suffix(usage.reasoning_tokens),
     )?;
     writeln!(
         writer,
@@ -2059,6 +2064,22 @@ fn format_cached_suffix(cache_read_tokens: u64) -> String {
         String::new()
     } else {
         format!(" (+ {} cached)", format_token_count(cache_read_tokens))
+    }
+}
+
+fn format_reasoning_suffix(reasoning_tokens: u64) -> String {
+    if reasoning_tokens == 0 {
+        String::new()
+    } else {
+        format!(" (reasoning {})", format_token_count(reasoning_tokens))
+    }
+}
+
+fn format_reasoning_field_suffix(reasoning_tokens: u64) -> String {
+    if reasoning_tokens == 0 {
+        String::new()
+    } else {
+        format!(" reasoning={}", format_token_count(reasoning_tokens))
     }
 }
 
@@ -2254,9 +2275,10 @@ mod tests {
                 cumulative_usage: TokenUsage {
                     input_tokens: 1_234,
                     output_tokens: 56,
-                    prefill_tokens: 0,
-                    decode_tokens: 0,
+                    prefill_tokens: 445,
+                    decode_tokens: 56,
                     cache_read_tokens: 789,
+                    reasoning_tokens: 12,
                 },
             }),
             resume_support: ResumeSupport::Reattachable,
@@ -2641,7 +2663,7 @@ mod tests {
     fn session_count_summary_includes_grouped_token_usage() {
         assert_eq!(
             format_session_counts(&persisted_summary("session-a")),
-            "7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789"
+            "7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789 reasoning=12"
         );
     }
 
@@ -2655,7 +2677,7 @@ mod tests {
             rendered,
             concat!(
                 "session-a  Session title\n",
-                "  7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789\n",
+                "  7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789 reasoning=12\n",
             )
         );
     }
@@ -2681,7 +2703,7 @@ mod tests {
             rendered,
             concat!(
                 "session-a  Session title\n",
-                "  7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789 · 2 matched events\n",
+                "  7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789 reasoning=12 · 2 matched events\n",
                 "  match: session title: Session title\n",
                 "  match: user> inspect repository\n",
             )
@@ -2697,11 +2719,12 @@ mod tests {
             "019d8aae-c699-75c3-b9de-6890b6f4d21a",
             &SessionTokenUsageReport {
                 aggregate_usage: TokenUsage {
-                    input_tokens: 914_229,
+                    input_tokens: 3_586_997,
                     output_tokens: 51_421,
-                    prefill_tokens: 0,
-                    decode_tokens: 0,
+                    prefill_tokens: 914_229,
+                    decode_tokens: 51_421,
                     cache_read_tokens: 2_672_768,
+                    reasoning_tokens: 24_457,
                 },
                 ..Default::default()
             },
@@ -2712,7 +2735,7 @@ mod tests {
         assert_eq!(
             rendered,
             concat!(
-                "Token usage: total=965,650 input=914,229 (+ 2,672,768 cached) output=51,421\n",
+                "Token usage: total=965,650 input=914,229 (+ 2,672,768 cached) output=51,421 (reasoning 24,457)\n",
                 "To continue this session, run nanoclaw resume 019d8aae-c699-75c3-b9de-6890b6f4d21a\n",
                 "To fork from this session, run nanoclaw fork 019d8aae-c699-75c3-b9de-6890b6f4d21a\n",
             )

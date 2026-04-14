@@ -53,7 +53,7 @@ use crate::tool_render::{
     ToolCommand, ToolCompletionState, ToolDetail, ToolDetailBlockKind, ToolDetailLabel, ToolReview,
     ToolReviewItem, ToolReviewItemKind, ToolReviewKind,
 };
-use agent::types::{MessageId, MessagePart, TaskId, TaskOrigin, TaskStatus};
+use agent::types::{MessageId, MessagePart, TaskId, TaskOrigin, TaskStatus, TokenUsage};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -2893,6 +2893,10 @@ fn footer_context_renders_configured_status_items() {
     state.session.git.branch = "main".to_string();
     state.session.statusline.clock = false;
     state.session.statusline.session = true;
+    state.session.token_ledger.cumulative_usage = TokenUsage {
+        reasoning_tokens: 300,
+        ..TokenUsage::from_input_output(20_000, 1_200, 3_000)
+    };
 
     let footer = format_footer_context(&state);
     let text = line_text_for(&footer);
@@ -2902,7 +2906,7 @@ fn footer_context_renders_configured_status_items() {
     assert!(text.contains("[workspace nanoclaw]"));
     assert!(text.contains("[git nanoclaw-repo@main]"));
     assert!(text.contains("Context [     ]"));
-    assert!(text.contains("[tokens in 0 · out 0]"));
+    assert!(text.contains("[tokens in 17k+3kc · out 1.2k+300r]"));
     assert!(!text.contains("[queue 0]"));
     assert!(text.contains("[sid session_123456]"));
 }

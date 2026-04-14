@@ -312,10 +312,11 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
                         .unwrap_or_else(|| "unknown".to_string())
                 ),
                 format!(
-                    "tokens in={} out={} cache={}",
+                    "tokens in={} out={} cache={}{}",
                     ledger.cumulative_usage.input_tokens,
                     ledger.cumulative_usage.output_tokens,
-                    ledger.cumulative_usage.cache_read_tokens
+                    ledger.cumulative_usage.cache_read_tokens,
+                    format_reasoning_suffix(ledger.cumulative_usage.reasoning_tokens),
                 ),
             ],
         ),
@@ -646,6 +647,14 @@ pub(crate) fn format_session_event_line(event: &SessionEventEnvelope) -> Transcr
             "Ended session",
             [format_reason_detail(reason.as_deref()).unwrap_or_default()],
         ),
+    }
+}
+
+fn format_reasoning_suffix(reasoning_tokens: u64) -> String {
+    if reasoning_tokens == 0 {
+        String::new()
+    } else {
+        format!(" reasoning={reasoning_tokens}")
     }
 }
 

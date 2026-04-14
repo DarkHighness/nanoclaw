@@ -527,7 +527,13 @@ fn parse_openai_usage(usage: Option<&Value>) -> Option<TokenUsage> {
         .and_then(|details| details.get("cached_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let usage = TokenUsage::from_input_output(input_tokens, output_tokens, cache_read_tokens);
+    let reasoning_tokens = usage
+        .get("output_tokens_details")
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut usage = TokenUsage::from_input_output(input_tokens, output_tokens, cache_read_tokens);
+    usage.reasoning_tokens = reasoning_tokens;
     (!usage.is_zero()).then_some(usage)
 }
 
@@ -1265,7 +1271,7 @@ mod tests {
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}\n\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":120,\"output_tokens\":30,\"input_tokens_details\":{\"cached_tokens\":20}}}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"usage\":{\"input_tokens\":120,\"output_tokens\":30,\"input_tokens_details\":{\"cached_tokens\":20},\"output_tokens_details\":{\"reasoning_tokens\":12}}}}\n\n",
             "data: [DONE]\n\n"
         );
         Mock::given(method("POST"))
@@ -1311,7 +1317,10 @@ mod tests {
                 ..
             })) if message_id.as_str() == "msg_1"
                 && response_id.as_str() == "resp_1"
-                && *usage == TokenUsage::from_input_output(120, 30, 20)
+                && *usage == TokenUsage {
+                    reasoning_tokens: 12,
+                    ..TokenUsage::from_input_output(120, 30, 20)
+                }
                 && usage.prefix_cache_hit_rate_basis_points() == Some(1667)
         ));
     }

@@ -24,25 +24,13 @@ pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<Inspector
         }
         lines.push(InspectorEntry::field(
             "session tokens",
-            format!(
-                "in={} out={} cache={}",
-                session_usage.ledger.cumulative_usage.input_tokens,
-                session_usage.ledger.cumulative_usage.output_tokens,
-                session_usage.ledger.cumulative_usage.cache_read_tokens,
-            ),
+            format_token_usage_brief(session_usage.ledger.cumulative_usage),
         ));
     }
     if !session.token_usage.aggregate_usage.is_zero() {
         lines.push(InspectorEntry::field(
             "total tokens",
-            format!(
-                "in={} out={} prefill={} decode={} cache={}",
-                session.token_usage.aggregate_usage.input_tokens,
-                session.token_usage.aggregate_usage.output_tokens,
-                session.token_usage.aggregate_usage.prefill_tokens,
-                session.token_usage.aggregate_usage.decode_tokens,
-                session.token_usage.aggregate_usage.cache_read_tokens,
-            ),
+            format_token_usage_detailed(session.token_usage.aggregate_usage),
         ));
     }
     if !session.token_usage.subagents.is_empty() {
@@ -128,12 +116,7 @@ pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Ve
         }
         lines.push(InspectorEntry::field(
             "agent tokens",
-            format!(
-                "in={} out={} cache={}",
-                token_usage.ledger.cumulative_usage.input_tokens,
-                token_usage.ledger.cumulative_usage.output_tokens,
-                token_usage.ledger.cumulative_usage.cache_read_tokens,
-            ),
+            format_token_usage_brief(token_usage.ledger.cumulative_usage),
         ));
     }
     if let Some(prompt) = &session.summary.last_user_prompt {
@@ -230,12 +213,7 @@ pub(crate) fn format_task_inspector(task: &LoadedTask) -> Vec<InspectorEntry> {
         }
         lines.push(InspectorEntry::field(
             "task tokens",
-            format!(
-                "in={} out={} cache={}",
-                token_usage.ledger.cumulative_usage.input_tokens,
-                token_usage.ledger.cumulative_usage.output_tokens,
-                token_usage.ledger.cumulative_usage.cache_read_tokens,
-            ),
+            format_token_usage_brief(token_usage.ledger.cumulative_usage),
         ));
     }
     if let Some(result) = &task.result {
@@ -386,11 +364,9 @@ fn format_token_usage_record_line(record: &TokenUsageRecord) -> TranscriptEntry 
         .map(|value| preview_text(value, 20))
         .unwrap_or_else(|| preview_id(record.session_id.as_str()));
     TranscriptEntry::AssistantMessage(format!(
-        "{} in={} out={} cache={}",
+        "{} {}",
         name,
-        record.ledger.cumulative_usage.input_tokens,
-        record.ledger.cumulative_usage.output_tokens,
-        record.ledger.cumulative_usage.cache_read_tokens,
+        format_token_usage_brief(record.ledger.cumulative_usage),
     ))
 }
 
@@ -400,10 +376,8 @@ fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> TranscriptEn
         .as_ref()
         .map(|usage| {
             format!(
-                " in={} out={} cache={}",
-                usage.ledger.cumulative_usage.input_tokens,
-                usage.ledger.cumulative_usage.output_tokens,
-                usage.ledger.cumulative_usage.cache_read_tokens
+                " {}",
+                format_token_usage_brief(usage.ledger.cumulative_usage)
             )
         })
         .unwrap_or_default();
@@ -419,4 +393,34 @@ fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> TranscriptEn
 
 fn format_task_message_line(message: &LoadedTaskMessage) -> TranscriptEntry {
     TranscriptEntry::UserPrompt(preview_text(&message_to_text(&message.message), 72))
+}
+
+fn format_token_usage_brief(usage: TokenUsage) -> String {
+    format!(
+        "in={} out={} cache={}{}",
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_tokens,
+        format_reasoning_suffix(usage.reasoning_tokens),
+    )
+}
+
+fn format_token_usage_detailed(usage: TokenUsage) -> String {
+    format!(
+        "in={} out={} prefill={} decode={} cache={}{}",
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.uncached_input_tokens(),
+        usage.visible_decode_tokens(),
+        usage.cache_read_tokens,
+        format_reasoning_suffix(usage.reasoning_tokens),
+    )
+}
+
+fn format_reasoning_suffix(reasoning_tokens: u64) -> String {
+    if reasoning_tokens == 0 {
+        String::new()
+    } else {
+        format!(" reasoning={reasoning_tokens}")
+    }
 }

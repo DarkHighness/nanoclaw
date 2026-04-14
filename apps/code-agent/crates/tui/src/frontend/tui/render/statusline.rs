@@ -167,8 +167,8 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
             "tokens",
             format!(
                 "in {} · out {}",
-                compact_u64(state.session.token_ledger.cumulative_usage.input_tokens),
-                compact_u64(state.session.token_ledger.cumulative_usage.output_tokens)
+                compact_input_usage(state.session.token_ledger.cumulative_usage),
+                compact_output_usage(state.session.token_ledger.cumulative_usage)
             ),
             Style::default().fg(palette().muted),
         );
@@ -177,14 +177,14 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
             &mut spans,
             config.input_tokens,
             "in",
-            compact_u64(state.session.token_ledger.cumulative_usage.input_tokens),
+            compact_input_usage(state.session.token_ledger.cumulative_usage),
             Style::default().fg(palette().muted),
         );
         push_labeled_badge(
             &mut spans,
             config.output_tokens,
             "out",
-            compact_u64(state.session.token_ledger.cumulative_usage.output_tokens),
+            compact_output_usage(state.session.token_ledger.cumulative_usage),
             Style::default().fg(palette().muted),
         );
     }
@@ -490,6 +490,26 @@ fn footer_line_width(line: &Line<'_>) -> u16 {
 
 fn compact_usize(value: usize) -> String {
     compact_u64(value as u64)
+}
+
+fn compact_input_usage(usage: agent::types::TokenUsage) -> String {
+    let mut rendered = compact_u64(usage.uncached_input_tokens());
+    if usage.cache_read_tokens > 0 {
+        rendered.push('+');
+        rendered.push_str(&compact_u64(usage.cache_read_tokens));
+        rendered.push('c');
+    }
+    rendered
+}
+
+fn compact_output_usage(usage: agent::types::TokenUsage) -> String {
+    let mut rendered = compact_u64(usage.output_tokens);
+    if usage.reasoning_tokens > 0 {
+        rendered.push('+');
+        rendered.push_str(&compact_u64(usage.reasoning_tokens));
+        rendered.push('r');
+    }
+    rendered
 }
 
 fn compact_u64(value: u64) -> String {

@@ -137,13 +137,22 @@ fn format_summary_token_usage(token_usage: Option<&SessionSummaryTokenUsage>) ->
         .filter(|token_usage| !token_usage.is_zero())
         .map(|token_usage| {
             format!(
-                " · tokens in={} out={} cache={}",
+                " · tokens in={} out={} cache={}{}",
                 token_usage.cumulative_usage.input_tokens,
                 token_usage.cumulative_usage.output_tokens,
                 token_usage.cumulative_usage.cache_read_tokens,
+                format_reasoning_suffix(token_usage.cumulative_usage.reasoning_tokens),
             )
         })
         .unwrap_or_default()
+}
+
+fn format_reasoning_suffix(reasoning_tokens: u64) -> String {
+    if reasoning_tokens == 0 {
+        String::new()
+    } else {
+        format!(" reasoning={reasoning_tokens}")
+    }
 }
 
 fn session_summary_primary(summary: &PersistedSessionSummary) -> String {

@@ -16,7 +16,7 @@ use crate::ui::{
 };
 use agent::types::{
     AgentEnvelopeKind, AgentSessionId, AgentStatus, HookEvent, Message, SessionEventEnvelope,
-    SessionEventKind, SessionSummaryTokenUsage,
+    SessionEventKind, SessionSummaryTokenUsage, TokenUsage,
 };
 use store::TokenUsageRecord;
 

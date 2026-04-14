@@ -8,6 +8,7 @@ pub struct TokenUsage {
     pub prefill_tokens: u64,
     pub decode_tokens: u64,
     pub cache_read_tokens: u64,
+    pub reasoning_tokens: u64,
 }
 
 impl TokenUsage {
@@ -23,6 +24,7 @@ impl TokenUsage {
             prefill_tokens: input_tokens.saturating_sub(cache_read_tokens),
             decode_tokens: output_tokens,
             cache_read_tokens,
+            reasoning_tokens: 0,
         }
     }
 
@@ -33,6 +35,7 @@ impl TokenUsage {
             && self.prefill_tokens == 0
             && self.decode_tokens == 0
             && self.cache_read_tokens == 0
+            && self.reasoning_tokens == 0
     }
 
     pub fn accumulate(&mut self, other: &Self) {
@@ -43,6 +46,32 @@ impl TokenUsage {
         self.cache_read_tokens = self
             .cache_read_tokens
             .saturating_add(other.cache_read_tokens);
+        self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
+    }
+
+    #[must_use]
+    pub const fn uncached_input_tokens(&self) -> u64 {
+        let derived = self.input_tokens.saturating_sub(self.cache_read_tokens);
+        if self.prefill_tokens == 0 && derived > 0 {
+            derived
+        } else {
+            self.prefill_tokens
+        }
+    }
+
+    #[must_use]
+    pub const fn visible_total_tokens(&self) -> u64 {
+        self.uncached_input_tokens()
+            .saturating_add(self.output_tokens)
+    }
+
+    #[must_use]
+    pub const fn visible_decode_tokens(&self) -> u64 {
+        if self.decode_tokens == 0 && self.output_tokens > 0 {
+            self.output_tokens
+        } else {
+            self.decode_tokens
+        }
     }
 
     #[must_use]
@@ -129,5 +158,20 @@ mod tests {
         assert_eq!(aggregate.input_tokens, 200);
         assert_eq!(aggregate.cache_read_tokens, 60);
         assert_eq!(aggregate.prefix_cache_hit_rate_basis_points(), Some(3000));
+    }
+
+    #[test]
+    fn uncached_input_tokens_falls_back_to_derived_prefill_for_legacy_records() {
+        let usage = TokenUsage {
+            input_tokens: 120,
+            output_tokens: 30,
+            prefill_tokens: 0,
+            decode_tokens: 0,
+            cache_read_tokens: 20,
+            reasoning_tokens: 0,
+        };
+
+        assert_eq!(usage.uncached_input_tokens(), 100);
+        assert_eq!(usage.visible_total_tokens(), 130);
     }
 }

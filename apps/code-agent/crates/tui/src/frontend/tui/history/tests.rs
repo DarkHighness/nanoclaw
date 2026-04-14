@@ -13,7 +13,8 @@ use crate::ui::{
 };
 use agent::types::{
     AgentSessionId, Message, SessionEventEnvelope, SessionEventKind, SessionId, TaskId, TaskOrigin,
-    TaskStatus, ToolCall, ToolCallId, ToolOrigin, ToolResult,
+    TaskStatus, TokenLedgerSnapshot, TokenUsage, TokenUsagePhase, ToolCall, ToolCallId, ToolOrigin,
+    ToolResult,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -328,6 +329,32 @@ fn tool_completion_event_includes_shell_summary_details() {
     assert_eq!(
         format_session_event_line(&event).serialized(),
         "• Ran cargo test\n  └ $ cargo test\n  └ Output tests passed"
+    );
+}
+
+#[test]
+fn token_usage_event_includes_cache_and_reasoning_details() {
+    let event = SessionEventEnvelope::new(
+        SessionId::from("session-1"),
+        AgentSessionId::from("agent-session-1"),
+        None,
+        None,
+        SessionEventKind::TokenUsageUpdated {
+            phase: TokenUsagePhase::ResponseCompleted,
+            ledger: TokenLedgerSnapshot {
+                context_window: None,
+                last_usage: None,
+                cumulative_usage: TokenUsage {
+                    reasoning_tokens: 12,
+                    ..TokenUsage::from_input_output(120, 30, 20)
+                },
+            },
+        },
+    );
+
+    assert_eq!(
+        format_session_event_line(&event).serialized(),
+        "• Updated token usage\n  └ phase ResponseCompleted\n  └ context unknown\n  └ tokens in=120 out=30 cache=20 reasoning=12"
     );
 }
 

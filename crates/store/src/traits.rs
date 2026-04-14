@@ -560,7 +560,7 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
         }
         SessionEventKind::TokenUsageUpdated { phase, ledger } => {
             values.push(format!(
-                "token_usage {:?} context={} input={} output={} prefill={} decode={} cache_read={}",
+                "token_usage {:?} context={} input={} output={} prefill={} decode={} cache_read={} reasoning={}",
                 phase,
                 ledger
                     .context_window
@@ -571,6 +571,7 @@ pub(crate) fn searchable_session_event_strings(event: &SessionEventEnvelope) -> 
                 ledger.cumulative_usage.prefill_tokens,
                 ledger.cumulative_usage.decode_tokens,
                 ledger.cumulative_usage.cache_read_tokens,
+                ledger.cumulative_usage.reasoning_tokens,
             ));
         }
         SessionEventKind::HookInvoked { hook_name, .. } => {
