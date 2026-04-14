@@ -22,6 +22,7 @@ pub struct DriverActivationOutcome {
     pub mcp_servers: Vec<McpServerConfig>,
     pub instructions: Vec<String>,
     pub diagnostics: Vec<String>,
+    pub tool_names: Vec<String>,
     pub primary_memory_backend: Option<Arc<dyn MemoryBackend>>,
 }
 
@@ -54,6 +55,7 @@ impl DriverActivationOutcome {
             && self.mcp_servers.is_empty()
             && self.instructions.is_empty()
             && self.diagnostics.is_empty()
+            && self.tool_names.is_empty()
     }
 
     pub fn host_messages(&self) -> impl Iterator<Item = DriverHostMessage> + '_ {
@@ -125,6 +127,7 @@ impl PluginDriverRegistry {
     ) -> Result<DriverActivationOutcome> {
         let mut outcome = DriverActivationOutcome::default();
         for activation in activations {
+            let before_tools = context.tools.names();
             let Some(factory) = self.factories.get(activation.runtime.driver.as_str()) else {
                 match unknown_driver_policy {
                     UnknownDriverPolicy::Error => bail!(
@@ -142,7 +145,16 @@ impl PluginDriverRegistry {
                 }
             };
             factory.activate(activation, context, &mut outcome)?;
+            let after_tools = context.tools.names();
+            outcome.tool_names.extend(
+                after_tools
+                    .into_iter()
+                    .filter(|name| !before_tools.contains(name))
+                    .map(|name| name.to_string()),
+            );
         }
+        outcome.tool_names.sort();
+        outcome.tool_names.dedup();
         Ok(outcome)
     }
 }

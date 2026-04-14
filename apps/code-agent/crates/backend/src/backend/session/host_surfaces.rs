@@ -3,6 +3,8 @@ use super::*;
 impl CodeAgentSession {
     fn configured_stdio_mcp_server_names(&self) -> Vec<String> {
         self.configured_mcp_servers
+            .read()
+            .unwrap()
             .iter()
             .filter_map(|server| match server.transport {
                 McpTransportConfig::Stdio { .. } => Some(server.name.to_string()),
@@ -20,6 +22,8 @@ impl CodeAgentSession {
             .map(|server| server.server_name.clone())
             .collect::<BTreeSet<_>>();
         self.configured_mcp_servers
+            .read()
+            .unwrap()
             .iter()
             .filter(|server| matches!(server.transport, McpTransportConfig::Stdio { .. }))
             .filter(|server| !connected_names.contains(&server.name))
@@ -29,6 +33,8 @@ impl CodeAgentSession {
 
     fn configured_command_hook_names(&self) -> Vec<String> {
         self.configured_runtime_hooks
+            .read()
+            .unwrap()
             .iter()
             .filter_map(|hook| match hook.handler {
                 HookHandler::Command(_) => Some(hook.name.to_string()),
@@ -42,10 +48,12 @@ impl CodeAgentSession {
         host_process_surfaces_allowed: bool,
     ) -> Vec<HookRegistration> {
         if host_process_surfaces_allowed {
-            return self.configured_runtime_hooks.as_ref().clone();
+            return self.configured_runtime_hooks.read().unwrap().clone();
         }
 
         self.configured_runtime_hooks
+            .read()
+            .unwrap()
             .iter()
             .filter(|hook| !matches!(hook.handler, HookHandler::Command(_)))
             .cloned()
@@ -137,7 +145,7 @@ impl CodeAgentSession {
         *self.runtime_hooks.write().unwrap() = hooks;
     }
 
-    fn rebuild_mcp_resource_tools(&self, runtime: &mut AgentRuntime) {
+    pub(super) fn rebuild_mcp_resource_tools(&self, runtime: &mut AgentRuntime) {
         let registry = runtime.tool_registry_handle();
         // Resource listing/reading stays behind fixed aggregate tool names, so
         // permission-mode changes that add or remove servers must rebuild the

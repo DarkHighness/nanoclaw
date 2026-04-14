@@ -241,11 +241,36 @@ impl CodeAgentUiSession {
             UIAsyncCommand::ListMcpServers => {
                 UIAsyncResult::McpServerSummaries(self.inner.list_mcp_servers().await)
             }
+            UIAsyncCommand::ListManagedMcpServers => UIAsyncResult::ManagedMcpServerSummaries(
+                self.inner.list_managed_mcp_servers().await?,
+            ),
+            UIAsyncCommand::SetManagedMcpServerEnabled { name, enabled } => {
+                self.inner
+                    .set_managed_mcp_server_enabled(&name, enabled)
+                    .await?;
+                UIAsyncResult::Unit(())
+            }
             UIAsyncCommand::ListMcpPrompts => {
                 UIAsyncResult::McpPromptSummaries(self.inner.list_mcp_prompts().await)
             }
             UIAsyncCommand::ListMcpResources => {
                 UIAsyncResult::McpResourceSummaries(self.inner.list_mcp_resources().await)
+            }
+            UIAsyncCommand::ListManagedSkills => {
+                UIAsyncResult::ManagedSkillSummaries(self.inner.list_managed_skills().await?)
+            }
+            UIAsyncCommand::SetManagedSkillEnabled { name, enabled } => {
+                self.inner.set_managed_skill_enabled(&name, enabled).await?;
+                UIAsyncResult::Unit(())
+            }
+            UIAsyncCommand::ListManagedPlugins => {
+                UIAsyncResult::ManagedPluginSummaries(self.inner.list_managed_plugins().await?)
+            }
+            UIAsyncCommand::SetManagedPluginEnabled { plugin_id, enabled } => {
+                self.inner
+                    .set_managed_plugin_enabled(&plugin_id, enabled)
+                    .await?;
+                UIAsyncResult::Unit(())
             }
             UIAsyncCommand::LoadMcpPrompt {
                 server_name,

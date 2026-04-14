@@ -1,6 +1,6 @@
 use super::super::state::{
-    InspectorAction, InspectorEntry, StatusLinePickerState, ThemePickerState,
-    ThinkingEffortPickerState,
+    InspectorAction, InspectorEntry, ManagedTogglePickerState, StatusLinePickerState,
+    ThemePickerState, ThinkingEffortPickerState,
 };
 use super::theme::palette;
 use crate::statusline::{StatusLineConfig, status_line_fields};
@@ -430,6 +430,97 @@ pub(super) fn build_theme_picker_text(
         "Moving the picker previews immediately; Enter saves and Esc restores.",
         Style::default().fg(palette().subtle),
     )));
+    Text::from(lines)
+}
+
+pub(super) fn build_managed_toggle_picker_text(
+    title: &str,
+    picker: &ManagedTogglePickerState,
+) -> Text<'static> {
+    let enabled_count = picker.items.iter().filter(|item| item.enabled).count();
+    let noun = match picker.kind {
+        crate::frontend::tui::state::ManagedTogglePickerKind::Mcp => "servers",
+        crate::frontend::tui::state::ManagedTogglePickerKind::Skill => "skills",
+        crate::frontend::tui::state::ManagedTogglePickerKind::Plugin => "plugins",
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                title.to_ascii_lowercase(),
+                Style::default().fg(palette().header),
+            ),
+            Span::styled(" · ", Style::default().fg(palette().subtle)),
+            Span::styled(
+                format!("{enabled_count}/{} enabled {noun}", picker.items.len()),
+                Style::default().fg(palette().user),
+            ),
+        ]),
+        Line::from(Span::styled(
+            "space toggle · enter toggle · ↑↓ move · home/end jump · esc close",
+            Style::default().fg(palette().subtle),
+        )),
+        Line::raw(""),
+    ];
+
+    if picker.items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Nothing is available to manage in this workspace.",
+            Style::default().fg(palette().subtle),
+        )));
+        return Text::from(lines);
+    }
+
+    for (index, item) in picker.items.iter().enumerate() {
+        let selected = picker.selected == index;
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "›" } else { " " },
+                Style::default().fg(if selected {
+                    palette().user
+                } else {
+                    palette().subtle
+                }),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                if item.enabled { "[x]" } else { "[ ]" },
+                Style::default().fg(if item.enabled {
+                    palette().assistant
+                } else {
+                    palette().subtle
+                }),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                item.label.clone(),
+                Style::default()
+                    .fg(if selected {
+                        palette().header
+                    } else {
+                        palette().text
+                    })
+                    .add_modifier(if selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ),
+        ]));
+        if !item.detail.trim().is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default().fg(palette().subtle)),
+                Span::styled(
+                    item.detail.clone(),
+                    Style::default().fg(if selected {
+                        palette().muted
+                    } else {
+                        palette().subtle
+                    }),
+                ),
+            ]));
+        }
+    }
+
     Text::from(lines)
 }
 

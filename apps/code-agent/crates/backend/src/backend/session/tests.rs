@@ -1,8 +1,9 @@
 use super::{
     CodeAgentSession, CompactionWorkingSnapshot, LiveTaskAttentionAction, LiveTaskSummary,
-    LiveTaskWaitOutcome, PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING,
-    STDIO_MCP_DISABLED_WARNING_PREFIX, SessionMemoryRefreshContext, SessionOperation,
-    SessionOperationAction, SessionStartupSnapshot, SideQuestionContextSnapshot,
+    LiveTaskWaitOutcome, ManagedSurfaceReloadConfig,
+    PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING, STDIO_MCP_DISABLED_WARNING_PREFIX,
+    SessionMemoryRefreshContext, SessionOperation, SessionOperationAction, SessionStartupSnapshot,
+    SideQuestionContextSnapshot,
 };
 use crate::backend::boot_runtime::{
     COMMAND_HOOK_DISABLED_WARNING_PREFIX, MANAGED_CODE_INTEL_DISABLED_WARNING_PREFIX,
@@ -45,6 +46,7 @@ use agent::types::{
 use agent::{AgentRuntimeBuilder, RequestPermissionsTool, RuntimeCommand, SkillCatalog};
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
+use nanoclaw_config::{CoreConfig, PluginsConfig};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -667,15 +669,31 @@ fn build_session_with_runtime_state(
         Arc::new(agent::ManagedPolicyProcessExecutor::new()),
         startup.host_process_surfaces_allowed,
     ));
+    let configured_runtime_hooks = Arc::new(RwLock::new(configured_runtime_hooks));
     let runtime_hooks = Arc::new(RwLock::new(if startup.host_process_surfaces_allowed {
-        configured_runtime_hooks.clone()
+        configured_runtime_hooks.read().unwrap().clone()
     } else {
         configured_runtime_hooks
+            .read()
+            .unwrap()
             .iter()
             .filter(|hook| !matches!(hook.handler, HookHandler::Command(_)))
             .cloned()
             .collect()
     }));
+    let core_config = CoreConfig::default();
+    let plugin_instructions = Arc::new(RwLock::new(Vec::new()));
+    let managed_surface_reload = ManagedSurfaceReloadConfig {
+        env_map: agent_env::EnvMap::default(),
+        primary_profile: core_config
+            .resolve_primary_agent()
+            .expect("default agent profile"),
+        memory_profile: core_config
+            .resolve_memory_profile()
+            .expect("default memory profile"),
+        skill_roots: Vec::new(),
+        plugins: Arc::new(RwLock::new(PluginsConfig::default())),
+    };
     let session_tool_context = Arc::new(RwLock::new(ToolExecutionContext {
         workspace_root: startup.workspace_root.clone(),
         worktree_root: Some(startup.workspace_root.clone()),
@@ -727,10 +745,13 @@ fn build_session_with_runtime_state(
         default_sandbox_policy,
         startup,
         SkillCatalog::default(),
+        plugin_instructions,
         memory_backend,
         Arc::new(std::sync::Mutex::new(
             crate::backend::session_memory_compaction::SessionMemoryRefreshState::default(),
         )),
+        managed_surface_reload,
+        Vec::new(),
     )
 }
 

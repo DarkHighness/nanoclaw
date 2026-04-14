@@ -1,4 +1,7 @@
 use super::*;
+use crate::frontend::tui::slash_commands::mcp::{
+    managed_toggle_picker_subject, managed_toggle_picker_title,
+};
 use crate::frontend::tui::state::InspectorAction;
 use crate::frontend::tui::terminal_shell::TerminalLoopControl;
 
@@ -396,6 +399,151 @@ impl CodeAgentTui {
                 true
             }
             _ => false,
+        }
+    }
+
+    pub(crate) async fn handle_managed_toggle_picker_key(
+        &mut self,
+        key: KeyEvent,
+    ) -> Result<Option<TerminalLoopControl>> {
+        let snapshot = self.ui_state.snapshot();
+        let Some(picker) = snapshot.managed_toggle_picker.clone() else {
+            return Ok(None);
+        };
+        if !snapshot.input.is_empty() {
+            return Ok(None);
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_managed_toggle_picker(true);
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            KeyCode::Down => {
+                self.ui_state.mutate(|state| {
+                    let _ = state.move_managed_toggle_picker(false);
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            KeyCode::Home => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.managed_toggle_picker.as_mut() {
+                        picker.selected = 0;
+                    }
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            KeyCode::End => {
+                self.ui_state.mutate(|state| {
+                    if let Some(picker) = state.managed_toggle_picker.as_mut() {
+                        picker.selected = picker.items.len().saturating_sub(1);
+                    }
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                let Some(selected) = snapshot.selected_managed_toggle_item() else {
+                    return Ok(Some(TerminalLoopControl::Continue));
+                };
+                if self.turn_task.is_some() {
+                    let subject = managed_toggle_picker_subject(picker.kind);
+                    self.ui_state.mutate(move |state| {
+                        state.status =
+                            format!("Wait for the current turn before toggling {subject}s");
+                        state.push_activity(format!("{subject} toggle blocked while turn running"));
+                    });
+                    return Ok(Some(TerminalLoopControl::Continue));
+                }
+
+                let target_enabled = !selected.enabled;
+                let result = match picker.kind {
+                    state::ManagedTogglePickerKind::Mcp => {
+                        self.run_ui::<()>(UIAsyncCommand::SetManagedMcpServerEnabled {
+                            name: selected.id.clone(),
+                            enabled: target_enabled,
+                        })
+                        .await
+                    }
+                    state::ManagedTogglePickerKind::Skill => {
+                        self.run_ui::<()>(UIAsyncCommand::SetManagedSkillEnabled {
+                            name: selected.id.clone(),
+                            enabled: target_enabled,
+                        })
+                        .await
+                    }
+                    state::ManagedTogglePickerKind::Plugin => {
+                        self.run_ui::<()>(UIAsyncCommand::SetManagedPluginEnabled {
+                            plugin_id: selected.id.clone(),
+                            enabled: target_enabled,
+                        })
+                        .await
+                    }
+                };
+
+                match result {
+                    Ok(()) => {
+                        let refreshed = self.load_managed_toggle_items(picker.kind).await?;
+                        let startup = self.startup_snapshot();
+                        self.sync_session_summary_from_snapshot(&startup);
+                        let title = managed_toggle_picker_title(picker.kind);
+                        let selected_id = selected.id.clone();
+                        let status_subject = managed_toggle_picker_subject(picker.kind);
+                        let label = selected.label.clone();
+                        self.ui_state.mutate(move |state| {
+                            state.replace_managed_toggle_items(
+                                picker.kind,
+                                title,
+                                refreshed,
+                                Some(selected_id.as_str()),
+                            );
+                            state.status = format!(
+                                "{} {}",
+                                label,
+                                if target_enabled {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                }
+                            );
+                            state.push_activity(format!(
+                                "{} {} {}",
+                                status_subject,
+                                label,
+                                if target_enabled {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                }
+                            ));
+                        });
+                    }
+                    Err(error) => {
+                        let message = summarize_nonfatal_error("toggle managed surface", &error);
+                        let label = selected.label.clone();
+                        let subject = managed_toggle_picker_subject(picker.kind);
+                        self.ui_state.mutate(move |state| {
+                            state.status = format!("Failed to toggle {subject} {label}: {message}");
+                            state.push_activity(format!(
+                                "failed to toggle {subject} {}",
+                                state::preview_text(&message, 56)
+                            ));
+                        });
+                    }
+                }
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            KeyCode::Esc => {
+                let title = managed_toggle_picker_title(picker.kind);
+                self.ui_state.mutate(move |state| {
+                    state.close_managed_toggle_picker();
+                    state.status = format!("Closed {title} manager");
+                    state.push_activity(format!("closed {} manager", title.to_ascii_lowercase()));
+                });
+                Ok(Some(TerminalLoopControl::Continue))
+            }
+            _ => Ok(None),
         }
     }
 

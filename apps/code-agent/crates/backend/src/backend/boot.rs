@@ -71,11 +71,12 @@ struct RuntimeBuildResult {
     worktree_manager: Arc<SessionWorktreeManager>,
     store: Arc<dyn store::SessionStore>,
     skill_catalog: SkillCatalog,
-    plugin_instructions: Vec<String>,
+    plugin_instructions: Arc<RwLock<Vec<String>>>,
     mcp_servers: Vec<ConnectedMcpServer>,
     mcp_server_configs: Vec<McpServerConfig>,
     runtime_hook_state: Arc<RwLock<Vec<HookRegistration>>>,
-    configured_runtime_hooks: Vec<HookRegistration>,
+    configured_runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
+    driver_tool_names: Vec<String>,
     mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
     host_process_executor: Arc<SwitchableHostProcessExecutor>,
     command_hook_executor: Arc<SwitchableCommandHookExecutor>,
@@ -177,7 +178,7 @@ pub struct CodeAgentSubagentProfileResolver {
     pub env_map: EnvMap,
     pub base_tool_context: Arc<RwLock<ToolExecutionContext>>,
     pub skill_catalog: SkillCatalog,
-    pub plugin_instructions: Vec<String>,
+    pub plugin_instructions: Arc<RwLock<Vec<String>>>,
 }
 
 impl CodeAgentSubagentProfileResolver {
@@ -242,7 +243,7 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
             instructions: build_system_preamble(
                 base_tool_context.workspace_root.as_path(),
                 &profile,
-                &self.plugin_instructions,
+                &self.plugin_instructions.read().unwrap(),
                 &base_tool_context.model_visibility,
             ),
             supports_tool_calls: profile.model.capabilities.tool_calls,
@@ -366,11 +367,12 @@ where
         worktree_manager,
         store,
         skill_catalog,
-        plugin_instructions: _plugin_instructions,
+        plugin_instructions,
         mcp_servers,
         mcp_server_configs,
         runtime_hook_state,
         configured_runtime_hooks,
+        driver_tool_names,
         mcp_process_executor,
         host_process_executor,
         command_hook_executor,
@@ -469,8 +471,17 @@ where
             motion: options.motion.clone(),
         },
         skill_catalog,
+        plugin_instructions,
         memory_backend,
         session_memory_refresh_state,
+        super::session::ManagedSurfaceReloadConfig {
+            env_map: options.env_map.clone(),
+            primary_profile: options.primary_profile.clone(),
+            memory_profile: options.memory_profile.clone(),
+            skill_roots: options.skill_roots.clone(),
+            plugins: Arc::new(RwLock::new(options.plugins.clone())),
+        },
+        driver_tool_names,
     );
     progress(BootProgressUpdate {
         stage: BootProgressStage::Finalize,
@@ -792,17 +803,18 @@ where
         .flat_map(|skill| skill.hooks.clone())
         .collect::<Vec<_>>();
     runtime_hooks.extend(skill_hooks);
-    let configured_runtime_hooks = runtime_hooks;
+    let configured_runtime_hooks = Arc::new(RwLock::new(runtime_hooks));
     let runtime_hooks = filter_runtime_hooks(
-        configured_runtime_hooks.clone(),
+        configured_runtime_hooks.read().unwrap().clone(),
         host_process_surfaces_allowed,
         &mut startup_warnings,
     );
     let runtime_hook_state = Arc::new(RwLock::new(runtime_hooks.clone()));
+    let plugin_instructions = Arc::new(RwLock::new(plugin_instructions));
     let instructions = build_system_preamble(
         workspace_root,
         &options.primary_profile,
-        &plugin_instructions,
+        &plugin_instructions.read().unwrap(),
         &tool_context.model_visibility,
     );
     let subagent_profile_resolver = Arc::new(CodeAgentSubagentProfileResolver {
@@ -925,6 +937,7 @@ where
         mcp_server_configs: resolved_mcp_servers,
         runtime_hook_state,
         configured_runtime_hooks,
+        driver_tool_names: driver_outcome.tool_names.clone(),
         mcp_process_executor: process_executor.clone() as Arc<dyn agent::tools::ProcessExecutor>,
         host_process_executor: process_executor,
         command_hook_executor,

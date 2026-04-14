@@ -46,23 +46,18 @@ impl CodeAgentTui {
     pub(crate) async fn apply_mcp_command(&mut self, command: SlashCommand) -> Result<bool> {
         match command {
             SlashCommand::Mcp => {
-                let servers: Vec<McpServerSummary> =
-                    self.run_ui(UIAsyncCommand::ListMcpServers).await?;
-                self.ui_state.mutate(move |state| {
-                    let lines = if servers.is_empty() {
-                        vec![
-                            InspectorEntry::section("MCP"),
-                            InspectorEntry::Muted("No MCP servers connected.".to_string()),
-                        ]
-                    } else {
-                        std::iter::once(InspectorEntry::section("MCP"))
-                            .chain(servers.iter().map(format_mcp_server_summary_line))
-                            .collect()
-                    };
-                    state.show_main_view("MCP", lines);
-                    state.status = "Listed MCP servers".to_string();
-                    state.push_activity("listed mcp servers");
-                });
+                self.open_managed_toggle_picker(state::ManagedTogglePickerKind::Mcp)
+                    .await?;
+                Ok(false)
+            }
+            SlashCommand::Skill => {
+                self.open_managed_toggle_picker(state::ManagedTogglePickerKind::Skill)
+                    .await?;
+                Ok(false)
+            }
+            SlashCommand::Plugin => {
+                self.open_managed_toggle_picker(state::ManagedTogglePickerKind::Plugin)
+                    .await?;
                 Ok(false)
             }
             SlashCommand::Prompts => {
@@ -107,5 +102,145 @@ impl CodeAgentTui {
             }
             _ => unreachable!("mcp handler received non-mcp command"),
         }
+    }
+
+    pub(crate) async fn load_managed_toggle_items(
+        &self,
+        kind: state::ManagedTogglePickerKind,
+    ) -> Result<Vec<state::ManagedTogglePickerItem>> {
+        match kind {
+            state::ManagedTogglePickerKind::Mcp => {
+                let servers: Vec<ManagedMcpServerSummary> =
+                    self.run_ui(UIAsyncCommand::ListManagedMcpServers).await?;
+                Ok(servers
+                    .into_iter()
+                    .map(|server| {
+                        let detail = format_managed_mcp_server_detail(&server);
+                        state::ManagedTogglePickerItem {
+                            id: server.name.clone(),
+                            label: server.name,
+                            detail,
+                            enabled: server.enabled,
+                        }
+                    })
+                    .collect())
+            }
+            state::ManagedTogglePickerKind::Skill => {
+                let skills: Vec<ManagedSkillSummary> =
+                    self.run_ui(UIAsyncCommand::ListManagedSkills).await?;
+                Ok(skills
+                    .into_iter()
+                    .map(|skill| {
+                        let detail = format_managed_skill_detail(&skill);
+                        state::ManagedTogglePickerItem {
+                            id: skill.name.clone(),
+                            label: skill.name,
+                            detail,
+                            enabled: skill.enabled,
+                        }
+                    })
+                    .collect())
+            }
+            state::ManagedTogglePickerKind::Plugin => {
+                let plugins: Vec<ManagedPluginSummary> =
+                    self.run_ui(UIAsyncCommand::ListManagedPlugins).await?;
+                Ok(plugins
+                    .into_iter()
+                    .map(|plugin| {
+                        let detail = format_managed_plugin_detail(&plugin);
+                        state::ManagedTogglePickerItem {
+                            id: plugin.plugin_id.clone(),
+                            label: plugin.plugin_id,
+                            detail,
+                            enabled: plugin.enabled,
+                        }
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    pub(crate) async fn open_managed_toggle_picker(
+        &mut self,
+        kind: state::ManagedTogglePickerKind,
+    ) -> Result<()> {
+        let title = managed_toggle_picker_title(kind);
+        let status = open_managed_toggle_picker_status(kind);
+        let activity = open_managed_toggle_picker_activity(kind);
+        let items = self.load_managed_toggle_items(kind).await?;
+        self.ui_state.mutate(move |state| {
+            state.open_managed_toggle_picker(kind, title, items);
+            state.status = status.to_string();
+            state.push_activity(activity);
+        });
+        Ok(())
+    }
+}
+
+fn format_managed_mcp_server_detail(summary: &ManagedMcpServerSummary) -> String {
+    let connection = if summary.connected {
+        "connected"
+    } else {
+        "disconnected"
+    };
+    format!(
+        "{} · {} · tools={} · prompts={} · resources={}",
+        summary.transport,
+        connection,
+        summary.tool_count,
+        summary.prompt_count,
+        summary.resource_count
+    )
+}
+
+fn format_managed_skill_detail(summary: &ManagedSkillSummary) -> String {
+    if summary.description.trim().is_empty() {
+        summary.path.clone()
+    } else {
+        format!("{} · {}", summary.path, summary.description)
+    }
+}
+
+fn format_managed_plugin_detail(summary: &ManagedPluginSummary) -> String {
+    let path = if summary.path.trim().is_empty() {
+        "path unavailable".to_string()
+    } else {
+        summary.path.clone()
+    };
+    format!(
+        "{} · {} · {}",
+        summary.kind, path, summary.contribution_summary
+    )
+}
+
+pub(crate) fn managed_toggle_picker_title(kind: state::ManagedTogglePickerKind) -> &'static str {
+    match kind {
+        state::ManagedTogglePickerKind::Mcp => "MCP",
+        state::ManagedTogglePickerKind::Skill => "Skills",
+        state::ManagedTogglePickerKind::Plugin => "Plugins",
+    }
+}
+
+pub(crate) fn managed_toggle_picker_subject(kind: state::ManagedTogglePickerKind) -> &'static str {
+    match kind {
+        state::ManagedTogglePickerKind::Mcp => "MCP server",
+        state::ManagedTogglePickerKind::Skill => "skill",
+        state::ManagedTogglePickerKind::Plugin => "plugin",
+    }
+}
+
+fn open_managed_toggle_picker_status(kind: state::ManagedTogglePickerKind) -> &'static str {
+    match kind {
+        state::ManagedTogglePickerKind::Mcp => "Opened MCP manager",
+        state::ManagedTogglePickerKind::Skill => "Opened skill manager",
+        state::ManagedTogglePickerKind::Plugin => "Opened plugin manager",
+    }
+}
+
+fn open_managed_toggle_picker_activity(kind: state::ManagedTogglePickerKind) -> &'static str {
+    match kind {
+        state::ManagedTogglePickerKind::Mcp => "opened mcp manager",
+        state::ManagedTogglePickerKind::Skill => "opened skill manager",
+        state::ManagedTogglePickerKind::Plugin => "opened plugin manager",
     }
 }

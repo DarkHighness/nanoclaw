@@ -2919,6 +2919,7 @@ mod tests {
                 instructions: vec!["driver instruction".to_string()],
                 diagnostics: vec!["prepared runtime".to_string()],
                 primary_memory_backend: None,
+                tool_names: Vec::new(),
             },
         );
 
@@ -3025,7 +3026,9 @@ mod tests {
                 ..Default::default()
             })),
             skill_catalog: agent::SkillCatalog::default(),
-            plugin_instructions: vec!["Plugin instruction".to_string()],
+            plugin_instructions: Arc::new(std::sync::RwLock::new(vec![
+                "Plugin instruction".to_string(),
+            ])),
         };
 
         let profile = resolver
@@ -3090,7 +3093,9 @@ mod tests {
                 ..Default::default()
             })),
             skill_catalog: agent::SkillCatalog::default(),
-            plugin_instructions: vec!["Plugin instruction".to_string()],
+            plugin_instructions: Arc::new(std::sync::RwLock::new(vec![
+                "Plugin instruction".to_string(),
+            ])),
         };
 
         let launch = SubagentLaunchSpec {
@@ -3181,6 +3186,7 @@ mod tests {
             instructions: Vec::new(),
             diagnostics: vec!["validated wasm hook module".to_string()],
             primary_memory_backend: None,
+            tool_names: Vec::new(),
         });
 
         assert_eq!(

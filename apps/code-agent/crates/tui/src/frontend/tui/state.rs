@@ -33,9 +33,10 @@ pub(crate) use composer::{
     draft_preview_text,
 };
 pub(crate) use picker::{
-    CollectionPickerState, HistoryRollbackCandidate, HistoryRollbackState,
-    PendingControlEditorState, PendingControlPickerState, StatusLinePickerState, ThemePickerState,
-    ThinkingEffortPickerState, ToolReviewOverlayState,
+    CollectionPickerState, HistoryRollbackCandidate, HistoryRollbackState, ManagedTogglePickerItem,
+    ManagedTogglePickerKind, ManagedTogglePickerState, PendingControlEditorState,
+    PendingControlPickerState, StatusLinePickerState, ThemePickerState, ThinkingEffortPickerState,
+    ToolReviewOverlayState,
 };
 pub(crate) use transcript::{
     InspectorAction, InspectorEntry, InspectorKeyAction, TranscriptDetailPrefix, TranscriptEntry,
@@ -503,6 +504,7 @@ pub(crate) struct TuiState {
     pub(crate) statusline_picker: Option<StatusLinePickerState>,
     pub(crate) thinking_effort_picker: Option<ThinkingEffortPickerState>,
     pub(crate) theme_picker: Option<ThemePickerState>,
+    pub(crate) managed_toggle_picker: Option<ManagedTogglePickerState>,
     pub(crate) history_rollback: Option<HistoryRollbackState>,
     pub(crate) tool_review: Option<ToolReviewOverlayState>,
 }

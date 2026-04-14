@@ -23,6 +23,8 @@ use crate::backend::{
     UserInputCoordinator, list_mcp_prompts, list_mcp_resources, list_mcp_servers, load_mcp_prompt,
     load_mcp_resource,
 };
+use agent_env::EnvMap;
+use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile, ResolvedInternalProfile};
 mod catalog;
 mod controls;
 mod dialogs;
@@ -30,6 +32,7 @@ mod history;
 mod host_surfaces;
 mod lifecycle;
 mod live_tasks;
+mod management;
 mod memory;
 mod monitors;
 mod permissions;
@@ -43,10 +46,10 @@ use crate::ui::{
     LiveTaskAttentionOutcome, LiveTaskControlAction, LiveTaskControlOutcome, LiveTaskMessageAction,
     LiveTaskMessageOutcome, LiveTaskSpawnOutcome, LiveTaskSummary, LiveTaskWaitOutcome,
     LoadedAgentSession, LoadedMcpPrompt, LoadedMcpResource, LoadedSession, LoadedTask,
-    McpPromptSummary, McpResourceSummary, McpServerSummary, PersistedTaskSummary, ResumeSupport,
-    SessionEvent, SessionExportArtifact, SessionOperation, SessionOperationAction,
-    SessionOperationOutcome, SessionStartupSnapshot, SideQuestionOutcome,
-    StartupDiagnosticsSnapshot,
+    ManagedMcpServerSummary, ManagedPluginSummary, ManagedSkillSummary, McpPromptSummary,
+    McpResourceSummary, McpServerSummary, PersistedTaskSummary, ResumeSupport, SessionEvent,
+    SessionExportArtifact, SessionOperation, SessionOperationAction, SessionOperationOutcome,
+    SessionStartupSnapshot, SideQuestionOutcome, StartupDiagnosticsSnapshot,
 };
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
@@ -105,10 +108,27 @@ const MCP_RESOURCE_TOOL_NAMES: [&str; 3] = [
 ];
 const PERMISSION_MODE_SWITCH_BLOCKED_WHILE_TURN_RUNNING: &str =
     "cannot switch sandbox mode while a turn is running";
+const MANAGED_SURFACE_REFRESH_BLOCKED_WHILE_TURN_RUNNING: &str =
+    "cannot refresh managed surfaces while a turn is running";
 
 #[derive(Clone)]
 struct SessionPreambleConfig {
     skill_catalog: agent::SkillCatalog,
+    plugin_instructions: Arc<RwLock<Vec<String>>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ManagedSurfaceReloadConfig {
+    pub(crate) env_map: EnvMap,
+    pub(crate) primary_profile: ResolvedAgentProfile,
+    pub(crate) memory_profile: ResolvedInternalProfile,
+    pub(crate) skill_roots: Vec<PathBuf>,
+    pub(crate) plugins: Arc<RwLock<PluginsConfig>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AppliedPluginSurfaceState {
+    driver_tool_names: Vec<String>,
 }
 
 struct ActiveTurnGuard {
@@ -134,9 +154,9 @@ pub struct CodeAgentSession {
     worktree_manager: Arc<super::SessionWorktreeManager>,
     store: Arc<dyn SessionStore>,
     mcp_servers: Arc<RwLock<Vec<ConnectedMcpServer>>>,
-    configured_mcp_servers: Arc<Vec<McpServerConfig>>,
+    configured_mcp_servers: Arc<RwLock<Vec<McpServerConfig>>>,
     runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
-    configured_runtime_hooks: Arc<Vec<HookRegistration>>,
+    configured_runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
     mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
     host_process_executor: Arc<SwitchableHostProcessExecutor>,
     command_hook_executor: Arc<SwitchableCommandHookExecutor>,
@@ -152,15 +172,17 @@ pub struct CodeAgentSession {
     default_sandbox_policy: SandboxPolicy,
     preamble: SessionPreambleConfig,
     session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
-    memory_backend: Option<Arc<dyn MemoryBackend>>,
+    memory_backend: Arc<RwLock<Option<Arc<dyn MemoryBackend>>>>,
     session_memory_refresh: SharedSessionMemoryRefreshState,
     session_episodic_capture: Arc<Mutex<SessionEpisodicCaptureState>>,
     side_question_context: Arc<RwLock<Option<SideQuestionContextSnapshot>>>,
     runtime_turn_active: Arc<AtomicBool>,
+    managed_surface_reload: ManagedSurfaceReloadConfig,
+    applied_plugin_surfaces: Arc<RwLock<AppliedPluginSurfaceState>>,
 }
 
 impl CodeAgentSession {
-    pub fn new(
+    pub(crate) fn new(
         runtime: AgentRuntime,
         model_backend: Option<MutableAgentBackend>,
         session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
@@ -171,7 +193,7 @@ impl CodeAgentSession {
         mcp_servers: Vec<ConnectedMcpServer>,
         configured_mcp_servers: Vec<McpServerConfig>,
         runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
-        configured_runtime_hooks: Vec<HookRegistration>,
+        configured_runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
         mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
         host_process_executor: Arc<SwitchableHostProcessExecutor>,
         command_hook_executor: Arc<SwitchableCommandHookExecutor>,
@@ -185,8 +207,11 @@ impl CodeAgentSession {
         default_sandbox_policy: SandboxPolicy,
         startup: SessionStartupSnapshot,
         skill_catalog: agent::SkillCatalog,
+        plugin_instructions: Arc<RwLock<Vec<String>>>,
         memory_backend: Option<Arc<dyn MemoryBackend>>,
         session_memory_refresh: SharedSessionMemoryRefreshState,
+        managed_surface_reload: ManagedSurfaceReloadConfig,
+        driver_tool_names: Vec<String>,
     ) -> Self {
         let workspace_root = startup.workspace_root.clone();
         let checkpoint_manager = Arc::new(super::SessionCheckpointManager::new(store.clone()));
@@ -222,9 +247,9 @@ impl CodeAgentSession {
             worktree_manager,
             store,
             mcp_servers: Arc::new(RwLock::new(mcp_servers)),
-            configured_mcp_servers: Arc::new(configured_mcp_servers),
+            configured_mcp_servers: Arc::new(RwLock::new(configured_mcp_servers)),
             runtime_hooks,
-            configured_runtime_hooks: Arc::new(configured_runtime_hooks),
+            configured_runtime_hooks,
             mcp_process_executor,
             host_process_executor,
             command_hook_executor,
@@ -238,13 +263,20 @@ impl CodeAgentSession {
             permission_grants,
             session_tool_context,
             default_sandbox_policy,
-            preamble: SessionPreambleConfig { skill_catalog },
+            preamble: SessionPreambleConfig {
+                skill_catalog,
+                plugin_instructions,
+            },
             session_memory_model_backend,
-            memory_backend,
+            memory_backend: Arc::new(RwLock::new(memory_backend)),
             session_memory_refresh,
             session_episodic_capture,
             side_question_context: Arc::new(RwLock::new(side_question_context)),
             runtime_turn_active: Arc::new(AtomicBool::new(false)),
+            managed_surface_reload,
+            applied_plugin_surfaces: Arc::new(RwLock::new(AppliedPluginSurfaceState {
+                driver_tool_names,
+            })),
         }
     }
 }

@@ -254,6 +254,7 @@ impl CodeAgentTui {
             || snapshot.statusline_picker.is_some()
             || snapshot.thinking_effort_picker.is_some()
             || snapshot.theme_picker.is_some()
+            || snapshot.managed_toggle_picker.is_some()
             || snapshot.history_rollback.is_some()
         {
             return false;

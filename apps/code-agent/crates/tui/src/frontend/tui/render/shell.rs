@@ -5,8 +5,8 @@ use super::transcript::{
     active_turn_title_for_viewport, render_transcript, transcript_content_area,
 };
 use super::view::{
-    build_inspector_text, build_statusline_picker_text, build_theme_picker_text,
-    build_thinking_effort_picker_text, collection_picker_footer,
+    build_inspector_text, build_managed_toggle_picker_text, build_statusline_picker_text,
+    build_theme_picker_text, build_thinking_effort_picker_text, collection_picker_footer,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
@@ -175,6 +175,18 @@ fn render_main_view(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState
             area,
             title,
             build_theme_picker_text(&state.theme, &state.themes, picker),
+            state.inspector_scroll,
+            None,
+        );
+        return;
+    }
+
+    if let Some(picker) = state.managed_toggle_picker.as_ref() {
+        render_command_palette_modal(
+            frame,
+            area,
+            title,
+            build_managed_toggle_picker_text(title, picker),
             state.inspector_scroll,
             None,
         );

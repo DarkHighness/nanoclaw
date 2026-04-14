@@ -31,8 +31,8 @@ pub(crate) use events::{
 };
 pub(crate) use inspectors::{
     format_agent_session_inspector, format_mcp_prompt_summary_line,
-    format_mcp_resource_summary_line, format_mcp_server_summary_line, format_session_inspector,
-    format_startup_diagnostics, format_task_inspector,
+    format_mcp_resource_summary_line, format_session_inspector, format_startup_diagnostics,
+    format_task_inspector,
 };
 pub(crate) use outcomes::{
     format_live_monitor_control_outcome, format_live_task_control_outcome,

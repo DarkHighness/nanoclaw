@@ -55,6 +55,10 @@ pub(super) struct SideQuestionContextSnapshot {
 }
 
 impl CodeAgentSession {
+    fn memory_backend_snapshot(&self) -> Option<Arc<dyn MemoryBackend>> {
+        self.memory_backend.read().unwrap().clone()
+    }
+
     pub(super) fn latest_compaction_working_snapshot(
         &self,
         runtime: &AgentRuntime,
@@ -247,7 +251,7 @@ impl CodeAgentSession {
         &self,
         context: SessionMemoryRefreshContext,
     ) {
-        if self.memory_backend.is_none() || self.session_memory_model_backend.is_none() {
+        if self.memory_backend_snapshot().is_none() || self.session_memory_model_backend.is_none() {
             return;
         }
 
@@ -313,7 +317,7 @@ impl CodeAgentSession {
         context: SessionMemoryRefreshContext,
         force_refresh: bool,
     ) {
-        if self.memory_backend.is_none() || self.session_memory_model_backend.is_none() {
+        if self.memory_backend_snapshot().is_none() || self.session_memory_model_backend.is_none() {
             return;
         }
 
@@ -396,7 +400,7 @@ impl CodeAgentSession {
     }
 
     async fn run_session_memory_refresh_job(&self, job: SessionMemoryRefreshJob) {
-        let Some(memory_backend) = self.memory_backend.as_ref() else {
+        let Some(memory_backend) = self.memory_backend_snapshot() else {
             self.clear_session_memory_refresh_in_flight(&job.context, Some(job.epoch));
             return;
         };
@@ -452,7 +456,7 @@ impl CodeAgentSession {
     }
 
     async fn run_session_episodic_capture_job(&self, job: SessionEpisodicCaptureJob) {
-        let Some(memory_backend) = self.memory_backend.as_ref() else {
+        let Some(memory_backend) = self.memory_backend_snapshot() else {
             self.clear_session_episodic_capture_in_flight(&job.context, Some(job.epoch));
             return;
         };
@@ -790,7 +794,7 @@ impl CodeAgentSession {
         &self,
         snapshot: Option<CompactionWorkingSnapshot>,
     ) {
-        let Some(memory_backend) = self.memory_backend.as_ref() else {
+        let Some(memory_backend) = self.memory_backend_snapshot() else {
             return;
         };
         let Some(snapshot) = snapshot else {

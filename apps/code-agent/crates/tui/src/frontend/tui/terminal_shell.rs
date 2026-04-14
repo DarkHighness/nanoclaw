@@ -157,6 +157,9 @@ impl CodeAgentTui {
         {
             return Ok(TerminalLoopControl::Continue);
         }
+        if let Some(control) = self.handle_managed_toggle_picker_key(key).await? {
+            return Ok(control);
+        }
         if let Some(control) = self.handle_collection_picker_key(key).await? {
             return Ok(control);
         }
@@ -329,6 +332,7 @@ impl CodeAgentTui {
             && snapshot.statusline_picker.is_none()
             && snapshot.thinking_effort_picker.is_none()
             && snapshot.theme_picker.is_none()
+            && snapshot.managed_toggle_picker.is_none()
         {
             self.ui_state.mutate(|state| {
                 state.scroll_focused(if backwards { -1 } else { 1 });
@@ -356,6 +360,7 @@ impl CodeAgentTui {
             || snapshot.statusline_picker.is_some()
             || snapshot.thinking_effort_picker.is_some()
             || snapshot.theme_picker.is_some()
+            || snapshot.managed_toggle_picker.is_some()
         {
             return false;
         }
@@ -412,6 +417,12 @@ impl CodeAgentTui {
         if snapshot.pending_control_picker.is_some() && snapshot.input.is_empty() {
             self.ui_state.mutate(|state| {
                 let _ = state.move_pending_control_picker(backwards);
+            });
+            return;
+        }
+        if snapshot.managed_toggle_picker.is_some() && snapshot.input.is_empty() {
+            self.ui_state.mutate(|state| {
+                let _ = state.move_managed_toggle_picker(backwards);
             });
             return;
         }

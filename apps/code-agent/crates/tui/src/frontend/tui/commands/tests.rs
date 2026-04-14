@@ -280,6 +280,16 @@ fn parses_statusline_picker_command() {
 }
 
 #[test]
+fn parses_managed_surface_picker_commands() {
+    assert!(matches!(parse_slash_command("/mcp"), SlashCommand::Mcp));
+    assert!(matches!(parse_slash_command("/skill"), SlashCommand::Skill));
+    assert!(matches!(
+        parse_slash_command("/plugin"),
+        SlashCommand::Plugin
+    ));
+}
+
+#[test]
 fn parses_queue_command() {
     assert!(matches!(parse_slash_command("/queue"), SlashCommand::Queue));
 }
@@ -396,6 +406,21 @@ fn command_palette_includes_help_and_clear_alias() {
         lines
             .iter()
             .any(|line| line == "/motion [on|off]  toggle transcript intro motion")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "/mcp  toggle managed MCP servers")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "/skill  toggle managed skills")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "/plugin  toggle managed plugins")
     );
     assert!(
         lines

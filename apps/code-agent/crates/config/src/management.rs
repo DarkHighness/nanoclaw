@@ -24,6 +24,10 @@ pub struct ManagedPluginArtifact {
     pub enabled: bool,
 }
 
+pub fn list_core_mcp_servers(workspace_root: &Path) -> Result<Vec<McpServerConfig>> {
+    Ok(load_raw_core_config(workspace_root)?.mcp_servers)
+}
+
 pub fn add_core_mcp_server(workspace_root: &Path, server: McpServerConfig) -> Result<PathBuf> {
     let mut config = load_raw_core_config(workspace_root)?;
     if config
@@ -110,6 +114,14 @@ pub async fn add_managed_skill(
         skill_path: destination,
         enabled: true,
     })
+}
+
+pub async fn list_managed_skills(workspace_root: &Path) -> Result<Vec<ManagedSkillArtifact>> {
+    let managed_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
+    let mut skills = collect_skill_artifacts(&managed_root, true).await?;
+    skills.extend(collect_skill_artifacts(&managed_root, false).await?);
+    skills.sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
+    Ok(skills)
 }
 
 pub async fn delete_managed_skill(
@@ -384,6 +396,36 @@ async fn collect_skill_directories(root: &Path) -> Result<Vec<PathBuf>> {
     }
     directories.sort();
     Ok(directories)
+}
+
+async fn collect_skill_artifacts(
+    managed_root: &Path,
+    enabled: bool,
+) -> Result<Vec<ManagedSkillArtifact>> {
+    let root = if enabled {
+        managed_root.to_path_buf()
+    } else {
+        disabled_skill_root(managed_root)
+    };
+    let skill_dirs = collect_skill_directories(&root).await?;
+    let mut skills = Vec::with_capacity(skill_dirs.len());
+    for skill_dir in skill_dirs {
+        let skill = load_skill_from_dir(
+            &skill_dir,
+            &SkillRoot {
+                path: managed_root.to_path_buf(),
+                kind: SkillRootKind::Managed,
+            },
+        )
+        .await
+        .with_context(|| format!("failed to load managed skill {}", skill_dir.display()))?;
+        skills.push(ManagedSkillArtifact {
+            skill_name: skill.name,
+            skill_path: skill_dir,
+            enabled,
+        });
+    }
+    Ok(skills)
 }
 
 async fn copy_directory_tree(source: &Path, destination: &Path) -> Result<()> {

@@ -18,6 +18,28 @@ pub(crate) struct ThemePickerState {
     pub(crate) original_theme: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ManagedTogglePickerKind {
+    Mcp,
+    Skill,
+    Plugin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedTogglePickerItem {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) detail: String,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedTogglePickerState {
+    pub(crate) kind: ManagedTogglePickerKind,
+    pub(crate) selected: usize,
+    pub(crate) items: Vec<ManagedTogglePickerItem>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PendingControlPickerState {
     pub(crate) selected: usize,
@@ -81,6 +103,7 @@ impl TuiState {
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
         self.theme_picker = None;
+        self.managed_toggle_picker = None;
         self.history_rollback = None;
         self.tool_review = None;
     }
@@ -92,6 +115,7 @@ impl TuiState {
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
         self.theme_picker = None;
+        self.managed_toggle_picker = None;
         self.history_rollback = None;
         self.tool_review = None;
     }
@@ -105,6 +129,7 @@ impl TuiState {
         self.pending_control_picker = None;
         self.thinking_effort_picker = None;
         self.theme_picker = None;
+        self.managed_toggle_picker = None;
         self.history_rollback = None;
         self.tool_review = None;
         self.statusline_picker
@@ -121,6 +146,7 @@ impl TuiState {
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.theme_picker = None;
+        self.managed_toggle_picker = None;
         self.history_rollback = None;
         self.tool_review = None;
         let selected = self
@@ -143,6 +169,7 @@ impl TuiState {
         self.pending_control_picker = None;
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
+        self.managed_toggle_picker = None;
         self.theme_picker = None;
         self.history_rollback = None;
         self.tool_review = None;
@@ -172,6 +199,35 @@ impl TuiState {
         self.show_transcript_pane();
     }
 
+    pub(crate) fn open_managed_toggle_picker(
+        &mut self,
+        kind: ManagedTogglePickerKind,
+        title: impl Into<String>,
+        items: Vec<ManagedTogglePickerItem>,
+    ) {
+        self.main_pane = MainPaneMode::View;
+        self.inspector_title = title.into();
+        self.inspector.clear();
+        self.inspector_scroll = 0;
+        self.collection_picker = None;
+        self.pending_control_picker = None;
+        self.statusline_picker = None;
+        self.thinking_effort_picker = None;
+        self.theme_picker = None;
+        self.history_rollback = None;
+        self.tool_review = None;
+        self.managed_toggle_picker = Some(ManagedTogglePickerState {
+            kind,
+            selected: 0,
+            items,
+        });
+    }
+
+    pub(crate) fn close_managed_toggle_picker(&mut self) {
+        self.managed_toggle_picker = None;
+        self.show_transcript_pane();
+    }
+
     pub(crate) fn open_pending_control_picker(&mut self, select_latest: bool) -> bool {
         if self.pending_controls.is_empty() {
             return false;
@@ -191,6 +247,7 @@ impl TuiState {
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
         self.theme_picker = None;
+        self.managed_toggle_picker = None;
         self.history_rollback = None;
         self.tool_review = None;
         true
@@ -253,6 +310,7 @@ impl TuiState {
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
         self.theme_picker = None;
+        self.managed_toggle_picker = None;
         self.history_rollback = Some(HistoryRollbackState::Primed);
         self.tool_review = None;
     }
@@ -270,6 +328,7 @@ impl TuiState {
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
         self.theme_picker = None;
+        self.managed_toggle_picker = None;
         self.history_rollback = Some(HistoryRollbackState::Selecting(
             HistoryRollbackOverlayState {
                 selected: candidates.len().saturating_sub(1),
@@ -303,6 +362,7 @@ impl TuiState {
         self.statusline_picker = None;
         self.thinking_effort_picker = None;
         self.theme_picker = None;
+        self.managed_toggle_picker = None;
         self.history_rollback = None;
         self.tool_review = Some(ToolReviewOverlayState {
             selection,
@@ -563,6 +623,43 @@ impl TuiState {
         self.theme_picker
             .as_ref()
             .map(|picker| picker.original_theme.clone())
+    }
+
+    pub(crate) fn move_managed_toggle_picker(&mut self, backwards: bool) -> bool {
+        let Some(picker) = self.managed_toggle_picker.as_mut() else {
+            return false;
+        };
+        let total = picker.items.len();
+        if total == 0 {
+            return false;
+        }
+        picker.selected = if backwards {
+            picker.selected.checked_sub(1).unwrap_or(total - 1)
+        } else {
+            (picker.selected + 1) % total
+        };
+        true
+    }
+
+    pub(crate) fn selected_managed_toggle_item(&self) -> Option<ManagedTogglePickerItem> {
+        let picker = self.managed_toggle_picker.as_ref()?;
+        picker.items.get(picker.selected).cloned()
+    }
+
+    pub(crate) fn replace_managed_toggle_items(
+        &mut self,
+        kind: ManagedTogglePickerKind,
+        title: impl Into<String>,
+        items: Vec<ManagedTogglePickerItem>,
+        selected_id: Option<&str>,
+    ) {
+        self.open_managed_toggle_picker(kind, title, items);
+        if let (Some(picker), Some(selected_id)) =
+            (self.managed_toggle_picker.as_mut(), selected_id)
+            && let Some(index) = picker.items.iter().position(|item| item.id == selected_id)
+        {
+            picker.selected = index;
+        }
     }
 }
 

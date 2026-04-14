@@ -2,10 +2,10 @@ use super::{
     ActiveToolCell, ComposerDraftAttachmentKind, ComposerDraftAttachmentState, ComposerDraftState,
     ComposerInputProvenance, ComposerKillBufferState, ComposerRowAttachmentPreview,
     GitPorcelainEntry, GitPorcelainState, HistoryRollbackCandidate, InspectorAction,
-    InspectorEntry, MainPaneMode, SharedUiState, ToastState, ToastTone, ToolSelectionTarget,
-    TranscriptCellMotionState, TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus,
-    TuiState, composer_draft_from_messages, composer_draft_from_parts, draft_preview_text,
-    git_snapshot, page_scroll_amount,
+    InspectorEntry, MainPaneMode, ManagedTogglePickerItem, ManagedTogglePickerKind, SharedUiState,
+    ToastState, ToastTone, ToolSelectionTarget, TranscriptCellMotionState, TranscriptEntry,
+    TranscriptToolEntry, TranscriptToolStatus, TuiState, composer_draft_from_messages,
+    composer_draft_from_parts, draft_preview_text, git_snapshot, page_scroll_amount,
 };
 use crate::frontend::tui::input_history::{ComposerHistoryKind, PersistedComposerHistoryEntry};
 use crate::theme::ThemeSummary;
@@ -693,6 +693,63 @@ fn open_theme_picker_tracks_original_theme_for_restore() {
     assert_eq!(picker.selected, 1);
     assert_eq!(picker.original_theme, "fjord");
     assert_eq!(state.original_theme().as_deref(), Some("fjord"));
+}
+
+#[test]
+fn replace_managed_toggle_items_preserves_selected_item_by_id() {
+    let mut state = TuiState::default();
+    state.open_managed_toggle_picker(
+        ManagedTogglePickerKind::Plugin,
+        "Plugins",
+        vec![
+            ManagedTogglePickerItem {
+                id: "alpha".to_string(),
+                label: "alpha".to_string(),
+                detail: "bundle · custom_tools=1".to_string(),
+                enabled: true,
+            },
+            ManagedTogglePickerItem {
+                id: "beta".to_string(),
+                label: "beta".to_string(),
+                detail: "memory · runtime=memory".to_string(),
+                enabled: false,
+            },
+        ],
+    );
+    state.move_managed_toggle_picker(false);
+
+    state.replace_managed_toggle_items(
+        ManagedTogglePickerKind::Plugin,
+        "Plugins",
+        vec![
+            ManagedTogglePickerItem {
+                id: "beta".to_string(),
+                label: "beta".to_string(),
+                detail: "memory · runtime=memory".to_string(),
+                enabled: true,
+            },
+            ManagedTogglePickerItem {
+                id: "alpha".to_string(),
+                label: "alpha".to_string(),
+                detail: "bundle · custom_tools=1".to_string(),
+                enabled: true,
+            },
+        ],
+        Some("beta"),
+    );
+
+    let picker = state
+        .managed_toggle_picker
+        .as_ref()
+        .expect("managed picker");
+    assert_eq!(picker.selected, 0);
+    assert_eq!(
+        state
+            .selected_managed_toggle_item()
+            .as_ref()
+            .map(|item| item.id.as_str()),
+        Some("beta")
+    );
 }
 
 #[test]

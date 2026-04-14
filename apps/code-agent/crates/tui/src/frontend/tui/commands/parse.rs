@@ -46,6 +46,8 @@ impl From<SlashSubcommand> for SlashCommand {
             },
             SlashSubcommand::Diagnostics => Self::Diagnostics,
             SlashSubcommand::Mcp => Self::Mcp,
+            SlashSubcommand::Skill => Self::Skill,
+            SlashSubcommand::Plugin => Self::Plugin,
             SlashSubcommand::Prompts => Self::Prompts,
             SlashSubcommand::Resources => Self::Resources,
             SlashSubcommand::Steer { message } => Self::Steer {

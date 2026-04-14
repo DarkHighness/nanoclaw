@@ -48,6 +48,9 @@ pub(crate) fn build_startup_inspector(session: &state::SessionSummary) -> Vec<In
             "/permissions [mode]",
             "inspect or switch sandbox mode",
         ),
+        command_entry("mcp", "/mcp", "toggle managed MCP servers"),
+        command_entry("skill", "/skill", "toggle managed skills"),
+        command_entry("plugin", "/plugin", "toggle managed plugins"),
         command_entry("queue", "/queue", "browse pending prompts and steers"),
         command_entry("sessions", "/sessions", "browse history"),
         command_entry(

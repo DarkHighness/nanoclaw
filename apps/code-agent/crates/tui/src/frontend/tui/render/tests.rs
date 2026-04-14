@@ -25,7 +25,8 @@ use super::transcript_shell::{
 };
 use super::view::{
     build_collection_text, build_command_palette_text, build_key_value_text,
-    build_statusline_picker_text, build_theme_picker_text, should_render_view_title,
+    build_managed_toggle_picker_text, build_statusline_picker_text, build_theme_picker_text,
+    should_render_view_title,
 };
 use super::welcome::build_welcome_lines;
 use crate::frontend::tui::UserInputView;
@@ -38,8 +39,9 @@ use crate::frontend::tui::commands::{
 use crate::frontend::tui::state::{
     ActiveToolCell, ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
     ComposerDraftState, HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode,
-    ProviderRetryState, StatusLinePickerState, ThemePickerState, ToastTone, ToolSelectionTarget,
-    TrackedTaskSummary, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    ManagedTogglePickerItem, ManagedTogglePickerKind, ManagedTogglePickerState, ProviderRetryState,
+    StatusLinePickerState, ThemePickerState, ToastTone, ToolSelectionTarget, TrackedTaskSummary,
+    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::interaction::{
     ApprovalContent, ApprovalContentKind, ApprovalOrigin, PendingControlKind, PendingControlReason,
@@ -1391,6 +1393,51 @@ fn theme_picker_text_renders_available_themes() {
             .lines
             .iter()
             .any(|line| line_text_for(line).contains("esc restore"))
+    );
+}
+
+#[test]
+fn managed_toggle_picker_text_renders_toggle_rows() {
+    let rendered = build_managed_toggle_picker_text(
+        "Plugins",
+        &ManagedTogglePickerState {
+            kind: ManagedTogglePickerKind::Plugin,
+            selected: 1,
+            items: vec![
+                ManagedTogglePickerItem {
+                    id: "bundle.alpha".to_string(),
+                    label: "bundle.alpha".to_string(),
+                    detail: "bundle · .nanoclaw/plugins/alpha · custom_tools=2".to_string(),
+                    enabled: false,
+                },
+                ManagedTogglePickerItem {
+                    id: "memory.beta".to_string(),
+                    label: "memory.beta".to_string(),
+                    detail: "memory · .nanoclaw/plugins/beta · runtime=memory".to_string(),
+                    enabled: true,
+                },
+            ],
+        },
+    );
+
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "plugins");
+    assert!(
+        rendered
+            .lines
+            .iter()
+            .any(|line| line_text_for(line).contains("1/2 enabled plugins"))
+    );
+    assert!(
+        rendered
+            .lines
+            .iter()
+            .any(|line| line_text_for(line).contains("› [x] memory.beta"))
+    );
+    assert!(
+        rendered
+            .lines
+            .iter()
+            .any(|line| line_text_for(line).contains("[ ] bundle.alpha"))
     );
 }
 

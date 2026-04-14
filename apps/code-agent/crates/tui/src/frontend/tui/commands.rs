@@ -417,7 +417,19 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         section: "Catalog",
         name: "mcp",
         usage: "mcp",
-        summary: "list MCP servers",
+        summary: "toggle managed MCP servers",
+    },
+    SlashCommandSpec {
+        section: "Catalog",
+        name: "skill",
+        usage: "skill",
+        summary: "toggle managed skills",
+    },
+    SlashCommandSpec {
+        section: "Catalog",
+        name: "plugin",
+        usage: "plugin",
+        summary: "toggle managed plugins",
     },
     SlashCommandSpec {
         section: "Catalog",
@@ -477,6 +489,8 @@ pub(crate) enum SlashCommand {
     },
     Diagnostics,
     Mcp,
+    Skill,
+    Plugin,
     Prompts,
     Resources,
     Steer {
@@ -590,6 +604,8 @@ enum SlashSubcommand {
     },
     Diagnostics,
     Mcp,
+    Skill,
+    Plugin,
     Prompts,
     Resources,
     Steer {

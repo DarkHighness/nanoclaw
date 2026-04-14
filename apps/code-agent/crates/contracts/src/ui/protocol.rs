@@ -1,5 +1,6 @@
 use super::{
     events::SessionEvent,
+    management::{ManagedMcpServerSummary, ManagedPluginSummary, ManagedSkillSummary},
     mcp::{
         LoadedMcpPrompt, LoadedMcpResource, McpPromptSummary, McpResourceSummary, McpServerSummary,
         StartupDiagnosticsSnapshot,
@@ -194,8 +195,23 @@ pub enum UIAsyncCommand {
         question: String,
     },
     ListMcpServers,
+    ListManagedMcpServers,
+    SetManagedMcpServerEnabled {
+        name: String,
+        enabled: bool,
+    },
     ListMcpPrompts,
     ListMcpResources,
+    ListManagedSkills,
+    SetManagedSkillEnabled {
+        name: String,
+        enabled: bool,
+    },
+    ListManagedPlugins,
+    SetManagedPluginEnabled {
+        plugin_id: String,
+        enabled: bool,
+    },
     LoadMcpPrompt {
         server_name: String,
         prompt_name: String,
@@ -234,8 +250,11 @@ pub enum UIAsyncResult {
     SessionExportArtifact(SessionExportArtifact),
     SideQuestionOutcome(SideQuestionOutcome),
     McpServerSummaries(Vec<McpServerSummary>),
+    ManagedMcpServerSummaries(Vec<ManagedMcpServerSummary>),
     McpPromptSummaries(Vec<McpPromptSummary>),
     McpResourceSummaries(Vec<McpResourceSummary>),
+    ManagedSkillSummaries(Vec<ManagedSkillSummary>),
+    ManagedPluginSummaries(Vec<ManagedPluginSummary>),
     LoadedMcpPrompt(LoadedMcpPrompt),
     LoadedMcpResource(LoadedMcpResource),
 }
@@ -347,7 +366,10 @@ impl_ui_async_value!(LoadedTask, LoadedTask);
 impl_ui_async_value!(SessionExportArtifact, SessionExportArtifact);
 impl_ui_async_value!(SideQuestionOutcome, SideQuestionOutcome);
 impl_ui_async_value!(Vec<McpServerSummary>, McpServerSummaries);
+impl_ui_async_value!(Vec<ManagedMcpServerSummary>, ManagedMcpServerSummaries);
 impl_ui_async_value!(Vec<McpPromptSummary>, McpPromptSummaries);
 impl_ui_async_value!(Vec<McpResourceSummary>, McpResourceSummaries);
+impl_ui_async_value!(Vec<ManagedSkillSummary>, ManagedSkillSummaries);
+impl_ui_async_value!(Vec<ManagedPluginSummary>, ManagedPluginSummaries);
 impl_ui_async_value!(LoadedMcpPrompt, LoadedMcpPrompt);
 impl_ui_async_value!(LoadedMcpResource, LoadedMcpResource);

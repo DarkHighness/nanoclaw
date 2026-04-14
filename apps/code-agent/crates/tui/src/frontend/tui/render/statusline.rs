@@ -261,6 +261,7 @@ enum StatusBadge {
     Status,
     Thinking,
     Theme,
+    Manage,
     Review,
     View,
 }
@@ -279,6 +280,7 @@ impl StatusBadge {
             Self::Status => "Status",
             Self::Thinking => "Thinking",
             Self::Theme => "Theme",
+            Self::Manage => "Manage",
             Self::Review => "Review",
             Self::View => "View",
         }
@@ -307,6 +309,9 @@ fn status_badge(state: &TuiState) -> StatusBadge {
     }
     if state.theme_picker.is_some() {
         return StatusBadge::Theme;
+    }
+    if state.managed_toggle_picker.is_some() {
+        return StatusBadge::Manage;
     }
     if state.tool_review_overlay().is_some() {
         return StatusBadge::Review;

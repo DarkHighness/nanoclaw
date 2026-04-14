@@ -144,6 +144,10 @@ impl AgentRuntime {
         self.base_instructions.clone()
     }
 
+    pub fn replace_base_instructions(&mut self, instructions: Vec<String>) {
+        self.base_instructions = instructions;
+    }
+
     #[must_use]
     pub fn tool_registry_names(&self) -> Vec<String> {
         self.model_visible_tool_specs()
@@ -195,6 +199,13 @@ impl AgentRuntime {
 
     pub fn replace_hooks(&mut self, hooks: Vec<HookRegistration>) {
         self.hook_registrations = hooks;
+    }
+
+    pub fn replace_user_message_augmentor(
+        &mut self,
+        augmentor: Option<Arc<dyn UserMessageAugmentor>>,
+    ) {
+        self.user_message_augmentor = augmentor;
     }
 
     #[must_use]

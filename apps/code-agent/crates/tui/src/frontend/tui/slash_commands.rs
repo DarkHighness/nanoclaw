@@ -3,7 +3,7 @@ use super::*;
 mod attachments;
 mod history;
 mod live_tasks;
-mod mcp;
+pub(crate) mod mcp;
 mod runtime_activity_commands;
 mod session;
 
@@ -34,9 +34,11 @@ impl CodeAgentTui {
             | SlashCommand::File { .. }
             | SlashCommand::Detach { .. }
             | SlashCommand::MoveAttachment { .. }) => self.apply_attachment_command(command).await,
-            command @ (SlashCommand::Mcp | SlashCommand::Prompts | SlashCommand::Resources) => {
-                self.apply_mcp_command(command).await
-            }
+            command @ (SlashCommand::Mcp
+            | SlashCommand::Skill
+            | SlashCommand::Plugin
+            | SlashCommand::Prompts
+            | SlashCommand::Resources) => self.apply_mcp_command(command).await,
             command @ (SlashCommand::LiveTasks
             | SlashCommand::Monitors { .. }
             | SlashCommand::StopMonitor { .. }) => {

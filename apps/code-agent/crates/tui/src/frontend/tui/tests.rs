@@ -89,6 +89,21 @@ fn startup_inspector_surfaces_backend_boot_snapshot() {
             .iter()
             .any(|line| line == "/details  toggle tool details")
     );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "/mcp  toggle managed MCP servers")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "/skill  toggle managed skills")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "/plugin  toggle managed plugins")
+    );
 }
 
 fn inspector_line_texts(lines: &[InspectorEntry]) -> Vec<String> {
