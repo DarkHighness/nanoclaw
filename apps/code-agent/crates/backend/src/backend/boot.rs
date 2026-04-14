@@ -57,6 +57,7 @@ use agent::{
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use nanoclaw_config::{CoreConfig, ResolvedAgentProfile};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 use tracing::{info, warn};
@@ -775,6 +776,9 @@ where
         }
         connected_mcp_servers = connected;
     }
+    let disabled_tool_names = disabled_tool_names_from_env(&options.env_map);
+    let mut disabled_tool_hits = BTreeSet::new();
+    apply_disabled_tools(&tools, &disabled_tool_names, &mut disabled_tool_hits);
     progress(BootProgressUpdate {
         stage: BootProgressStage::Mcp,
         status: BootProgressStatus::Completed,
@@ -880,6 +884,12 @@ where
     register_monitor_tools(&mut tools, monitor_manager.clone());
     register_worktree_tools(&mut tools, worktree_manager.clone());
     register_subagent_tools(&mut tools, subagent_executor.clone(), task_manager);
+    apply_disabled_tools(&tools, &disabled_tool_names, &mut disabled_tool_hits);
+    append_disabled_tool_warnings(
+        &disabled_tool_names,
+        &disabled_tool_hits,
+        &mut startup_warnings,
+    );
     let tool_specs = tools
         .specs()
         .into_iter()
@@ -1021,18 +1031,71 @@ fn ensure_model_supports_registered_tools(
     );
 }
 
+fn disabled_tool_names_from_env(env_map: &EnvMap) -> BTreeSet<String> {
+    env_map
+        .get_non_empty_var(agent_env::vars::NANOCLAW_CORE_DISABLED_TOOLS)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn apply_disabled_tools(
+    tools: &ToolRegistry,
+    requested_names: &BTreeSet<String>,
+    removed_names: &mut BTreeSet<String>,
+) {
+    for name in requested_names {
+        if tools.remove(name) {
+            removed_names.insert(name.clone());
+        }
+    }
+}
+
+fn append_disabled_tool_warnings(
+    requested_names: &BTreeSet<String>,
+    removed_names: &BTreeSet<String>,
+    warnings: &mut Vec<String>,
+) {
+    if !removed_names.is_empty() {
+        warnings.push(format!(
+            "disabled tool(s) via {}: {}",
+            agent_env::vars::NANOCLAW_CORE_DISABLED_TOOLS.key,
+            removed_names.iter().cloned().collect::<Vec<_>>().join(", "),
+        ));
+    }
+    let unknown_names = requested_names
+        .difference(removed_names)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unknown_names.is_empty() {
+        warnings.push(format!(
+            "ignored unknown tool name(s) in {}: {}",
+            agent_env::vars::NANOCLAW_CORE_DISABLED_TOOLS.key,
+            unknown_names.join(", "),
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionApprovalMode, configure_host_prompt_tool_visibility, filter_boot_mcp_servers,
-        filter_runtime_hooks,
+        SessionApprovalMode, append_disabled_tool_warnings, apply_disabled_tools,
+        configure_host_prompt_tool_visibility, disabled_tool_names_from_env,
+        filter_boot_mcp_servers, filter_runtime_hooks,
     };
     use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::types::{
         CommandHookHandler, HookEvent, HookHandler, HookRegistration, HttpHookHandler,
     };
     use agent::{RequestPermissionsTool, RequestUserInputTool, ToolExecutionContext, ToolRegistry};
-    use std::collections::BTreeMap;
+    use agent_env::EnvMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn filtering_runtime_hooks_drops_command_hooks_without_host_process_surfaces() {
@@ -1102,6 +1165,53 @@ mod tests {
             retained[0].transport,
             McpTransportConfig::StreamableHttp { .. }
         ));
+    }
+
+    #[test]
+    fn disabled_tool_names_are_parsed_from_env() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "NANOCLAW_CORE_DISABLED_TOOLS=web_search,exec_command,,request_user_input\n",
+        )
+        .unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+
+        assert_eq!(
+            disabled_tool_names_from_env(&env_map),
+            BTreeSet::from([
+                "exec_command".to_string(),
+                "request_user_input".to_string(),
+                "web_search".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn applying_disabled_tools_removes_requested_entries_and_reports_unknown_names() {
+        let mut registry = ToolRegistry::new();
+        registry.register(RequestUserInputTool::new());
+        registry.register(RequestPermissionsTool::new());
+
+        let requested =
+            BTreeSet::from(["request_user_input".to_string(), "missing_tool".to_string()]);
+        let mut removed = BTreeSet::new();
+        apply_disabled_tools(&registry, &requested, &mut removed);
+
+        assert!(registry.get("request_user_input").is_none());
+        assert!(registry.get("request_permissions").is_some());
+        assert_eq!(removed, BTreeSet::from(["request_user_input".to_string()]));
+
+        let mut warnings = Vec::new();
+        append_disabled_tool_warnings(&requested, &removed, &mut warnings);
+        assert_eq!(
+            warnings,
+            vec![
+                "disabled tool(s) via NANOCLAW_CORE_DISABLED_TOOLS: request_user_input".to_string(),
+                "ignored unknown tool name(s) in NANOCLAW_CORE_DISABLED_TOOLS: missing_tool"
+                    .to_string(),
+            ]
+        );
     }
 
     #[test]

@@ -126,6 +126,10 @@ pub mod vars {
         "NANOCLAW_CORE_PLUGIN_MEMORY_SLOT",
         "Plugin memory slot override for the Nanoclaw core plugin graph.",
     );
+    pub const NANOCLAW_CORE_DISABLED_TOOLS: EnvVar = EnvVar::new(
+        "NANOCLAW_CORE_DISABLED_TOOLS",
+        "Comma-separated tool names removed from the runtime tool surface after startup registration.",
+    );
 
     pub const NANOCLAW_CORE_WEB_ALLOW_PRIVATE_HOSTS: EnvVar = EnvVar::new(
         "NANOCLAW_CORE_WEB_ALLOW_PRIVATE_HOSTS",
@@ -203,6 +207,7 @@ pub mod vars {
         NANOCLAW_CORE_SKILL_ROOTS,
         NANOCLAW_CORE_PLUGIN_ROOTS,
         NANOCLAW_CORE_PLUGIN_MEMORY_SLOT,
+        NANOCLAW_CORE_DISABLED_TOOLS,
         NANOCLAW_CORE_WEB_ALLOW_PRIVATE_HOSTS,
         NANOCLAW_CORE_WEB_ALLOWED_DOMAINS,
         NANOCLAW_CORE_WEB_BLOCKED_DOMAINS,

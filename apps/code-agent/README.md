@@ -263,6 +263,7 @@ as an interactive session.
 - `CODE_AGENT_LSP_INSTALL_ROOT`: optional override for the managed LSP cache/install directory (defaults to `.nanoclaw/tools/lsp` under the workspace)
 - `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`: provider credentials
 - `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`: provider-specific API base URL overrides
+- `NANOCLAW_CORE_DISABLED_TOOLS`: comma-separated tool names removed from the final runtime registry after startup registration; unknown names are reported in startup diagnostics warnings
 
 Example app-local TUI settings:
 
