@@ -181,6 +181,20 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- "inspect this reposit
 
 The prompt is submitted as the first turn, then the TUI stays open.
 
+Session continuation:
+
+```bash
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- resume 019d8aae-c699-75c3-b9de-6890b6f4d21a
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- resume --last
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- fork 019d8aae-c699-75c3-b9de-6890b6f4d21a
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- fork --last
+```
+
+On exit, the app prints aggregate token usage plus resume and fork hints for the
+active session to stderr. The command name in that hint follows the executable
+you launched, so packaged installs can surface `nanoclaw resume ...` without
+changing the workspace package name.
+
 ## Environment
 
 - The app automatically loads `.env` and `.env.local` from the current workspace.

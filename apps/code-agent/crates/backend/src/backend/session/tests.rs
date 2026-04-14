@@ -1846,6 +1846,116 @@ async fn resume_agent_session_reattaches_archived_history() {
 }
 
 #[tokio::test]
+async fn resume_persisted_session_reattaches_root_history_by_session_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        })
+        .build();
+    let original_session_ref = runtime.session_id().to_string();
+    let original_agent_session_ref = runtime.agent_session_id().to_string();
+    let mut startup = startup_snapshot(dir.path());
+    startup.active_session_ref = original_session_ref.clone();
+    startup.root_agent_session_id = original_agent_session_ref.clone();
+    let session = build_session(
+        runtime,
+        Arc::new(NoopSubagentExecutor),
+        store.clone(),
+        startup,
+    );
+
+    session
+        .apply_control(RuntimeCommand::Prompt {
+            message: Message::user("resume me"),
+            submitted_prompt: None,
+        })
+        .await
+        .unwrap();
+    session
+        .apply_session_operation(SessionOperation::StartFresh)
+        .await
+        .unwrap();
+
+    session
+        .resume_persisted_session(&original_session_ref)
+        .await
+        .unwrap();
+
+    let startup = session.startup_snapshot();
+    assert_eq!(startup.active_session_ref, original_session_ref);
+    assert_ne!(startup.root_agent_session_id, original_agent_session_ref);
+
+    let loaded = session
+        .load_session(&startup.active_session_ref)
+        .await
+        .unwrap();
+    assert_eq!(loaded.transcript.len(), 1);
+    assert_eq!(loaded.transcript[0].text_content(), "resume me");
+}
+
+#[tokio::test]
+async fn fork_persisted_session_seeds_new_session_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        })
+        .build();
+    let original_session_ref = runtime.session_id().to_string();
+    let original_agent_session_ref = runtime.agent_session_id().to_string();
+    let mut startup = startup_snapshot(dir.path());
+    startup.active_session_ref = original_session_ref.clone();
+    startup.root_agent_session_id = original_agent_session_ref.clone();
+    let session = build_session(
+        runtime,
+        Arc::new(NoopSubagentExecutor),
+        store.clone(),
+        startup,
+    );
+
+    session
+        .apply_control(RuntimeCommand::Prompt {
+            message: Message::user("fork me"),
+            submitted_prompt: None,
+        })
+        .await
+        .unwrap();
+    session
+        .apply_session_operation(SessionOperation::StartFresh)
+        .await
+        .unwrap();
+
+    session
+        .fork_persisted_session(&original_session_ref)
+        .await
+        .unwrap();
+
+    let startup = session.startup_snapshot();
+    assert_ne!(startup.active_session_ref, original_session_ref);
+    assert_ne!(startup.root_agent_session_id, original_agent_session_ref);
+
+    let forked = session
+        .load_session(&startup.active_session_ref)
+        .await
+        .unwrap();
+    assert_eq!(
+        forked.summary.session_id.as_str(),
+        startup.active_session_ref.as_str()
+    );
+    assert_eq!(forked.transcript.len(), 1);
+    assert_eq!(forked.transcript[0].text_content(), "fork me");
+}
+
+#[tokio::test]
 async fn resume_agent_session_resolves_session_note_title_to_root_agent() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemorySessionStore::new());

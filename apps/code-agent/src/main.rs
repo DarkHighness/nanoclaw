@@ -2,10 +2,12 @@ use agent::AgentWorkspaceLayout;
 use agent::runtime::{HostRuntimeLimits, build_host_tokio_runtime};
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
+use clap::{Args, Parser, Subcommand};
 use code_agent_backend::{
-    AppOptions, CodeAgentUiSession, SandboxFallbackNotice, SessionApprovalMode,
-    build_sandbox_fallback_notice, build_session_with_approval_mode,
-    build_session_with_approval_mode_and_progress, inject_process_env, inspect_sandbox_preflight,
+    AppOptions, CodeAgentUiSession, LoadedSession, SandboxFallbackNotice, SessionApprovalMode,
+    SessionStartupSnapshot, UIAsyncCommand, UIQuery, build_sandbox_fallback_notice,
+    build_session_with_approval_mode, build_session_with_approval_mode_and_progress,
+    inject_process_env, inspect_sandbox_preflight,
 };
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
@@ -15,8 +17,129 @@ use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use store::SessionTokenUsageReport;
+use tracing::warn;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Debug, Parser)]
+#[command(disable_help_subcommand = true, subcommand_precedence_over_arg = true)]
+struct Cli {
+    #[arg(long, value_name = "TEXT")]
+    system_prompt: Option<String>,
+    #[arg(long = "skill-root", value_name = "PATH")]
+    skill_roots: Vec<String>,
+    #[arg(long = "plugin-root", value_name = "PATH")]
+    plugin_roots: Vec<String>,
+    #[arg(long = "memory-plugin", value_name = "ID|none")]
+    memory_plugin: Option<String>,
+    #[arg(long = "sandbox-fail-if-unavailable", value_name = "BOOL")]
+    sandbox_fail_if_unavailable: Option<String>,
+    #[arg(long = "allow-no-sandbox")]
+    allow_no_sandbox: bool,
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+    #[arg(
+        value_name = "PROMPT",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    prompt: Vec<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum CliCommand {
+    /// Reattach a persisted top-level session.
+    Resume(SessionLaunchArgs),
+    /// Start a fresh session seeded from a persisted session transcript.
+    Fork(SessionLaunchArgs),
+}
+
+#[derive(Debug, Args)]
+struct SessionLaunchArgs {
+    #[arg(value_name = "SESSION_ID", conflicts_with = "last")]
+    session_ref: Option<String>,
+    #[arg(long, conflicts_with = "session_ref")]
+    last: bool,
+    #[arg(
+        value_name = "PROMPT",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    prompt: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LaunchMode {
+    Default,
+    Resume(SessionSelector),
+    Fork(SessionSelector),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SessionSelector {
+    Reference(String),
+    Last,
+}
+
+impl Cli {
+    fn app_option_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(system_prompt) = &self.system_prompt {
+            args.push("--system-prompt".to_string());
+            args.push(system_prompt.clone());
+        }
+        for skill_root in &self.skill_roots {
+            args.push("--skill-root".to_string());
+            args.push(skill_root.clone());
+        }
+        for plugin_root in &self.plugin_roots {
+            args.push("--plugin-root".to_string());
+            args.push(plugin_root.clone());
+        }
+        if let Some(memory_plugin) = &self.memory_plugin {
+            args.push("--memory-plugin".to_string());
+            args.push(memory_plugin.clone());
+        }
+        if let Some(sandbox_fail_if_unavailable) = &self.sandbox_fail_if_unavailable {
+            args.push("--sandbox-fail-if-unavailable".to_string());
+            args.push(sandbox_fail_if_unavailable.clone());
+        }
+        if self.allow_no_sandbox {
+            args.push("--allow-no-sandbox".to_string());
+        }
+        match &self.command {
+            Some(CliCommand::Resume(command)) | Some(CliCommand::Fork(command)) => {
+                args.extend(command.prompt.clone());
+            }
+            None => args.extend(self.prompt.clone()),
+        }
+        args
+    }
+
+    fn launch_mode(&self) -> Result<LaunchMode> {
+        match &self.command {
+            Some(CliCommand::Resume(command)) => {
+                Ok(LaunchMode::Resume(command.selector("resume")?))
+            }
+            Some(CliCommand::Fork(command)) => Ok(LaunchMode::Fork(command.selector("fork")?)),
+            None => Ok(LaunchMode::Default),
+        }
+    }
+}
+
+impl SessionLaunchArgs {
+    fn selector(&self, verb: &str) -> Result<SessionSelector> {
+        match (&self.session_ref, self.last) {
+            (Some(session_ref), false) => Ok(SessionSelector::Reference(session_ref.clone())),
+            (None, true) => Ok(SessionSelector::Last),
+            (None, false) => {
+                bail!("`{verb}` requires a session id or `--last`; run `--help` for usage")
+            }
+            (Some(_), true) => unreachable!("clap enforces selector conflicts"),
+        }
+    }
+}
 
 fn main() -> ExitCode {
     match try_main() {
@@ -29,11 +152,14 @@ fn main() -> ExitCode {
 }
 
 fn try_main() -> Result<()> {
+    let cli = Cli::parse();
     let workspace_root = env::current_dir().context("failed to resolve current workspace")?;
     let env_map = EnvMap::from_workspace_dir(&workspace_root)?;
     inject_process_env(&env_map);
     let _tracing_guard = init_tracing(&workspace_root)?;
-    let options = AppOptions::from_env_and_args(&workspace_root, &env_map)?;
+    let options =
+        AppOptions::from_env_and_args_iter(&workspace_root, &env_map, cli.app_option_args())?;
+    let launch_mode = cli.launch_mode()?;
     // Startup loading and the unsandboxed-risk prompt both render before the
     // main `CodeAgentTui` exists, so install the configured theme catalog as
     // soon as config parsing succeeds instead of letting those early surfaces
@@ -46,7 +172,7 @@ fn try_main() -> Result<()> {
     })
     .context("failed to build tokio runtime")?;
     let local = tokio::task::LocalSet::new();
-    runtime.block_on(local.run_until(async_main(workspace_root, options)))
+    runtime.block_on(local.run_until(async_main(workspace_root, options, launch_mode)))
 }
 
 fn print_fatal_error(error: &anyhow::Error) {
@@ -91,7 +217,11 @@ fn init_tracing(workspace_root: &Path) -> Result<WorkerGuard> {
     Ok(guard)
 }
 
-async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
+async fn async_main(
+    workspace_root: PathBuf,
+    options: AppOptions,
+    launch_mode: LaunchMode,
+) -> Result<()> {
     let mut options = options;
     let stdin_is_terminal = io::stdin().is_terminal();
     let stdout_is_terminal = io::stdout().is_terminal();
@@ -109,7 +239,7 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
     // real terminal is unavailable, bypass the TUI so raw-mode setup does not
     // fail before the runtime can execute the prompt.
     if launch_headless_one_shot(&options, stdin_is_terminal, stdout_is_terminal) {
-        return run_headless_one_shot(workspace_root, options).await;
+        return run_headless_one_shot(workspace_root, options, launch_mode).await;
     }
 
     let ui_state = SharedUiState::new();
@@ -134,16 +264,21 @@ async fn async_main(workspace_root: PathBuf, options: AppOptions) -> Result<()> 
     )
     .await;
     loading_screen.leave()?;
-    let session = CodeAgentUiSession::from(session?);
+    let session = session?;
+    apply_launch_mode(&session, &launch_mode).await?;
+    let session = CodeAgentUiSession::from(session);
+    let exit_summary_session = session.clone();
 
-    CodeAgentTui::new(
+    let result = CodeAgentTui::new(
         session,
         options.one_shot_prompt.clone(),
         ui_state,
         options.theme_catalog.clone(),
     )
     .run()
-    .await
+    .await;
+    emit_ui_exit_summary(&exit_summary_session).await;
+    result
 }
 
 fn launch_headless_one_shot(
@@ -154,7 +289,11 @@ fn launch_headless_one_shot(
     options.one_shot_prompt.is_some() && (!stdin_is_terminal || !stdout_is_terminal)
 }
 
-async fn run_headless_one_shot(workspace_root: PathBuf, options: AppOptions) -> Result<()> {
+async fn run_headless_one_shot(
+    workspace_root: PathBuf,
+    options: AppOptions,
+    launch_mode: LaunchMode,
+) -> Result<()> {
     let prompt = options
         .one_shot_prompt
         .clone()
@@ -165,6 +304,7 @@ async fn run_headless_one_shot(workspace_root: PathBuf, options: AppOptions) -> 
         SessionApprovalMode::NonInteractive,
     )
     .await?;
+    apply_launch_mode(&session, &launch_mode).await?;
     let result = session.run_one_shot_prompt(&prompt).await;
     let end_reason = if result.is_ok() {
         "one_shot_complete"
@@ -172,7 +312,13 @@ async fn run_headless_one_shot(workspace_root: PathBuf, options: AppOptions) -> 
         "one_shot_failed"
     };
     let _ = session.end_session(Some(end_reason.to_string())).await;
-    let outcome = result?;
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            emit_exit_summary(&session).await;
+            return Err(error);
+        }
+    };
     if !outcome.assistant_text.is_empty() {
         let mut stdout = io::stdout().lock();
         stdout.write_all(outcome.assistant_text.as_bytes())?;
@@ -181,7 +327,136 @@ async fn run_headless_one_shot(workspace_root: PathBuf, options: AppOptions) -> 
         }
         stdout.flush()?;
     }
+    emit_exit_summary(&session).await;
     Ok(())
+}
+
+async fn apply_launch_mode(
+    session: &code_agent_backend::CodeAgentSession,
+    launch_mode: &LaunchMode,
+) -> Result<()> {
+    match launch_mode {
+        LaunchMode::Default => Ok(()),
+        LaunchMode::Resume(selector) => {
+            let session_ref = resolve_session_selector(session, selector, "resume").await?;
+            session.resume_persisted_session(&session_ref).await
+        }
+        LaunchMode::Fork(selector) => {
+            let session_ref = resolve_session_selector(session, selector, "fork").await?;
+            session.fork_persisted_session(&session_ref).await
+        }
+    }
+}
+
+async fn resolve_session_selector(
+    session: &code_agent_backend::CodeAgentSession,
+    selector: &SessionSelector,
+    verb: &str,
+) -> Result<String> {
+    match selector {
+        SessionSelector::Reference(session_ref) => Ok(session_ref.clone()),
+        SessionSelector::Last => session
+            .list_sessions()
+            .await?
+            .into_iter()
+            .next()
+            .map(|summary| summary.session_ref)
+            .with_context(|| format!("no persisted sessions available to {verb}")),
+    }
+}
+
+async fn emit_ui_exit_summary(session: &CodeAgentUiSession) {
+    let startup: SessionStartupSnapshot = session.query(UIQuery::StartupSnapshot);
+    match session
+        .run::<LoadedSession>(UIAsyncCommand::LoadSession {
+            session_ref: startup.active_session_ref.clone(),
+        })
+        .await
+    {
+        Ok(loaded) => emit_loaded_session_exit_summary(&startup.active_session_ref, &loaded),
+        Err(error) => warn!(error = %error, "failed to load UI exit summary"),
+    }
+}
+
+async fn emit_exit_summary(session: &code_agent_backend::CodeAgentSession) {
+    let startup = session.startup_snapshot();
+    match session.load_session(&startup.active_session_ref).await {
+        Ok(loaded) => emit_loaded_session_exit_summary(&startup.active_session_ref, &loaded),
+        Err(error) => warn!(error = %error, "failed to load exit summary"),
+    }
+}
+
+fn emit_loaded_session_exit_summary(session_ref: &str, loaded: &LoadedSession) {
+    let mut stderr = io::stderr().lock();
+    if let Err(error) = write_exit_summary(
+        &mut stderr,
+        current_program_name(),
+        session_ref,
+        &loaded.token_usage,
+    ) {
+        warn!(error = %error, "failed to print exit summary");
+    }
+}
+
+fn write_exit_summary(
+    writer: &mut impl Write,
+    program_name: String,
+    session_ref: &str,
+    token_usage: &SessionTokenUsageReport,
+) -> io::Result<()> {
+    let usage = token_usage.aggregate_usage;
+    let total_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
+    writeln!(
+        writer,
+        "Token usage: total={} input={}{} output={}",
+        format_token_count(total_tokens),
+        format_token_count(usage.input_tokens),
+        format_cached_suffix(usage.cache_read_tokens),
+        format_token_count(usage.output_tokens),
+    )?;
+    writeln!(
+        writer,
+        "To continue this session, run {} resume {}",
+        program_name, session_ref
+    )?;
+    writeln!(
+        writer,
+        "To fork from this session, run {} fork {}",
+        program_name, session_ref
+    )?;
+    writer.flush()
+}
+
+fn current_program_name() -> String {
+    env::args()
+        .next()
+        .and_then(|value| {
+            Path::new(&value)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| "code-agent".to_string())
+}
+
+fn format_cached_suffix(cache_read_tokens: u64) -> String {
+    if cache_read_tokens == 0 {
+        String::new()
+    } else {
+        format!(" (+ {} cached)", format_token_count(cache_read_tokens))
+    }
+}
+
+fn format_token_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    grouped.chars().rev().collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -303,16 +578,19 @@ mod diagnostic_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        SandboxFallbackAction, choose_sandbox_fallback_action, format_sandbox_abort_message,
-        launch_headless_one_shot,
+        Cli, LaunchMode, SandboxFallbackAction, SessionSelector, choose_sandbox_fallback_action,
+        format_sandbox_abort_message, format_token_count, launch_headless_one_shot,
+        write_exit_summary,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::runtime::SubagentProfileResolver;
     use agent::tools::{NetworkPolicy, SandboxMode, SubagentLaunchSpec};
+    use agent::types::TokenUsage;
     use agent::types::{AgentTaskSpec, HookEvent, HookHandler, HookRegistration, HttpHookHandler};
     use agent_env::EnvMap;
+    use clap::Parser;
     use code_agent_backend::{
         AppOptions, CodeAgentSubagentProfileResolver, SandboxFallbackNotice, build_sandbox_policy,
         dedup_mcp_servers, driver_host_output_lines, merge_driver_host_inputs, parse_bool_flag,
@@ -324,6 +602,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex, OnceLock};
+    use store::SessionTokenUsageReport;
     use tempfile::tempdir;
 
     fn env_test_lock() -> &'static Mutex<()> {
@@ -337,6 +616,98 @@ mod tests {
         assert!(!parse_bool_flag("off").unwrap());
         assert!(parse_bool_flag("1").unwrap());
         assert!(parse_bool_flag("maybe").is_err());
+    }
+
+    #[test]
+    fn clap_parses_resume_last() {
+        let cli = Cli::parse_from(["code-agent", "--allow-no-sandbox", "resume", "--last"]);
+
+        assert!(cli.allow_no_sandbox);
+        assert_eq!(
+            cli.launch_mode().unwrap(),
+            LaunchMode::Resume(SessionSelector::Last)
+        );
+        assert_eq!(
+            cli.app_option_args(),
+            vec!["--allow-no-sandbox".to_string()]
+        );
+    }
+
+    #[test]
+    fn clap_parses_fork_session_reference() {
+        let cli = Cli::parse_from(["code-agent", "fork", "019d8aae-c699-75c3-b9de-6890b6f4d21a"]);
+
+        assert_eq!(
+            cli.launch_mode().unwrap(),
+            LaunchMode::Fork(SessionSelector::Reference(
+                "019d8aae-c699-75c3-b9de-6890b6f4d21a".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn clap_routes_resume_prompt_tail_after_explicit_session_id() {
+        let cli = Cli::parse_from([
+            "code-agent",
+            "resume",
+            "019d8aae-c699-75c3-b9de-6890b6f4d21a",
+            "continue",
+            "from",
+            "here",
+        ]);
+
+        assert_eq!(
+            cli.launch_mode().unwrap(),
+            LaunchMode::Resume(SessionSelector::Reference(
+                "019d8aae-c699-75c3-b9de-6890b6f4d21a".to_string()
+            ))
+        );
+        assert_eq!(
+            cli.app_option_args(),
+            vec![
+                "continue".to_string(),
+                "from".to_string(),
+                "here".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn token_counts_render_with_grouping() {
+        assert_eq!(format_token_count(0), "0");
+        assert_eq!(format_token_count(965650), "965,650");
+        assert_eq!(format_token_count(2672768), "2,672,768");
+    }
+
+    #[test]
+    fn exit_summary_prints_resume_and_fork_hints() {
+        let mut output = Vec::new();
+        write_exit_summary(
+            &mut output,
+            "nanoclaw".to_string(),
+            "019d8aae-c699-75c3-b9de-6890b6f4d21a",
+            &SessionTokenUsageReport {
+                aggregate_usage: TokenUsage {
+                    input_tokens: 914_229,
+                    output_tokens: 51_421,
+                    prefill_tokens: 0,
+                    decode_tokens: 0,
+                    cache_read_tokens: 2_672_768,
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert_eq!(
+            rendered,
+            concat!(
+                "Token usage: total=965,650 input=914,229 (+ 2,672,768 cached) output=51,421\n",
+                "To continue this session, run nanoclaw resume 019d8aae-c699-75c3-b9de-6890b6f4d21a\n",
+                "To fork from this session, run nanoclaw fork 019d8aae-c699-75c3-b9de-6890b6f4d21a\n",
+            )
+        );
     }
 
     #[test]

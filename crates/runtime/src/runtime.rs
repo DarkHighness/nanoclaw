@@ -258,11 +258,13 @@ impl AgentRuntime {
         }
 
         let mut session = session;
-        session.agent_session_id = types::AgentSessionId::new();
         session.agent_session_started = false;
         session.provider_continuation = None;
         session.provider_transcript_cursor = 0;
         session.token_ledger = types::TokenLedgerSnapshot::default();
+        // Resume callers own the new live agent-session identity so they can
+        // persist forked transcript seeds before runtime startup and still keep
+        // the archived agent session distinct from the fresh attachment.
         self.session = session;
         self.clear_pending_request_effects();
         self.clear_pending_runtime_commands();

@@ -20,8 +20,7 @@ pub struct AgentSessionResumeStatus {
     pub support: ResumeSupport,
 }
 
-const TOP_LEVEL_HISTORY_ONLY_REASON: &str =
-    "Session history can be inspected, but top-level session refs are not direct resume targets.";
+const TOP_LEVEL_HISTORY_ONLY_REASON: &str = "Top-level session refs can be resumed from the CLI, but the history view does not reattach them directly yet.";
 
 pub fn persisted_session_summary(
     summary: &SessionSummary,

@@ -1,4 +1,5 @@
 use super::*;
+use agent::runtime::{RuntimeSession, fork_runtime_session, seed_runtime_session_events};
 
 impl CodeAgentSession {
     pub async fn end_session(&self, reason: Option<String>) -> RuntimeResult<()> {
@@ -168,38 +169,42 @@ impl CodeAgentSession {
         let session_id = SessionId::from(summary.session_ref.clone());
         let target_agent_session_id = AgentSessionId::from(summary.agent_session_ref.clone());
         let events = self.store.events(&session_id).await?;
-        let runtime_session =
+        let mut runtime_session =
             session_resume::reconstruct_runtime_session(&events, &target_agent_session_id)?;
-        let (active_session_ref, active_agent_session_ref, side_question_context) = {
-            let mut runtime = self.runtime.lock().await;
-            runtime
-                .resume_session(runtime_session)
-                .await
-                .map_err(anyhow::Error::from)?;
-            (
-                runtime.session_id().to_string(),
-                runtime.agent_session_id().to_string(),
-                Self::side_question_context_from_runtime(&runtime, None),
-            )
-        };
-        self.store_side_question_context(side_question_context.clone());
-        self.reset_session_memory_refresh_state(&side_question_context)
-            .await;
-        self.worktree_manager
-            .sync_attached_session(
-                SessionId::from(active_session_ref.clone()),
-                AgentSessionId::from(active_agent_session_ref.clone()),
-            )
-            .await
-            .map_err(anyhow::Error::from)?;
-        self.set_runtime_session_refs(active_session_ref, active_agent_session_ref);
-        self.refresh_stored_session_count().await?;
+        runtime_session.agent_session_id = AgentSessionId::new();
+        self.activate_reconstructed_session(runtime_session).await?;
         Ok(self
             .build_session_operation_outcome(
                 SessionOperationAction::Reattached,
                 Some(summary.agent_session_ref.clone()),
             )
             .await)
+    }
+
+    pub async fn resume_persisted_session(&self, session_ref: &str) -> Result<()> {
+        let session_id = self
+            .resolve_session_reference_from_operator_input(session_ref)
+            .await?;
+        if session_id.as_str() == self.startup_snapshot().active_session_ref {
+            return Ok(());
+        }
+        let runtime_session = self
+            .load_runtime_session_for_root_agent(&session_id)
+            .await?;
+        self.activate_reconstructed_session(runtime_session).await
+    }
+
+    pub async fn fork_persisted_session(&self, session_ref: &str) -> Result<()> {
+        let session_id = self
+            .resolve_session_reference_from_operator_input(session_ref)
+            .await?;
+        let parent_session = self
+            .load_runtime_session_for_root_agent(&session_id)
+            .await?;
+        let forked_session =
+            fork_runtime_session(&parent_session, SessionId::new(), AgentSessionId::new());
+        self.persist_forked_session_seed(&forked_session).await?;
+        self.activate_reconstructed_session(forked_session).await
     }
 
     async fn active_visible_transcript(&self) -> Vec<Message> {
@@ -234,5 +239,62 @@ impl CodeAgentSession {
             startup,
             transcript,
         }
+    }
+
+    async fn load_runtime_session_for_root_agent(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<RuntimeSession> {
+        let root_agent_session_id = self
+            .store
+            .agent_session_ids(session_id)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                anyhow::anyhow!("session {session_id} has no persisted agent sessions")
+            })?;
+        let events = self.store.events(session_id).await?;
+        let mut runtime_session =
+            session_resume::reconstruct_runtime_session(&events, &root_agent_session_id)?;
+        runtime_session.agent_session_id = AgentSessionId::new();
+        Ok(runtime_session)
+    }
+
+    async fn activate_reconstructed_session(&self, runtime_session: RuntimeSession) -> Result<()> {
+        let (active_session_ref, active_agent_session_ref, side_question_context) = {
+            let mut runtime = self.runtime.lock().await;
+            runtime
+                .resume_session(runtime_session)
+                .await
+                .map_err(anyhow::Error::from)?;
+            (
+                runtime.session_id().to_string(),
+                runtime.agent_session_id().to_string(),
+                Self::side_question_context_from_runtime(&runtime, None),
+            )
+        };
+        self.store_side_question_context(side_question_context.clone());
+        self.reset_session_memory_refresh_state(&side_question_context)
+            .await;
+        self.worktree_manager
+            .sync_attached_session(
+                SessionId::from(active_session_ref.clone()),
+                AgentSessionId::from(active_agent_session_ref.clone()),
+            )
+            .await
+            .map_err(anyhow::Error::from)?;
+        self.set_runtime_session_refs(active_session_ref, active_agent_session_ref);
+        self.refresh_stored_session_count().await?;
+        Ok(())
+    }
+
+    async fn persist_forked_session_seed(&self, session: &RuntimeSession) -> Result<()> {
+        let events = seed_runtime_session_events(session).map_err(anyhow::Error::from)?;
+        if events.is_empty() {
+            return Ok(());
+        }
+        self.store.append_batch(events).await?;
+        Ok(())
     }
 }

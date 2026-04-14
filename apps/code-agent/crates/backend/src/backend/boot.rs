@@ -411,9 +411,9 @@ where
     let tool_names = runtime.tool_registry_names();
     let supported_model_reasoning_efforts = model_backend.supported_reasoning_efforts();
     let backend_capabilities = agent_backend_capabilities(&options.primary_profile);
-    // Persisted history is still keyed by substrate `session_id`. Expose that ID as
-    // the operator-facing session reference until the host grows a first-class
-    // resumable session catalog above the raw runtime/store layer.
+    // Persisted history and CLI resume/fork both key off the substrate
+    // `session_id`, so the operator-facing session reference should stay equal
+    // to the durable store id instead of introducing a second host alias.
     let active_session_ref = runtime.session_id().to_string();
     let root_agent_session_id = runtime.agent_session_id().to_string();
     let session_memory_model_backend: Arc<dyn ModelBackend> = Arc::new(model_backend.clone());
