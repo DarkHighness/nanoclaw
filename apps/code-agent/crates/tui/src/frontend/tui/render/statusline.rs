@@ -224,6 +224,10 @@ pub(super) fn format_toast_line(state: &TuiState) -> Line<'static> {
         ToastTone::Warning => palette().warn,
         ToastTone::Error => palette().error,
     };
+    let message_color = match toast.tone {
+        ToastTone::Error => tone_color,
+        _ => palette().text,
+    };
     Line::from(vec![
         Span::styled(
             "●",
@@ -234,7 +238,7 @@ pub(super) fn format_toast_line(state: &TuiState) -> Line<'static> {
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
             preview_text(&toast.message, 120),
-            Style::default().fg(palette().text),
+            Style::default().fg(message_color),
         ),
     ])
 }

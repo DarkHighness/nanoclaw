@@ -9,6 +9,14 @@ impl CodeAgentSession {
         self.approvals.snapshot()
     }
 
+    pub fn cancel_pending_interactions(&self, reason: impl Into<String>) -> bool {
+        let reason = reason.into();
+        let approval = self.approvals.cancel(reason.clone());
+        let user_input = self.user_inputs.cancel(reason.clone());
+        let permission_request = self.permission_requests.cancel(reason);
+        approval || user_input || permission_request
+    }
+
     pub fn resolve_approval(&self, decision: ApprovalDecision) -> bool {
         self.approvals.resolve(decision)
     }

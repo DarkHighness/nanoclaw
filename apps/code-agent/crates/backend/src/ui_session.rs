@@ -64,6 +64,9 @@ impl CodeAgentUiSession {
             UICommand::ResolveUserInput(submission) => {
                 UIResult::Bool(self.inner.resolve_user_input(submission))
             }
+            UICommand::CancelPendingInteractions { reason } => {
+                UIResult::Bool(self.inner.cancel_pending_interactions(reason))
+            }
             UICommand::CancelUserInput { reason } => {
                 UIResult::Bool(self.inner.cancel_user_input(reason))
             }

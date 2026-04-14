@@ -3114,6 +3114,22 @@ fn toast_band_renders_tone_and_message_preview() {
 }
 
 #[test]
+fn error_toast_colors_interrupt_prompt_message() {
+    let mut state = TuiState::default();
+    state.show_toast(ToastTone::Error, "已中断，接下来想要 nanoclaw 做什么");
+
+    let line = format_toast_line(&state);
+    let text = line_text_for(&line);
+
+    assert!(text.contains("已中断"));
+    let message_span = line
+        .spans
+        .last()
+        .expect("toast message span should be present");
+    assert_eq!(message_span.style.fg, Some(palette().error));
+}
+
+#[test]
 fn composer_cursor_width_accounts_for_wide_characters() {
     assert_eq!(super::shared::composer_cursor_width("hello"), 5);
     assert_eq!(super::shared::composer_cursor_width("你好"), 4);

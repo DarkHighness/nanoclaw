@@ -68,6 +68,9 @@ pub enum UICommand {
     ResolveApproval(ApprovalDecision),
     ResolvePermissionRequest(PermissionRequestDecision),
     ResolveUserInput(UserInputSubmission),
+    CancelPendingInteractions {
+        reason: String,
+    },
     CancelUserInput {
         reason: String,
     },

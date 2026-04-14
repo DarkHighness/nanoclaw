@@ -1,5 +1,8 @@
 use super::*;
 
+const INTERRUPT_REASON: &str = "operator interrupted current turn";
+const INTERRUPT_PROMPT: &str = "已中断，接下来想要 nanoclaw 做什么";
+
 impl CodeAgentTui {
     pub(crate) async fn start_turn(&mut self, prompt: String) {
         self.start_turn_message(
@@ -145,8 +148,12 @@ impl CodeAgentTui {
     }
 
     pub(crate) async fn interrupt_active_turn(&mut self) -> Result<()> {
-        if !self.abort_turn_task() {
+        if !self.cancel_turn_task().await {
             return Ok(());
+        }
+        let cleared_interactions = self.cancel_pending_interactions(INTERRUPT_REASON);
+        if cleared_interactions {
+            self.active_user_input = None;
         }
 
         // Once the live task is aborted, any safe-point steer would never be
@@ -164,9 +171,13 @@ impl CodeAgentTui {
         if let Some(prompt) = merge_interrupt_steers(steers) {
             let preview = state::preview_text(&prompt, 40);
             self.ui_state.mutate(|state| {
+                state.show_transcript_pane();
                 state.turn_running = false;
                 state.turn_started_at = None;
+                state.turn_phase = state::TurnPhase::Idle;
                 state.clear_missing_live_tool_selection();
+                state.active_tool_cells.clear();
+                state.provider_retry = None;
                 state.push_transcript(state::TranscriptEntry::error_summary_details(
                     "Interrupted current turn",
                     Vec::new(),
@@ -182,11 +193,15 @@ impl CodeAgentTui {
             .await;
         } else {
             self.ui_state.mutate(|state| {
+                state.show_transcript_pane();
                 state.turn_running = false;
                 state.turn_started_at = None;
+                state.turn_phase = state::TurnPhase::Idle;
                 state.clear_missing_live_tool_selection();
-                state.status =
-                    "Interrupted current turn. What should nanoclaw do next?".to_string();
+                state.active_tool_cells.clear();
+                state.provider_retry = None;
+                state.status = INTERRUPT_PROMPT.to_string();
+                state.show_toast(state::ToastTone::Error, INTERRUPT_PROMPT);
                 state.push_transcript(state::TranscriptEntry::error_summary_details(
                     "Interrupted current turn",
                     Vec::new(),

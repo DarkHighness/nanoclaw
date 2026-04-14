@@ -72,6 +72,13 @@ impl CodeAgentTui {
             .unwrap_or(false)
     }
 
+    pub(super) fn cancel_pending_interactions(&self, reason: impl Into<String>) -> bool {
+        self.dispatch(UICommand::CancelPendingInteractions {
+            reason: reason.into(),
+        })
+        .unwrap_or(false)
+    }
+
     pub(super) fn cancel_user_input(&self, reason: impl Into<String>) -> bool {
         self.dispatch(UICommand::CancelUserInput {
             reason: reason.into(),

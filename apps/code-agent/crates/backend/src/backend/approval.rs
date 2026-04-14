@@ -44,6 +44,20 @@ impl ApprovalCoordinator {
         self.inner.read().unwrap().prompt.clone()
     }
 
+    pub fn cancel(&self, reason: impl Into<String>) -> bool {
+        let mut inner = self.inner.write().unwrap();
+        let responder = inner.responder.take();
+        inner.prompt = None;
+        if let Some(responder) = responder {
+            let _ = responder.send(ToolApprovalOutcome::Deny {
+                reason: Some(reason.into()),
+            });
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn resolve(&self, decision: ApprovalDecision) -> bool {
         let mut inner = self.inner.write().unwrap();
         let responder = inner.responder.take();
@@ -687,10 +701,59 @@ mod tests {
     use agent::runtime::{ToolApprovalHandler, ToolApprovalOutcome, ToolApprovalRequest};
     use agent::types::{ToolCall, ToolCallId, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
     use serde_json::json;
+    use tokio::task::yield_now;
 
     #[test]
     fn resolving_missing_request_is_a_noop() {
         assert!(!ApprovalCoordinator::default().resolve(ApprovalDecision::Approve));
+    }
+
+    #[tokio::test]
+    async fn cancelling_active_request_clears_prompt_and_denies_request() {
+        let coordinator = ApprovalCoordinator::default();
+        let handler = super::SessionToolApprovalHandler::new(coordinator.clone());
+
+        let task = tokio::spawn(async move {
+            handler
+                .decide(ToolApprovalRequest {
+                    call: ToolCall {
+                        id: ToolCallId::new(),
+                        call_id: "call-1".into(),
+                        tool_name: "write".into(),
+                        arguments: json!({"path":"sample.txt"}),
+                        origin: ToolOrigin::Local,
+                    },
+                    spec: ToolSpec::function(
+                        "write",
+                        "write",
+                        json!({"type":"object"}),
+                        ToolOutputMode::Text,
+                        ToolOrigin::Local,
+                        ToolSource::Builtin,
+                    ),
+                    reasons: vec!["destructive".to_string()],
+                })
+                .await
+        });
+
+        let prompt = loop {
+            if let Some(prompt) = coordinator.snapshot() {
+                break prompt;
+            }
+            yield_now().await;
+        };
+        assert_eq!(prompt.tool_name, "write");
+
+        assert!(coordinator.cancel("operator interrupted current turn"));
+        assert!(coordinator.snapshot().is_none());
+
+        let outcome = task.await.unwrap().unwrap();
+        assert_eq!(
+            outcome,
+            ToolApprovalOutcome::Deny {
+                reason: Some("operator interrupted current turn".to_string()),
+            }
+        );
     }
 
     #[tokio::test]

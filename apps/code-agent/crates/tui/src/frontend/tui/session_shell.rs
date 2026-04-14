@@ -201,12 +201,16 @@ impl CodeAgentTui {
         }
     }
 
-    pub(super) fn abort_turn_task(&mut self) -> bool {
-        if let Some(task) = self.turn_task.take() {
-            task.abort();
-            true
-        } else {
-            false
-        }
+    pub(super) async fn cancel_turn_task(&mut self) -> bool {
+        let Some(task) = self.turn_task.take() else {
+            return false;
+        };
+        // The TUI owns the foreground-turn future, so aborting it is the host's
+        // interruption boundary. Await the join handle after abort so the
+        // runtime lock and active-turn guard are dropped before accepting the
+        // next operator instruction.
+        task.abort();
+        let _ = task.await;
+        true
     }
 }

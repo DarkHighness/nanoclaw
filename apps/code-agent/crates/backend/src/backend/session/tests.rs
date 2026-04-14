@@ -1243,6 +1243,73 @@ async fn permission_mode_switch_fails_fast_while_turn_is_running() {
 }
 
 #[tokio::test]
+async fn aborted_foreground_turn_releases_runtime_for_follow_up_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let backend = Arc::new(GatedTextBackend::new("released"));
+    let runtime = AgentRuntimeBuilder::new(backend.clone(), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        })
+        .build();
+    let session = build_session(
+        runtime,
+        Arc::new(NoopSubagentExecutor),
+        store,
+        startup_snapshot(dir.path()),
+    );
+
+    let running = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            session
+                .apply_control(RuntimeCommand::Prompt {
+                    message: Message::user("hold the turn open"),
+                    submitted_prompt: None,
+                })
+                .await
+        })
+    };
+
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if !backend.requests().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("turn should start");
+
+    running.abort();
+    let join_error = running.await.expect_err("aborted turn should not complete");
+    assert!(join_error.is_cancelled());
+
+    let follow_up = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            session
+                .apply_control(RuntimeCommand::Prompt {
+                    message: Message::user("follow up after interrupt"),
+                    submitted_prompt: None,
+                })
+                .await
+        })
+    };
+
+    backend.release();
+    timeout(Duration::from_secs(1), follow_up)
+        .await
+        .expect("follow-up turn should complete")
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn permission_mode_switch_restores_command_hooks_into_runtime_state() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemorySessionStore::new());
