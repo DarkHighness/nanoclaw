@@ -96,12 +96,12 @@ impl CodeAgentTui {
                         "No background monitors attached".to_string()
                     } else if include_closed {
                         format!(
-                            "Listed {} monitor(s), including closed ones. Use /stop_monitor <monitor-ref> to stop an active monitor.",
+                            "Listed {} monitor(s), including closed ones. Use /stop-monitor <monitor-ref> to stop an active monitor.",
                             monitors.len()
                         )
                     } else {
                         format!(
-                            "Listed {} active monitor(s). Use /stop_monitor <monitor-ref> to stop one.",
+                            "Listed {} active monitor(s). Use /stop-monitor <monitor-ref> to stop one.",
                             monitors.len()
                         )
                     };

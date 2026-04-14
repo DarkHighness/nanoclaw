@@ -2654,15 +2654,15 @@ fn command_hint_text_surfaces_argument_progress() {
     let rendered = build_composer_hint_text(&ComposerCompletionHint::Slash(SlashCommandHint {
         selected: builtin_slash(SlashCommandSpec {
             section: "Export",
-            name: "export_session",
-            usage: "export_session <session-ref> <path>",
-            summary: "write session export",
+            name: "export-transcript",
+            usage: "export-transcript <session-ref> <path>",
+            summary: "write transcript export",
         }),
         matches: vec![builtin_slash(SlashCommandSpec {
             section: "Export",
-            name: "export_session",
-            usage: "export_session <session-ref> <path>",
-            summary: "write session export",
+            name: "export-transcript",
+            usage: "export-transcript <session-ref> <path>",
+            summary: "write transcript export",
         })],
         selected_match_index: 0,
         arguments: Some(SlashCommandArgumentHint {
@@ -2769,8 +2769,8 @@ fn command_hint_text_shows_browse_window_ellipsis() {
             }),
             builtin_slash(SlashCommandSpec {
                 section: "Agents",
-                name: "live_tasks",
-                usage: "live_tasks",
+                name: "live-tasks",
+                usage: "live-tasks",
                 summary: "list live child agents",
             }),
         ],

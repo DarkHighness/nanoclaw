@@ -51,11 +51,11 @@ pub(crate) fn build_startup_inspector(session: &state::SessionSummary) -> Vec<In
         command_entry("queue", "/queue", "browse pending prompts and steers"),
         command_entry("sessions", "/sessions", "browse history"),
         command_entry(
-            "agent_sessions",
-            "/agent_sessions",
+            "agent-sessions",
+            "/agent-sessions",
             "inspect or resume agents",
         ),
-        command_entry("live_tasks", "/live_tasks", "inspect active child agents"),
+        command_entry("live-tasks", "/live-tasks", "inspect active child agents"),
         command_entry("new", "/new", "start fresh without deleting history"),
         InspectorEntry::section("Environment"),
         InspectorEntry::field(

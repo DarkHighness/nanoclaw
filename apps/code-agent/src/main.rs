@@ -61,8 +61,10 @@ enum CliCommand {
     /// Inspect a persisted session transcript and metadata.
     Session(SessionLookupArgs),
     /// Export persisted session events as JSONL.
+    #[command(name = "export-events")]
     ExportSession(SessionExportArgs),
     /// Export a persisted session transcript as plain text.
+    #[command(name = "export-transcript")]
     ExportTranscript(SessionExportArgs),
 }
 
@@ -207,7 +209,7 @@ impl Cli {
                 selector: command.selector("session")?,
             })),
             Some(CliCommand::ExportSession(command)) => {
-                let (selector, output_path) = command.selector_and_path("export-session")?;
+                let (selector, output_path) = command.selector_and_path("export-events")?;
                 Ok(Some(ReadOnlyCommand::ExportSession {
                     selector,
                     output_path,

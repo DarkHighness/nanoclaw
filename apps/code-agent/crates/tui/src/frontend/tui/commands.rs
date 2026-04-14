@@ -301,8 +301,8 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Session",
-        name: "move_attachment",
-        usage: "move_attachment <from> <to>",
+        name: "move-attachment",
+        usage: "move-attachment <from> <to>",
         summary: "reorder composer attachments",
     },
     SlashCommandSpec {
@@ -349,8 +349,8 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Agents",
-        name: "live_tasks",
-        usage: "live_tasks",
+        name: "live-tasks",
+        usage: "live-tasks",
         summary: "list live child agents",
     },
     SlashCommandSpec {
@@ -361,8 +361,8 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Agents",
-        name: "stop_monitor",
-        usage: "stop_monitor <monitor-ref> [reason]",
+        name: "stop-monitor",
+        usage: "stop-monitor <monitor-ref> [reason]",
         summary: "stop background monitor",
     },
     SlashCommandSpec {
@@ -379,14 +379,14 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "History",
-        name: "agent_sessions",
-        usage: "agent_sessions [session-ref]",
+        name: "agent-sessions",
+        usage: "agent-sessions [session-ref]",
         summary: "list agent sessions",
     },
     SlashCommandSpec {
         section: "History",
-        name: "agent_session",
-        usage: "agent_session <agent-session-ref>",
+        name: "agent-session",
+        usage: "agent-session <agent-session-ref>",
         summary: "inspect agent session",
     },
     SlashCommandSpec {
@@ -433,14 +433,14 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         section: "Export",
-        name: "export_session",
-        usage: "export_session <session-ref> <path>",
-        summary: "write session export",
+        name: "export-events",
+        usage: "export-events <session-ref> <path>",
+        summary: "write raw event export",
     },
     SlashCommandSpec {
         section: "Export",
-        name: "export_transcript",
-        usage: "export_transcript <session-ref> <path>",
+        name: "export-transcript",
+        usage: "export-transcript <session-ref> <path>",
         summary: "write transcript export",
     },
 ];
@@ -551,7 +551,7 @@ struct SlashCli {
 }
 
 #[derive(Subcommand, Debug)]
-#[command(rename_all = "snake_case")]
+#[command(rename_all = "kebab-case")]
 enum SlashSubcommand {
     Status,
     Details,
@@ -663,11 +663,13 @@ enum SlashSubcommand {
     Resume {
         agent_session_ref: String,
     },
+    #[command(name = "export-events")]
     ExportSession {
         session_ref: String,
         #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]
         path: Vec<String>,
     },
+    #[command(name = "export-transcript")]
     ExportTranscript {
         session_ref: String,
         #[arg(value_name = "PATH", required = true, trailing_var_arg = true)]

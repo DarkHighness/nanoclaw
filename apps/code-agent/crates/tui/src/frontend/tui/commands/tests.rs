@@ -134,7 +134,7 @@ fn parses_btw_question_with_spaces() {
 
 #[test]
 fn export_transcript_keeps_path_tail_intact() {
-    match parse_slash_command("/export_transcript abc123 reports/run log.txt") {
+    match parse_slash_command("/export-transcript abc123 reports/run log.txt") {
         SlashCommand::ExportTranscript { session_ref, path } => {
             assert_eq!(session_ref, "abc123");
             assert_eq!(path, "reports/run log.txt");
@@ -145,7 +145,7 @@ fn export_transcript_keeps_path_tail_intact() {
 
 #[test]
 fn parses_agent_session_listing_with_optional_session_ref() {
-    match parse_slash_command("/agent_sessions abc123") {
+    match parse_slash_command("/agent-sessions abc123") {
         SlashCommand::AgentSessions { session_ref } => {
             assert_eq!(session_ref, Some("abc123".to_string()));
         }
@@ -155,7 +155,7 @@ fn parses_agent_session_listing_with_optional_session_ref() {
 
 #[test]
 fn parses_agent_session_lookup() {
-    match parse_slash_command("/agent_session agent123") {
+    match parse_slash_command("/agent-session agent123") {
         SlashCommand::AgentSession { agent_session_ref } => {
             assert_eq!(agent_session_ref, "agent123");
         }
@@ -198,7 +198,7 @@ fn command_palette_marks_required_argument_commands_as_input_seeds() {
 #[test]
 fn parses_live_task_listing() {
     assert!(matches!(
-        parse_slash_command("/live_tasks"),
+        parse_slash_command("/live-tasks"),
         SlashCommand::LiveTasks
     ));
 }
@@ -221,7 +221,7 @@ fn parses_monitor_listing_with_optional_closed_flag() {
 
 #[test]
 fn parses_stop_monitor_with_optional_reason_tail() {
-    match parse_slash_command("/stop_monitor mon_123 process hung on warm reload") {
+    match parse_slash_command("/stop-monitor mon_123 process hung on warm reload") {
         SlashCommand::StopMonitor {
             monitor_ref,
             reason,
@@ -357,7 +357,7 @@ fn parses_detach_with_optional_index() {
 #[test]
 fn parses_move_attachment_command() {
     assert_eq!(
-        parse_slash_command("/move_attachment 2 1"),
+        parse_slash_command("/move-attachment 2 1"),
         SlashCommand::MoveAttachment { from: 2, to: 1 }
     );
 }
@@ -482,9 +482,9 @@ fn command_palette_can_filter_by_query() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("/agent_sessions [session-ref]"))
+            .any(|line| line.contains("/agent-sessions [session-ref]"))
     );
-    assert!(!lines.iter().any(|line| line.contains("/export_transcript")));
+    assert!(!lines.iter().any(|line| line.contains("/export-transcript")));
 }
 
 #[test]
@@ -632,7 +632,8 @@ fn slash_command_hint_surfaces_next_required_argument() {
 #[test]
 fn slash_command_hint_tracks_argument_progress() {
     let ComposerCompletionHint::Slash(hint) =
-        composer_completion_hint("/export_session session_123", 0, &sample_skills()).expect("hint")
+        composer_completion_hint("/export-transcript session_123", 0, &sample_skills())
+            .expect("hint")
     else {
         panic!("expected slash hint");
     };
@@ -661,7 +662,7 @@ fn slash_command_hint_browses_all_commands_from_empty_slash() {
     assert_eq!(hint.selected.name(), "help");
     assert_eq!(hint.selected_match_index, 0);
     assert!(hint.matches.len() > 10);
-    assert!(hint.matches.iter().any(|spec| spec.name() == "live_tasks"));
+    assert!(hint.matches.iter().any(|spec| spec.name() == "live-tasks"));
     assert!(hint.matches.iter().any(|spec| spec.name() == "openai-docs"));
 }
 

@@ -191,7 +191,7 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- fork --last
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- sessions
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- sessions "prompt text"
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- session --last
-cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-session --last tmp/session.jsonl
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-events --last tmp/session.jsonl
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-transcript 019d8aae-c699-75c3-b9de-6890b6f4d21a tmp/session.txt
 ```
 
@@ -200,7 +200,7 @@ active session to stderr. The command name in that hint follows the executable
 you launched, so packaged installs can surface `nanoclaw resume ...` without
 changing the workspace package name.
 
-The read-only `sessions`, `session`, `export-session`, and `export-transcript`
+The read-only `sessions`, `session`, `export-events`, and `export-transcript`
 commands inspect the persisted session store directly, so they do not require a
 provider API key just to browse or export history.
 
@@ -389,18 +389,18 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/help`
 - `/details`
 - `/queue`
-- `/agent_sessions [session-ref]`
-- `/agent_session <agent-session-ref>`
-- `/live_tasks`
+- `/agent-sessions [session-ref]`
+- `/agent-session <agent-session-ref>`
+- `/live-tasks`
 - `/monitors [all]`
-- `/stop_monitor <monitor-ref> [reason]`
+- `/stop-monitor <monitor-ref> [reason]`
 - `/tasks [session-ref]`
 - `/task <task-id>`
 - `/sessions [query]`
 - `/session <session-ref>`
 - `/resume <agent-session-ref>`
-- `/export_session <session-ref> <path>`
-- `/export_transcript <session-ref> <path>`
+- `/export-events <session-ref> <path>`
+- `/export-transcript <session-ref> <path>`
 - `/diagnostics`
 - `/mcp`
 - `/prompts`
@@ -465,7 +465,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
   pending attachments. `Up` at cursor position `0` selects the last row,
   `Up`/`Down` moves across rows, `Down` on the final row returns to text
   editing, `Delete`/`Backspace` removes the selected row, and
-  `/move_attachment <from> <to>` reorders rows explicitly.
+  `/move-attachment <from> <to>` reorders rows explicitly.
 - Image attachments are gated by the active model surface. `/image` refuses to
   attach on non-vision models, prompt submit blocks before clearing the draft
   when pending image parts are present, and pasting a single local image path
@@ -487,7 +487,7 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 - `/image <path-or-url>`
 - `/file <path-or-url>`
 - `/detach [index]`
-- `/move_attachment <from> <to>`
+- `/move-attachment <from> <to>`
 - `/steer <notes>`
 - `/new`
 - `/compact [notes]`
@@ -497,9 +497,9 @@ not have useful extensions, including `Dockerfile*`, `Containerfile*`, `go.mod`,
 The product-facing host surface now uses `session` terminology for the durable
 conversation history and `agent session` terminology for runtime-resume targets.
 `/session <session-ref>` opens persisted conversation history and exports
-artifacts. `/agent_session <agent-session-ref>` inspects a specific runtime
+artifacts. `/agent-session <agent-session-ref>` inspects a specific runtime
 window, including its transcript slice, token budget, and spawned subagent
-summaries. `/live_tasks` lists currently attached child agents for the active
+summaries. `/live-tasks` lists currently attached child agents for the active
 runtime and exposes typed picker actions: `Enter` waits on the selected child,
 and `c` cancels it without leaving the current session. `/tasks [session-ref]`
 lists persisted child tasks, and `/task <task-id>` opens their

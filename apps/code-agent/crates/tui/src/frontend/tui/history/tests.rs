@@ -117,7 +117,7 @@ fn agent_session_collection_exposes_resume_as_alternate_action() {
             assert_eq!(
                 action,
                 Some(InspectorAction::RunCommand(
-                    "/agent_session agent_session_123456".to_string()
+                    "/agent-session agent_session_123456".to_string()
                 ))
             );
             let alternate_action = alternate_action.expect("alternate resume action");

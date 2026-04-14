@@ -36,7 +36,7 @@ pub(crate) fn format_agent_session_summary_collection(
     let primary = agent_session_summary_primary(summary);
     let secondary = agent_session_summary_secondary(summary);
     let action =
-        InspectorAction::RunCommand(format!("/agent_session {}", summary.agent_session_ref));
+        InspectorAction::RunCommand(format!("/agent-session {}", summary.agent_session_ref));
     if let Some(alternate_action) = agent_session_resume_action(summary) {
         InspectorEntry::actionable_collection_with_alt(
             primary,

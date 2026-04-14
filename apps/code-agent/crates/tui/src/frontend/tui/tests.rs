@@ -122,7 +122,7 @@ fn command_palette_groups_operator_commands() {
     assert!(
         lines
             .iter()
-            .any(|line| { line.starts_with("/live_tasks  list live child agents") })
+            .any(|line| { line.starts_with("/live-tasks  list live child agents") })
     );
 }
 
