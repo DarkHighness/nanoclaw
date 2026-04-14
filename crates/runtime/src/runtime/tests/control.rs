@@ -7,7 +7,7 @@ use crate::{
 use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
 use std::sync::{Arc, Mutex};
-use store::{InMemorySessionStore, SessionStore};
+use store::{InMemorySessionStore, SessionStore, SessionStoreError};
 use tools::{ReadTool, ToolExecutionContext, ToolRegistry};
 use types::{
     Message, ModelEvent, ModelRequest, SessionEventKind, TokenUsage, TokenUsagePhase, ToolCall,
@@ -582,22 +582,45 @@ async fn runtime_new_session_rotates_top_level_session_and_clears_state() {
             )
     }));
 
-    let next_events = store.events(&next_session_id).await.unwrap();
-    assert!(next_events.iter().any(|event| {
-        event.agent_session_id == next_agent_session_id
-            && matches!(
-                &event.event,
-                SessionEventKind::SessionStart { reason }
-                    if reason.as_deref() == Some("operator_new_session")
-            )
-    }));
+    let next_events = store.events(&next_session_id).await;
+    assert!(matches!(
+        next_events,
+        Err(SessionStoreError::SessionNotFound(session_id)) if session_id == next_session_id
+    ));
     assert!(
         store
             .replay_transcript(&next_session_id)
             .await
-            .unwrap()
+            .unwrap_or_default()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn ending_pristine_runtime_session_is_a_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(StreamingTextBackend), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .build();
+    let session_id = runtime.session_id();
+
+    runtime
+        .end_session(Some("operator_exit".to_string()))
+        .await
+        .unwrap();
+
+    let events = store.events(&session_id).await;
+    assert!(matches!(
+        events,
+        Err(SessionStoreError::SessionNotFound(missing)) if missing == session_id
+    ));
 }
 
 #[tokio::test]

@@ -223,6 +223,13 @@ impl AgentRuntime {
     }
 
     pub async fn end_session(&mut self, reason: Option<String>) -> Result<()> {
+        // Fresh top-level sessions and reattached histories should not create a
+        // durable session record until the current live agent session actually
+        // starts. Otherwise opening the host and quitting immediately would
+        // materialize empty sessions that never handled a turn.
+        if !self.session.agent_session_started {
+            return Ok(());
+        }
         self.append_event(None, None, SessionEventKind::SessionEnd { reason })
             .await
     }
@@ -230,7 +237,7 @@ impl AgentRuntime {
     pub async fn start_new_session(&mut self) -> Result<()> {
         const NEW_SESSION_REASON: &str = "operator_new_session";
 
-        if self.session.has_activity() {
+        if self.session.agent_session_started {
             self.append_event(
                 None,
                 None,
@@ -246,18 +253,13 @@ impl AgentRuntime {
         self.clear_pending_runtime_commands();
         self.tool_loop_detector.reset();
         self.permission_grants.clear_all();
-
-        let hooks = self.hook_registrations.clone();
-        let mut observer = NoopRuntimeObserver;
-        self.start_agent_session(&TurnId::new(), &hooks, NEW_SESSION_REASON, &mut observer)
-            .await
+        Ok(())
     }
 
     pub async fn resume_session(&mut self, session: RuntimeSession) -> Result<()> {
         const RESUME_SWITCH_REASON: &str = "operator_resume_switch";
-        const RESUME_START_REASON: &str = "resume";
 
-        if self.session.has_activity() {
+        if self.session.agent_session_started {
             self.append_event(
                 None,
                 None,
@@ -281,11 +283,7 @@ impl AgentRuntime {
         self.clear_pending_runtime_commands();
         self.tool_loop_detector.reset();
         self.permission_grants.clear_all();
-
-        let hooks = self.hook_registrations.clone();
-        let mut observer = NoopRuntimeObserver;
-        self.start_agent_session(&TurnId::new(), &hooks, RESUME_START_REASON, &mut observer)
-            .await
+        Ok(())
     }
 
     pub(super) async fn start_agent_session(

@@ -50,7 +50,7 @@ use nanoclaw_config::{CoreConfig, PluginsConfig};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
-use store::{EventSink, InMemorySessionStore, SessionStore};
+use store::{EventSink, InMemorySessionStore, SessionStore, SessionStoreError};
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, timeout};
 
@@ -910,18 +910,16 @@ async fn start_new_session_refreshes_backend_snapshot_refs() {
         outcome.startup.root_agent_session_id,
         initial_agent_session_ref
     );
-    assert_eq!(outcome.startup.stored_session_count, 1);
+    assert_eq!(outcome.startup.stored_session_count, 0);
     assert!(outcome.transcript.is_empty());
 
     let new_events = store
         .events(&SessionId::from(outcome.startup.active_session_ref.clone()))
-        .await
-        .unwrap();
-    assert!(new_events.iter().any(|event| matches!(
-        &event.event,
-        SessionEventKind::SessionStart { reason }
-            if reason.as_deref() == Some("operator_new_session")
-    )));
+        .await;
+    assert!(matches!(
+        new_events,
+        Err(SessionStoreError::SessionNotFound(_))
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -1986,6 +1986,19 @@ fn format_session_counts(summary: &PersistedSessionSummary) -> String {
 
 async fn emit_ui_exit_summary(session: &CodeAgentUiSession) {
     let startup: SessionStartupSnapshot = session.query(UIQuery::StartupSnapshot);
+    let sessions = match session
+        .run::<Vec<PersistedSessionSummary>>(UIAsyncCommand::ListSessions)
+        .await
+    {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            warn!(error = %error, "failed to list sessions for UI exit summary");
+            return;
+        }
+    };
+    if !active_session_is_persisted(&startup.active_session_ref, &sessions) {
+        return;
+    }
     match session
         .run::<LoadedSession>(UIAsyncCommand::LoadSession {
             session_ref: startup.active_session_ref.clone(),
@@ -1999,10 +2012,29 @@ async fn emit_ui_exit_summary(session: &CodeAgentUiSession) {
 
 async fn emit_exit_summary(session: &code_agent_backend::CodeAgentSession) {
     let startup = session.startup_snapshot();
+    let sessions = match session.list_sessions().await {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            warn!(error = %error, "failed to list sessions for exit summary");
+            return;
+        }
+    };
+    if !active_session_is_persisted(&startup.active_session_ref, &sessions) {
+        return;
+    }
     match session.load_session(&startup.active_session_ref).await {
         Ok(loaded) => emit_loaded_session_exit_summary(&startup.active_session_ref, &loaded),
         Err(error) => warn!(error = %error, "failed to load exit summary"),
     }
+}
+
+fn active_session_is_persisted(
+    active_session_ref: &str,
+    sessions: &[PersistedSessionSummary],
+) -> bool {
+    sessions
+        .iter()
+        .any(|summary| summary.session_ref == active_session_ref)
 }
 
 fn emit_loaded_session_exit_summary(session_ref: &str, loaded: &LoadedSession) {
@@ -2216,11 +2248,11 @@ mod tests {
     use super::{
         Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ManagementCommand,
         McpManagementCommand, PluginManagementCommand, ReadOnlyCommand, SandboxFallbackAction,
-        SessionSelector, SkillManagementCommand, choose_sandbox_fallback_action,
-        format_sandbox_abort_message, format_session_counts, format_token_count,
-        launch_headless_one_shot, write_exit_summary, write_mcp_prompt_summaries,
-        write_mcp_resource_summaries, write_session_search_results, write_session_summaries,
-        write_startup_diagnostics,
+        SessionSelector, SkillManagementCommand, active_session_is_persisted,
+        choose_sandbox_fallback_action, format_sandbox_abort_message, format_session_counts,
+        format_token_count, launch_headless_one_shot, write_exit_summary,
+        write_mcp_prompt_summaries, write_mcp_resource_summaries, write_session_search_results,
+        write_session_summaries, write_startup_diagnostics,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
@@ -2740,6 +2772,18 @@ mod tests {
                 "To fork from this session, run nanoclaw fork 019d8aae-c699-75c3-b9de-6890b6f4d21a\n",
             )
         );
+    }
+
+    #[test]
+    fn empty_active_session_is_not_treated_as_persisted() {
+        assert!(!active_session_is_persisted(
+            "session-empty",
+            &[persisted_summary("session-a")]
+        ));
+        assert!(active_session_is_persisted(
+            "session-a",
+            &[persisted_summary("session-a")]
+        ));
     }
 
     #[test]
