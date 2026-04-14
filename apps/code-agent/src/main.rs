@@ -14,8 +14,9 @@ use code_agent_backend::{
     inject_process_env, inspect_sandbox_preflight, message_to_text,
 };
 use code_agent_config::{
-    ManagedSkillArtifact, add_core_mcp_server, add_managed_skill, delete_core_mcp_server,
-    delete_managed_skill, set_core_mcp_server_enabled, set_managed_skill_enabled,
+    ManagedPluginArtifact, ManagedSkillArtifact, add_core_mcp_server, add_managed_plugin,
+    add_managed_skill, delete_core_mcp_server, delete_managed_plugin, delete_managed_skill,
+    set_core_mcp_server_enabled, set_managed_plugin_enabled, set_managed_skill_enabled,
 };
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
@@ -95,6 +96,8 @@ enum CliCommand {
     Mcp(McpCommandArgs),
     /// Manage workspace-local managed skills.
     Skill(SkillCommandArgs),
+    /// Manage workspace-local plugins and plugin enablement.
+    Plugin(PluginCommandArgs),
     /// List MCP prompts exposed by connected servers.
     Prompts,
     /// List MCP resources exposed by connected servers.
@@ -185,6 +188,36 @@ struct SkillAddArgs {
 struct SkillNamedArgs {
     #[arg(value_name = "NAME")]
     name: String,
+}
+
+#[derive(Debug, Args)]
+struct PluginCommandArgs {
+    #[command(subcommand)]
+    command: PluginSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum PluginSubcommand {
+    /// Copy a plugin directory into the managed workspace root.
+    Add(PluginAddArgs),
+    /// Delete a managed plugin copy.
+    Delete(PluginNamedArgs),
+    /// Enable a plugin in the persisted config.
+    Enable(PluginNamedArgs),
+    /// Disable a plugin in the persisted config.
+    Disable(PluginNamedArgs),
+}
+
+#[derive(Debug, Args)]
+struct PluginAddArgs {
+    #[arg(value_name = "PATH")]
+    path: String,
+}
+
+#[derive(Debug, Args)]
+struct PluginNamedArgs {
+    #[arg(value_name = "ID")]
+    id: String,
 }
 
 #[derive(Debug, Args, Default)]
@@ -292,6 +325,7 @@ enum LaunchMode {
 enum ManagementCommand {
     Mcp(McpManagementCommand),
     Skill(SkillManagementCommand),
+    Plugin(PluginManagementCommand),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -306,6 +340,13 @@ enum SkillManagementCommand {
     Add { path: String },
     Delete { name: String },
     SetEnabled { name: String, enabled: bool },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PluginManagementCommand {
+    Add { path: String },
+    Delete { id: String },
+    SetEnabled { id: String, enabled: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -415,6 +456,7 @@ impl Cli {
                 | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
+                | CliCommand::Plugin(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             ) => {}
@@ -443,6 +485,7 @@ impl Cli {
                 | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
+                | CliCommand::Plugin(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             ) => Ok(LaunchMode::Default),
@@ -458,6 +501,9 @@ impl Cli {
             Some(CliCommand::Skill(command)) => {
                 Ok(Some(ManagementCommand::Skill(command.management_command())))
             }
+            Some(CliCommand::Plugin(command)) => Ok(Some(ManagementCommand::Plugin(
+                command.management_command(),
+            ))),
             Some(
                 CliCommand::Exec(_)
                 | CliCommand::Resume(_)
@@ -531,6 +577,7 @@ impl Cli {
                 | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
+                | CliCommand::Plugin(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             )
@@ -557,6 +604,7 @@ impl Cli {
                 | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
+                | CliCommand::Plugin(_)
                 | CliCommand::Prompts
                 | CliCommand::Resources,
             )
@@ -584,7 +632,8 @@ impl Cli {
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Mcp(_)
-                | CliCommand::Skill(_),
+                | CliCommand::Skill(_)
+                | CliCommand::Plugin(_),
             )
             | None => None,
         }
@@ -640,6 +689,27 @@ impl SkillCommandArgs {
             },
             SkillSubcommand::Disable(command) => SkillManagementCommand::SetEnabled {
                 name: command.name.clone(),
+                enabled: false,
+            },
+        }
+    }
+}
+
+impl PluginCommandArgs {
+    fn management_command(&self) -> PluginManagementCommand {
+        match &self.command {
+            PluginSubcommand::Add(command) => PluginManagementCommand::Add {
+                path: command.path.clone(),
+            },
+            PluginSubcommand::Delete(command) => PluginManagementCommand::Delete {
+                id: command.id.clone(),
+            },
+            PluginSubcommand::Enable(command) => PluginManagementCommand::SetEnabled {
+                id: command.id.clone(),
+                enabled: true,
+            },
+            PluginSubcommand::Disable(command) => PluginManagementCommand::SetEnabled {
+                id: command.id.clone(),
                 enabled: false,
             },
         }
@@ -956,6 +1026,26 @@ async fn run_management_command(workspace_root: PathBuf, command: ManagementComm
                     &mut stdout,
                     if enabled { "Enabled" } else { "Disabled" },
                     &artifact,
+                )?;
+            }
+        },
+        ManagementCommand::Plugin(command) => match command {
+            PluginManagementCommand::Add { path } => {
+                let artifact = add_managed_plugin(&workspace_root, Path::new(&path)).await?;
+                write_plugin_copy_artifact(&mut stdout, "Added", &artifact)?;
+            }
+            PluginManagementCommand::Delete { id } => {
+                let artifact = delete_managed_plugin(&workspace_root, &id).await?;
+                write_plugin_copy_artifact(&mut stdout, "Deleted", &artifact)?;
+            }
+            PluginManagementCommand::SetEnabled { id, enabled } => {
+                let path = set_managed_plugin_enabled(&workspace_root, &id, enabled)?;
+                write_plugin_config_artifact(
+                    &mut stdout,
+                    if enabled { "Enabled" } else { "Disabled" },
+                    &id,
+                    &path,
+                    enabled,
                 )?;
             }
         },
@@ -1682,6 +1772,35 @@ fn write_skill_management_artifact(
     )
 }
 
+fn write_plugin_copy_artifact(
+    writer: &mut impl Write,
+    verb: &str,
+    artifact: &ManagedPluginArtifact,
+) -> io::Result<()> {
+    writeln!(
+        writer,
+        "{verb} managed plugin `{}` at {} (enabled: {}).",
+        artifact.plugin_id,
+        artifact.plugin_path.display(),
+        artifact.enabled,
+    )
+}
+
+fn write_plugin_config_artifact(
+    writer: &mut impl Write,
+    verb: &str,
+    plugin_id: &str,
+    config_path: &Path,
+    enabled: bool,
+) -> io::Result<()> {
+    writeln!(
+        writer,
+        "{verb} plugin `{plugin_id}` in {} (enabled: {}).",
+        config_path.display(),
+        enabled,
+    )
+}
+
 fn write_archive_artifact(
     writer: &mut impl Write,
     artifact: &SessionArchiveArtifact,
@@ -2075,11 +2194,12 @@ mod diagnostic_tests {
 mod tests {
     use super::{
         Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ManagementCommand,
-        McpManagementCommand, ReadOnlyCommand, SandboxFallbackAction, SessionSelector,
-        SkillManagementCommand, choose_sandbox_fallback_action, format_sandbox_abort_message,
-        format_session_counts, format_token_count, launch_headless_one_shot, write_exit_summary,
-        write_mcp_prompt_summaries, write_mcp_resource_summaries, write_session_search_results,
-        write_session_summaries, write_startup_diagnostics,
+        McpManagementCommand, PluginManagementCommand, ReadOnlyCommand, SandboxFallbackAction,
+        SessionSelector, SkillManagementCommand, choose_sandbox_fallback_action,
+        format_sandbox_abort_message, format_session_counts, format_token_count,
+        launch_headless_one_shot, write_exit_summary, write_mcp_prompt_summaries,
+        write_mcp_resource_summaries, write_session_search_results, write_session_summaries,
+        write_startup_diagnostics,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
@@ -2242,6 +2362,33 @@ mod tests {
                 SkillManagementCommand::SetEnabled {
                     name: "review".to_string(),
                     enabled: false,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn clap_parses_plugin_add() {
+        let cli = Cli::parse_from(["code-agent", "plugin", "add", "./plugins/review-policy"]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Plugin(PluginManagementCommand::Add {
+                path: "./plugins/review-policy".to_string(),
+            }))
+        );
+    }
+
+    #[test]
+    fn clap_parses_plugin_enable() {
+        let cli = Cli::parse_from(["code-agent", "plugin", "enable", "review-policy"]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Plugin(
+                PluginManagementCommand::SetEnabled {
+                    id: "review-policy".to_string(),
+                    enabled: true,
                 }
             ))
         );

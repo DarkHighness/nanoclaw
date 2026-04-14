@@ -211,6 +211,10 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill add ./my-skill
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill disable review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill enable review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill delete review
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin add ./my-plugin
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin disable review-policy
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin enable review-policy
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin delete review-policy
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- diagnostics
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- prompts
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- resources
@@ -224,14 +228,20 @@ changing the workspace package name.
 The store-backed `sessions`, `session`, `agent-sessions`, `agent-session`,
 `tasks`, `task`, `export`, `import`, `export-events`, `export-transcript`, and
 `mcp add|delete|enable|disable`, plus the managed `skill add|delete|enable|disable`
-commands operate directly on workspace state, so they do not require a
-provider API key just to browse, inspect, archive, restore, or update local
-configuration.
+and `plugin add|delete|enable|disable` commands operate directly on workspace
+state, so they do not require a provider API key just to browse, inspect,
+archive, restore, or update local configuration.
 
 `skill` management only targets the workspace-local managed root
 `.nanoclaw/skills`. Disabling a managed skill moves it under
 `.nanoclaw/skills/.disabled`, which keeps the skill on disk without letting the
 normal skill loader surface it.
+
+`plugin add` and `plugin delete` manage workspace-local plugin copies under
+`.nanoclaw/plugins`. `plugin enable` and `plugin disable` update
+`.nanoclaw/config/core.toml`, including the per-plugin entry overrides that the
+runtime actually consults when `plugins.enabled`, `plugins.allow`, or
+`plugins.deny` would otherwise block the requested state change.
 
 The live `diagnostics`, `prompts`, and `resources` commands boot the normal
 runtime surface without entering the TUI. They therefore use the same

@@ -1,6 +1,8 @@
 use agent::AgentWorkspaceLayout;
 use agent::mcp::McpServerConfig;
+use agent::plugins::{PluginEntryConfig, PluginManifest, discover_plugins};
 use agent::skills::{SkillRoot, SkillRootKind, load_skill_from_dir};
+use agent::types::PluginId;
 use anyhow::{Context, Result, anyhow, bail};
 use nanoclaw_config::CoreConfig;
 use std::path::{Path, PathBuf};
@@ -12,6 +14,13 @@ const DISABLED_SKILL_DIR: &str = ".disabled";
 pub struct ManagedSkillArtifact {
     pub skill_name: String,
     pub skill_path: PathBuf,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedPluginArtifact {
+    pub plugin_id: PluginId,
+    pub plugin_path: PathBuf,
     pub enabled: bool,
 }
 
@@ -170,6 +179,104 @@ pub async fn set_managed_skill_enabled(
     }
 }
 
+pub async fn add_managed_plugin(
+    workspace_root: &Path,
+    source: &Path,
+) -> Result<ManagedPluginArtifact> {
+    let managed_root = AgentWorkspaceLayout::new(workspace_root).plugins_dir();
+    let source = source
+        .canonicalize()
+        .with_context(|| format!("failed to resolve source plugin {}", source.display()))?;
+    let manifest = load_plugin_manifest(&source)?;
+    let existing_ids = discover_plugin_ids(workspace_root, &load_raw_core_config(workspace_root)?)?;
+    if existing_ids
+        .iter()
+        .any(|candidate| candidate == &manifest.id)
+    {
+        bail!(
+            "plugin `{}` is already discoverable from the current plugin roots",
+            manifest.id
+        );
+    }
+    fs::create_dir_all(&managed_root)
+        .await
+        .with_context(|| format!("failed to create {}", managed_root.display()))?;
+    let destination = managed_root.join(manifest.id.as_str());
+    if destination == source {
+        bail!(
+            "source plugin is already installed at {}",
+            destination.display()
+        );
+    }
+    copy_directory_tree(&source, &destination).await?;
+
+    let mut config = load_raw_core_config(workspace_root)?;
+    ensure_managed_plugin_root(&mut config);
+    apply_plugin_enabled_override(&mut config, &manifest.id, true);
+    write_raw_core_config(workspace_root, &config)?;
+
+    Ok(ManagedPluginArtifact {
+        plugin_id: manifest.id,
+        plugin_path: destination,
+        enabled: true,
+    })
+}
+
+pub fn set_managed_plugin_enabled(
+    workspace_root: &Path,
+    plugin_id: &str,
+    enabled: bool,
+) -> Result<PathBuf> {
+    let mut config = load_raw_core_config(workspace_root)?;
+    let plugin_id = PluginId::from(plugin_id);
+    let discovered = discover_plugin_ids(workspace_root, &config)?;
+    if !discovered.iter().any(|candidate| candidate == &plugin_id)
+        && !config.plugins.entries.contains_key(&plugin_id)
+    {
+        bail!("unknown plugin `{}`", plugin_id);
+    }
+    if managed_plugin_path(workspace_root, &plugin_id).exists() {
+        ensure_managed_plugin_root(&mut config);
+    }
+    apply_plugin_enabled_override(&mut config, &plugin_id, enabled);
+    write_raw_core_config(workspace_root, &config)
+}
+
+pub async fn delete_managed_plugin(
+    workspace_root: &Path,
+    plugin_id: &str,
+) -> Result<ManagedPluginArtifact> {
+    let plugin_id = PluginId::from(plugin_id);
+    let plugin_path = managed_plugin_path(workspace_root, &plugin_id);
+    if !plugin_path.join(".nanoclaw-plugin/plugin.toml").exists() {
+        bail!("unknown managed plugin `{}`", plugin_id);
+    }
+    fs::remove_dir_all(&plugin_path)
+        .await
+        .with_context(|| format!("failed to delete {}", plugin_path.display()))?;
+
+    let mut config = load_raw_core_config(workspace_root)?;
+    config.plugins.entries.remove(&plugin_id);
+    config
+        .plugins
+        .allow
+        .retain(|candidate| candidate != &plugin_id);
+    config
+        .plugins
+        .deny
+        .retain(|candidate| candidate != &plugin_id);
+    if config.plugins.slots.memory.as_ref() == Some(&plugin_id) {
+        config.plugins.slots.memory = None;
+    }
+    write_raw_core_config(workspace_root, &config)?;
+
+    Ok(ManagedPluginArtifact {
+        plugin_id,
+        plugin_path,
+        enabled: false,
+    })
+}
+
 fn load_raw_core_config(workspace_root: &Path) -> Result<CoreConfig> {
     let path = CoreConfig::config_path(workspace_root);
     if !path.exists() {
@@ -205,6 +312,12 @@ fn write_raw_core_config(workspace_root: &Path, config: &CoreConfig) -> Result<P
 
 fn disabled_skill_root(managed_root: &Path) -> PathBuf {
     managed_root.join(DISABLED_SKILL_DIR)
+}
+
+fn managed_plugin_path(workspace_root: &Path, plugin_id: &PluginId) -> PathBuf {
+    AgentWorkspaceLayout::new(workspace_root)
+        .plugins_dir()
+        .join(plugin_id.as_str())
 }
 
 async fn resolve_managed_skill(managed_root: &Path, name: &str) -> Result<ManagedSkillArtifact> {
@@ -315,11 +428,78 @@ fn copy_directory_entries<'a>(
     })
 }
 
+fn load_plugin_manifest(plugin_root: &Path) -> Result<PluginManifest> {
+    let manifest_path = plugin_root.join(".nanoclaw-plugin/plugin.toml");
+    let raw = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    toml::from_str::<PluginManifest>(&raw)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))
+}
+
+fn discover_plugin_ids(workspace_root: &Path, config: &CoreConfig) -> Result<Vec<PluginId>> {
+    let mut roots = config.resolved_plugin_roots(workspace_root);
+    let managed_root = AgentWorkspaceLayout::new(workspace_root).plugins_dir();
+    if managed_root.exists() && !roots.iter().any(|candidate| candidate == &managed_root) {
+        roots.push(managed_root);
+    }
+    if config.plugins.include_builtin {
+        let builtin_root = workspace_root.join("builtin-plugins");
+        if builtin_root.exists() && !roots.iter().any(|candidate| candidate == &builtin_root) {
+            roots.push(builtin_root);
+        }
+    }
+    let discovery = discover_plugins(&roots).with_context(|| {
+        format!(
+            "failed to discover plugins under {}",
+            workspace_root.display()
+        )
+    })?;
+    Ok(discovery
+        .plugins
+        .into_iter()
+        .map(|plugin| plugin.manifest.id)
+        .collect())
+}
+
+fn ensure_managed_plugin_root(config: &mut CoreConfig) {
+    if !config
+        .plugins
+        .roots
+        .iter()
+        .any(|candidate| candidate == agent::NANOCLAW_PLUGINS_DIR_RELATIVE)
+    {
+        config
+            .plugins
+            .roots
+            .push(agent::NANOCLAW_PLUGINS_DIR_RELATIVE.to_string());
+    }
+}
+
+fn apply_plugin_enabled_override(config: &mut CoreConfig, plugin_id: &PluginId, enabled: bool) {
+    config.plugins.enabled = true;
+    if enabled {
+        config
+            .plugins
+            .deny
+            .retain(|candidate| candidate != plugin_id);
+        if !config.plugins.allow.is_empty() && !config.plugins.allow.contains(plugin_id) {
+            config.plugins.allow.push(plugin_id.clone());
+        }
+    }
+    let entry = config
+        .plugins
+        .entries
+        .entry(plugin_id.clone())
+        .or_insert_with(PluginEntryConfig::default);
+    entry.enabled = Some(enabled);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        add_core_mcp_server, add_managed_skill, delete_core_mcp_server, delete_managed_skill,
-        set_core_mcp_server_enabled, set_managed_skill_enabled,
+        add_core_mcp_server, add_managed_plugin, add_managed_skill, delete_core_mcp_server,
+        delete_managed_plugin, delete_managed_skill, set_core_mcp_server_enabled,
+        set_managed_plugin_enabled, set_managed_skill_enabled,
     };
     use agent::AgentWorkspaceLayout;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
@@ -443,5 +623,79 @@ mod tests {
 
         assert_eq!(artifact.skill_name, "review");
         assert!(!artifact.skill_path.exists());
+    }
+
+    fn write_plugin_source(dir: &Path, id: &str) {
+        std::fs::create_dir_all(dir.join(".nanoclaw-plugin")).unwrap();
+        std::fs::write(
+            dir.join(".nanoclaw-plugin/plugin.toml"),
+            format!("id = \"{id}\"\nkind = \"bundle\"\nenabled_by_default = true\n"),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_managed_plugin_copies_into_workspace_root_and_persists_root() {
+        let workspace = tempdir().unwrap();
+        let source_root = tempdir().unwrap();
+        let source = source_root.path().join("review-policy");
+        write_plugin_source(&source, "review-policy");
+
+        let artifact = add_managed_plugin(workspace.path(), &source).await.unwrap();
+        let config = CoreConfig::load_from_dir(workspace.path()).unwrap();
+
+        assert_eq!(artifact.plugin_id.as_str(), "review-policy");
+        assert!(artifact.enabled);
+        assert!(
+            artifact
+                .plugin_path
+                .join(".nanoclaw-plugin/plugin.toml")
+                .is_file()
+        );
+        assert!(
+            config
+                .plugins
+                .roots
+                .iter()
+                .any(|root| root == agent::NANOCLAW_PLUGINS_DIR_RELATIVE)
+        );
+        assert_eq!(config.plugins.entries["review-policy"].enabled, Some(true));
+    }
+
+    #[test]
+    fn set_managed_plugin_enabled_persists_entry_override() {
+        let workspace = tempdir().unwrap();
+        let managed_root = AgentWorkspaceLayout::new(workspace.path()).plugins_dir();
+        let plugin_dir = managed_root.join("review-policy");
+        write_plugin_source(&plugin_dir, "review-policy");
+        let mut config = CoreConfig::default();
+        config
+            .plugins
+            .roots
+            .push(agent::NANOCLAW_PLUGINS_DIR_RELATIVE.to_string());
+        super::write_raw_core_config(workspace.path(), &config).unwrap();
+
+        set_managed_plugin_enabled(workspace.path(), "review-policy", false).unwrap();
+        let config = CoreConfig::load_from_dir(workspace.path()).unwrap();
+
+        assert_eq!(config.plugins.entries["review-policy"].enabled, Some(false));
+    }
+
+    #[tokio::test]
+    async fn delete_managed_plugin_removes_files_and_config_references() {
+        let workspace = tempdir().unwrap();
+        let source_root = tempdir().unwrap();
+        let source = source_root.path().join("review-policy");
+        write_plugin_source(&source, "review-policy");
+        add_managed_plugin(workspace.path(), &source).await.unwrap();
+
+        let artifact = delete_managed_plugin(workspace.path(), "review-policy")
+            .await
+            .unwrap();
+        let config = CoreConfig::load_from_dir(workspace.path()).unwrap();
+
+        assert_eq!(artifact.plugin_id.as_str(), "review-policy");
+        assert!(!artifact.plugin_path.exists());
+        assert!(!config.plugins.entries.contains_key("review-policy"));
     }
 }
