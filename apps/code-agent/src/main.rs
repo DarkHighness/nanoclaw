@@ -54,6 +54,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum CliCommand {
+    /// Run one prompt headlessly and exit.
+    Exec(ExecCommandArgs),
     /// Reattach a persisted top-level session.
     Resume(SessionLaunchArgs),
     /// Start a fresh session seeded from a persisted session transcript.
@@ -102,14 +104,34 @@ struct SessionLookupArgs {
 
 #[derive(Debug, Args)]
 struct SessionLaunchArgs {
-    #[command(flatten)]
-    selector: SessionLookupArgs,
+    #[arg(long)]
+    last: bool,
+    #[arg(
+        value_name = "ARG",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    args: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExecCommandArgs {
+    #[command(subcommand)]
+    command: Option<ExecLaunchCommand>,
     #[arg(
         value_name = "PROMPT",
         allow_hyphen_values = true,
         trailing_var_arg = true
     )]
     prompt: Vec<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum ExecLaunchCommand {
+    /// Run one headless prompt against a resumed persisted session.
+    Resume(SessionLaunchArgs),
+    /// Run one headless prompt against a forked persisted session.
+    Fork(SessionLaunchArgs),
 }
 
 #[derive(Debug, Args, Default)]
@@ -219,13 +241,19 @@ enum LiveInspectCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct ExplicitExecCommand {
+    launch_mode: LaunchMode,
+    prompt: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum SessionSelector {
     Reference(String),
     Last,
 }
 
 impl Cli {
-    fn app_option_args(&self) -> Vec<String> {
+    fn app_option_flag_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         if let Some(system_prompt) = &self.system_prompt {
             args.push("--system-prompt".to_string());
@@ -250,13 +278,19 @@ impl Cli {
         if self.allow_no_sandbox {
             args.push("--allow-no-sandbox".to_string());
         }
+        args
+    }
+
+    fn app_option_args(&self) -> Vec<String> {
+        let mut args = self.app_option_flag_args();
         match &self.command {
             Some(CliCommand::Resume(command)) | Some(CliCommand::Fork(command)) => {
-                args.extend(command.prompt.clone());
+                args.extend(command.prompt_parts());
             }
             None => args.extend(self.prompt.clone()),
             Some(
-                CliCommand::Sessions(_)
+                CliCommand::Exec(_)
+                | CliCommand::Sessions(_)
                 | CliCommand::Session(_)
                 | CliCommand::AgentSessions(_)
                 | CliCommand::AgentSession(_)
@@ -277,12 +311,11 @@ impl Cli {
 
     fn launch_mode(&self) -> Result<LaunchMode> {
         match &self.command {
+            Some(CliCommand::Exec(_)) => Ok(LaunchMode::Default),
             Some(CliCommand::Resume(command)) => {
-                Ok(LaunchMode::Resume(command.selector.selector("resume")?))
+                Ok(LaunchMode::Resume(command.selector("resume")?))
             }
-            Some(CliCommand::Fork(command)) => {
-                Ok(LaunchMode::Fork(command.selector.selector("fork")?))
-            }
+            Some(CliCommand::Fork(command)) => Ok(LaunchMode::Fork(command.selector("fork")?)),
             Some(
                 CliCommand::Sessions(_)
                 | CliCommand::Session(_)
@@ -305,6 +338,7 @@ impl Cli {
 
     fn read_only_command(&self) -> Result<Option<ReadOnlyCommand>> {
         match &self.command {
+            Some(CliCommand::Exec(_)) => Ok(None),
             Some(CliCommand::Sessions(command)) => Ok(Some(ReadOnlyCommand::Sessions {
                 query: command.query(),
             })),
@@ -359,6 +393,31 @@ impl Cli {
         }
     }
 
+    fn explicit_exec_command(&self) -> Result<Option<ExplicitExecCommand>> {
+        match &self.command {
+            Some(CliCommand::Exec(command)) => Ok(Some(command.explicit_exec_command()?)),
+            Some(
+                CliCommand::Resume(_)
+                | CliCommand::Fork(_)
+                | CliCommand::Sessions(_)
+                | CliCommand::Session(_)
+                | CliCommand::AgentSessions(_)
+                | CliCommand::AgentSession(_)
+                | CliCommand::Tasks(_)
+                | CliCommand::Task(_)
+                | CliCommand::Export(_)
+                | CliCommand::Import(_)
+                | CliCommand::ExportSession(_)
+                | CliCommand::ExportTranscript(_)
+                | CliCommand::Diagnostics
+                | CliCommand::Mcp
+                | CliCommand::Prompts
+                | CliCommand::Resources,
+            )
+            | None => Ok(None),
+        }
+    }
+
     fn live_inspect_command(&self) -> Option<LiveInspectCommand> {
         match self.command {
             Some(CliCommand::Diagnostics) => Some(LiveInspectCommand::Diagnostics),
@@ -366,7 +425,8 @@ impl Cli {
             Some(CliCommand::Prompts) => Some(LiveInspectCommand::Prompts),
             Some(CliCommand::Resources) => Some(LiveInspectCommand::Resources),
             Some(
-                CliCommand::Resume(_)
+                CliCommand::Exec(_)
+                | CliCommand::Resume(_)
                 | CliCommand::Fork(_)
                 | CliCommand::Sessions(_)
                 | CliCommand::Session(_)
@@ -397,12 +457,64 @@ impl SessionLookupArgs {
     }
 }
 
+impl ExecCommandArgs {
+    fn explicit_exec_command(&self) -> Result<ExplicitExecCommand> {
+        match &self.command {
+            Some(ExecLaunchCommand::Resume(command)) => Ok(ExplicitExecCommand {
+                launch_mode: LaunchMode::Resume(command.selector("exec resume")?),
+                prompt: command.required_prompt("exec resume")?,
+            }),
+            Some(ExecLaunchCommand::Fork(command)) => Ok(ExplicitExecCommand {
+                launch_mode: LaunchMode::Fork(command.selector("exec fork")?),
+                prompt: command.required_prompt("exec fork")?,
+            }),
+            None => Ok(ExplicitExecCommand {
+                launch_mode: LaunchMode::Default,
+                prompt: render_cli_prompt(&self.prompt, "exec")?,
+            }),
+        }
+    }
+}
+
+impl SessionLaunchArgs {
+    fn selector(&self, verb: &str) -> Result<SessionSelector> {
+        match (self.last, self.args.as_slice()) {
+            (true, _) => Ok(SessionSelector::Last),
+            (false, [session_ref, ..]) => Ok(SessionSelector::Reference(session_ref.clone())),
+            (false, []) => {
+                bail!("`{verb}` requires a session id or `--last`; run `--help` for usage")
+            }
+        }
+    }
+
+    fn prompt_parts(&self) -> Vec<String> {
+        match (self.last, self.args.as_slice()) {
+            (true, args) => args.to_vec(),
+            (false, [_session_ref, prompt @ ..]) => prompt.to_vec(),
+            (false, []) => Vec::new(),
+        }
+    }
+
+    fn required_prompt(&self, verb: &str) -> Result<String> {
+        render_cli_prompt(&self.prompt_parts(), verb)
+    }
+}
+
 impl SessionSearchArgs {
     fn query(&self) -> Option<String> {
         let query = self.query.join(" ");
         let query = query.trim();
         (!query.is_empty()).then(|| query.to_string())
     }
+}
+
+fn render_cli_prompt(parts: &[String], verb: &str) -> Result<String> {
+    let prompt = parts.join(" ");
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        bail!("`{verb}` requires a prompt; run `--help` for usage");
+    }
+    Ok(prompt.to_string())
 }
 
 impl ScopedSessionRefArgs {
@@ -464,6 +576,24 @@ fn try_main() -> Result<()> {
         })
         .context("failed to build tokio runtime")?;
         return runtime.block_on(run_read_only_command(workspace_root, core, command));
+    }
+    if let Some(command) = cli.explicit_exec_command()? {
+        let mut args = cli.app_option_flag_args();
+        args.push(command.prompt);
+        let mut options = AppOptions::from_env_and_args_iter(&workspace_root, &env_map, args)?;
+        // Explicit `exec` is a scripting surface, so keep sandbox fallback
+        // non-interactive even when the caller happens to be attached to a TTY.
+        confirm_unsandboxed_startup_if_needed(&workspace_root, &mut options, false)?;
+        let runtime = build_host_tokio_runtime(HostRuntimeLimits {
+            worker_threads: options.tokio_worker_threads,
+            max_blocking_threads: options.tokio_max_blocking_threads,
+        })
+        .context("failed to build tokio runtime")?;
+        return runtime.block_on(run_headless_one_shot(
+            workspace_root,
+            options,
+            command.launch_mode,
+        ));
     }
     let options =
         AppOptions::from_env_and_args_iter(&workspace_root, &env_map, cli.app_option_args())?;
@@ -1595,11 +1725,12 @@ mod diagnostic_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, LaunchMode, LiveInspectCommand, ReadOnlyCommand, SandboxFallbackAction,
-        SessionSelector, choose_sandbox_fallback_action, format_sandbox_abort_message,
-        format_session_counts, format_token_count, launch_headless_one_shot, write_exit_summary,
-        write_mcp_prompt_summaries, write_mcp_resource_summaries, write_session_search_results,
-        write_session_summaries, write_startup_diagnostics,
+        Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ReadOnlyCommand,
+        SandboxFallbackAction, SessionSelector, choose_sandbox_fallback_action,
+        format_sandbox_abort_message, format_session_counts, format_token_count,
+        launch_headless_one_shot, write_exit_summary, write_mcp_prompt_summaries,
+        write_mcp_resource_summaries, write_session_search_results, write_session_summaries,
+        write_startup_diagnostics,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
@@ -1679,6 +1810,50 @@ mod tests {
     }
 
     #[test]
+    fn clap_parses_exec_prompt() {
+        let cli = Cli::parse_from(["code-agent", "exec", "inspect", "repository"]);
+
+        assert_eq!(
+            cli.explicit_exec_command().unwrap(),
+            Some(ExplicitExecCommand {
+                launch_mode: LaunchMode::Default,
+                prompt: "inspect repository".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_exec_resume_last() {
+        let cli = Cli::parse_from(["code-agent", "exec", "resume", "--last", "continue"]);
+
+        assert_eq!(
+            cli.explicit_exec_command().unwrap(),
+            Some(ExplicitExecCommand {
+                launch_mode: LaunchMode::Resume(SessionSelector::Last),
+                prompt: "continue".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn clap_routes_resume_last_prompt_tail() {
+        let cli = Cli::parse_from(["code-agent", "resume", "--last", "continue", "from", "here"]);
+
+        assert_eq!(
+            cli.launch_mode().unwrap(),
+            LaunchMode::Resume(SessionSelector::Last)
+        );
+        assert_eq!(
+            cli.app_option_args(),
+            vec![
+                "continue".to_string(),
+                "from".to_string(),
+                "here".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn clap_parses_fork_session_reference() {
         let cli = Cli::parse_from(["code-agent", "fork", "019d8aae-c699-75c3-b9de-6890b6f4d21a"]);
 
@@ -1687,6 +1862,28 @@ mod tests {
             LaunchMode::Fork(SessionSelector::Reference(
                 "019d8aae-c699-75c3-b9de-6890b6f4d21a".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn clap_parses_exec_fork_reference() {
+        let cli = Cli::parse_from([
+            "code-agent",
+            "exec",
+            "fork",
+            "019d8aae-c699-75c3-b9de-6890b6f4d21a",
+            "summarize",
+            "changes",
+        ]);
+
+        assert_eq!(
+            cli.explicit_exec_command().unwrap(),
+            Some(ExplicitExecCommand {
+                launch_mode: LaunchMode::Fork(SessionSelector::Reference(
+                    "019d8aae-c699-75c3-b9de-6890b6f4d21a".to_string()
+                )),
+                prompt: "summarize changes".to_string(),
+            })
         );
     }
 

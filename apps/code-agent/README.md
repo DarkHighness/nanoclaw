@@ -177,9 +177,13 @@ One-shot prompt:
 
 ```bash
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- "inspect this repository and explain the test layout"
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- exec "inspect this repository and exit"
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- exec resume --last "continue this session once, then exit"
 ```
 
-The prompt is submitted as the first turn, then the TUI stays open.
+The bare prompt form submits the first turn and keeps the TUI open.
+The explicit `exec` form always runs headlessly and exits, even when launched
+from an interactive terminal.
 
 Session continuation:
 
