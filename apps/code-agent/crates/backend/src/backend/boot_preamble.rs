@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 const PRIMER_INSTRUCTIONS_PATH: &str = "AGENTS.md";
 const PRIMER_CURATED_MEMORY_PATH: &str = "MEMORY.md";
 const PRIMER_MANAGED_MEMORY_PATH: &str = ".nanoclaw/memory/MEMORY.md";
+const SKILL_INDEX_MAX_SKILLS: usize = 64;
+const SKILL_INDEX_MAX_DESCRIPTION_CHARS: usize = 160;
+const SKILL_INDEX_MAX_METADATA_ITEMS: usize = 4;
 const PRIMER_INSTRUCTIONS_MAX_LINES: usize = 160;
 const PRIMER_INSTRUCTIONS_MAX_BYTES: usize = 12_000;
 const PRIMER_MEMORY_MAX_LINES: usize = 120;
@@ -18,6 +21,7 @@ const PRIMER_MEMORY_MAX_BYTES: usize = 16_000;
 pub fn build_system_preamble(
     workspace_root: &Path,
     profile: &ResolvedAgentProfile,
+    skill_catalog: &agent::SkillCatalog,
     plugin_instructions: &[String],
     tool_visibility: &ToolVisibilityContext,
 ) -> Vec<String> {
@@ -36,11 +40,17 @@ pub fn build_system_preamble(
             .to_string(),
         "Use spawn_agent for bounded child work, then send_input, wait_agent, resume_agent, and close_agent to manage that child explicitly."
             .to_string(),
-        "Do not assume any skill is available from the system prompt alone. Use skills_list to discover skills and skill_view to inspect one skill or one of its companion files before relying on it."
+        "Before replying, scan the available skill index below. If a skill matches or is even partially relevant, you MUST inspect it with skill_view before acting on the task. Err on the side of loading."
             .to_string(),
-        "Treat leading `$skill_name` directives in the user prompt as explicit requests to resolve that skill through skills_list or skill_view before continuing with the rest of the prompt."
+        "Do not treat the injected skill index as loaded instructions. skill_view loads the actual skill body or companion files; skills_list is for broader browsing and for refreshing the catalog after skill changes."
             .to_string(),
-        "Prefer skills for reusable instruction-plus-existing-tool workflows. Use tool_discover when you need a typed runtime capability, host-managed lifecycle, or other integration a skill cannot supply on its own."
+        "Treat leading `$skill_name` directives in the user prompt as explicit requests to load that skill with skill_view before continuing with the rest of the prompt."
+            .to_string(),
+        "Use tool_discover when you need a typed runtime capability, host-managed lifecycle, or other integration a skill cannot supply on its own."
+            .to_string(),
+        "After completing a complex or iterative task, fixing a tricky error, or discovering a reusable non-trivial workflow, save or update the approach with skill_manage unless an existing skill already captures it."
+            .to_string(),
+        "When a loaded skill is outdated, incomplete, or wrong, patch it with skill_manage(action='patch') before finishing. Skills that are not maintained become liabilities."
             .to_string(),
         "Do not assume the host will inject memory automatically on each turn. Decide yourself when prior workspace memory is relevant."
             .to_string(),
@@ -75,11 +85,89 @@ pub fn build_system_preamble(
             preamble.push(system_prompt.to_string());
         }
     }
+    if let Some(skill_index) = build_skill_index(skill_catalog) {
+        preamble.push(skill_index);
+    }
     if let Some(memory_primer) = build_memory_primer(workspace_root) {
         preamble.push(memory_primer);
     }
     preamble.extend(plugin_instructions.iter().cloned());
     preamble
+}
+
+fn build_skill_index(skill_catalog: &agent::SkillCatalog) -> Option<String> {
+    let skills = skill_catalog.all();
+    if skills.is_empty() {
+        return None;
+    }
+    let total_skill_count = skills.len();
+
+    let mut rendered = skills
+        .into_iter()
+        .take(SKILL_INDEX_MAX_SKILLS)
+        .map(|skill| render_skill_index_entry(&skill))
+        .collect::<Vec<_>>();
+    if total_skill_count > rendered.len() {
+        rendered.push(format!(
+            "- ... {remaining} more skill(s) omitted from the prompt index; use skills_list to browse the full catalog.",
+            remaining = total_skill_count.saturating_sub(rendered.len())
+        ));
+    }
+
+    Some(format!(
+        "## Skills (mandatory)\n\
+Before replying, scan this index. If a skill matches or is even partially relevant, load it with skill_view before continuing. Only proceed without loading a skill if genuinely none are relevant.\n\
+After creating, patching, archiving, or restoring a skill, refresh your view with skills_list or skill_view before relying on the updated catalog.\n\n\
+<available_skills>\n{}\n</available_skills>",
+        rendered.join("\n")
+    ))
+}
+
+fn render_skill_index_entry(skill: &agent::Skill) -> String {
+    let mut parts = vec![format!(
+        "- {}: {}",
+        skill.name,
+        truncate_inline(&skill.description, SKILL_INDEX_MAX_DESCRIPTION_CHARS)
+    )];
+    if !skill.aliases.is_empty() {
+        parts.push(format!(
+            "aliases: {}",
+            truncate_list(&skill.aliases, SKILL_INDEX_MAX_METADATA_ITEMS)
+        ));
+    }
+    if !skill.tags.is_empty() {
+        parts.push(format!(
+            "tags: {}",
+            truncate_list(&skill.tags, SKILL_INDEX_MAX_METADATA_ITEMS)
+        ));
+    }
+    parts.join(" | ")
+}
+
+fn truncate_inline(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let truncated = trimmed
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    format!("{}...", truncated.trim_end())
+}
+
+fn truncate_list(values: &[String], max_items: usize) -> String {
+    let visible = values
+        .iter()
+        .take(max_items)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let mut rendered = visible.join(", ");
+    if values.len() > visible.len() {
+        rendered.push_str(&format!(", +{}", values.len() - visible.len()));
+    }
+    rendered
 }
 
 fn build_memory_primer(workspace_root: &Path) -> Option<String> {
@@ -287,9 +375,37 @@ mod tests {
     use super::{build_system_preamble, resolve_skill_roots};
     use agent::tools::HOST_FEATURE_REQUEST_USER_INPUT;
     use agent::types::ToolVisibilityContext;
+    use agent::{AgentWorkspaceLayout, Skill, SkillCatalog, SkillProvenance, SkillRoot};
     use code_agent_config::{builtin_skill_root, materialize_builtin_skills};
     use nanoclaw_config::CoreConfig;
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    fn sample_skill_catalog(workspace_root: &std::path::Path) -> SkillCatalog {
+        SkillCatalog::new(vec![Skill {
+            name: "release-smoke".to_string(),
+            description:
+                "Run the release smoke-test sequence after risky deployment or packaging changes."
+                    .to_string(),
+            aliases: vec!["smoke-release".to_string()],
+            body: "Run smoke tests before rollout.".to_string(),
+            root_dir: workspace_root.join(".nanoclaw/skills/release-smoke"),
+            tags: vec!["release".to_string(), "smoke".to_string()],
+            hooks: Vec::new(),
+            references: Vec::new(),
+            scripts: Vec::new(),
+            assets: Vec::new(),
+            metadata: BTreeMap::new(),
+            extension_metadata: BTreeMap::new(),
+            activation: Default::default(),
+            provenance: SkillProvenance {
+                root: SkillRoot::managed(AgentWorkspaceLayout::new(workspace_root).skills_dir()),
+                skill_dir: workspace_root.join(".nanoclaw/skills/release-smoke"),
+                hub: None,
+                shadowed_copies: Vec::new(),
+            },
+        }])
+    }
 
     #[test]
     fn system_preamble_includes_workspace_memory_primer_when_files_exist() {
@@ -307,10 +423,16 @@ mod tests {
         )
         .unwrap();
         let profile = CoreConfig::default().resolve_primary_agent().unwrap();
+        let skill_catalog = sample_skill_catalog(dir.path());
 
-        let preamble =
-            build_system_preamble(dir.path(), &profile, &[], &ToolVisibilityContext::default())
-                .join("\n\n");
+        let preamble = build_system_preamble(
+            dir.path(),
+            &profile,
+            &skill_catalog,
+            &[],
+            &ToolVisibilityContext::default(),
+        )
+        .join("\n\n");
 
         assert!(preamble.contains("# Workspace Memory Primer"));
         assert!(preamble.contains("## Project instructions (AGENTS.md)"));
@@ -326,10 +448,16 @@ mod tests {
     fn system_preamble_omits_workspace_memory_primer_when_memory_is_absent() {
         let dir = tempdir().unwrap();
         let profile = CoreConfig::default().resolve_primary_agent().unwrap();
+        let skill_catalog = sample_skill_catalog(dir.path());
 
-        let preamble =
-            build_system_preamble(dir.path(), &profile, &[], &ToolVisibilityContext::default())
-                .join("\n\n");
+        let preamble = build_system_preamble(
+            dir.path(),
+            &profile,
+            &skill_catalog,
+            &[],
+            &ToolVisibilityContext::default(),
+        )
+        .join("\n\n");
 
         assert!(!preamble.contains("# Workspace Memory Primer"));
     }
@@ -338,13 +466,20 @@ mod tests {
     fn system_preamble_only_mentions_request_user_input_when_host_can_service_it() {
         let dir = tempdir().unwrap();
         let profile = CoreConfig::default().resolve_primary_agent().unwrap();
+        let skill_catalog = sample_skill_catalog(dir.path());
 
-        let hidden =
-            build_system_preamble(dir.path(), &profile, &[], &ToolVisibilityContext::default())
-                .join("\n\n");
+        let hidden = build_system_preamble(
+            dir.path(),
+            &profile,
+            &skill_catalog,
+            &[],
+            &ToolVisibilityContext::default(),
+        )
+        .join("\n\n");
         let visible = build_system_preamble(
             dir.path(),
             &profile,
+            &skill_catalog,
             &[],
             &ToolVisibilityContext::default().with_feature(HOST_FEATURE_REQUEST_USER_INPUT),
         )
@@ -358,16 +493,23 @@ mod tests {
     fn system_preamble_encodes_tool_vs_skill_boundary() {
         let dir = tempdir().unwrap();
         let profile = CoreConfig::default().resolve_primary_agent().unwrap();
+        let skill_catalog = sample_skill_catalog(dir.path());
 
-        let preamble =
-            build_system_preamble(dir.path(), &profile, &[], &ToolVisibilityContext::default())
-                .join("\n\n");
+        let preamble = build_system_preamble(
+            dir.path(),
+            &profile,
+            &skill_catalog,
+            &[],
+            &ToolVisibilityContext::default(),
+        )
+        .join("\n\n");
 
-        assert!(
-            preamble
-                .contains("Prefer skills for reusable instruction-plus-existing-tool workflows.")
-        );
+        assert!(preamble.contains("## Skills (mandatory)"));
+        assert!(preamble.contains("you MUST inspect it with skill_view"));
+        assert!(preamble.contains("release-smoke"));
         assert!(preamble.contains("Use tool_discover when you need a typed runtime capability"));
+        assert!(preamble.contains("save or update the approach with skill_manage"));
+        assert!(preamble.contains("skill_manage(action='patch')"));
         assert!(
             preamble
                 .contains("Do not assume the host will inject memory automatically on each turn.")

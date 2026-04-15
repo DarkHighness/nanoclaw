@@ -673,8 +673,9 @@ backed extraction, archival, and promotion workflows be layered on top.
 - Skills live in a writable managed root plus optional external read-only
   roots, with managed skills taking precedence on name collisions.
 - Skill invocation is explicit through both `$skill_name` and `/skill_name`,
-  but the model must still discover/inspect skills through `skills_list` and
-  `skill_view` instead of relying on prompt-injected catalogs.
+  and the system prompt now injects a compact skill index that tells the model
+  to load partially relevant skills through `skill_view` before proceeding.
+  `skills_list` remains the broader browsing and refresh surface.
 - Updating a skill emits an explicit follow-up note in tool output instead of
   mutating the runtime instruction prefix.
 
@@ -683,7 +684,8 @@ backed extraction, archival, and promotion workflows be layered on top.
 - completed:
   - add managed vs external skill roots plus provenance metadata
   - add Hermes-style `skills_list`, `skill_view`, and `skill_manage`
-  - remove prompt-manifest/system-preamble catalog injection
+  - inject a compact prompt-time skill index while keeping full skill bodies
+    behind `skill_view`
   - surface installed skills in the TUI as `/skill_name` slash commands while
     keeping `$skill_name` composer directives
   - surface Hermes-style provenance trust/update/audit metadata through typed

@@ -228,6 +228,7 @@ impl CodeAgentSession {
         let instructions = build_system_preamble(
             self.workspace_root(),
             &self.managed_surface_reload.primary_profile,
+            &self.preamble.skill_catalog,
             &plugin_instructions,
             &runtime.tool_visibility_context_snapshot(),
         );
