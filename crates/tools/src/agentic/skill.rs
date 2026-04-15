@@ -353,6 +353,7 @@ impl Tool for SkillViewTool {
             .catalog
             .resolve(query)
             .ok_or_else(|| ToolError::invalid(format!("unknown skill `{query}`")))?;
+        ctx.assert_skill_allowed(&skill.name)?;
 
         let (parts, structured, metadata) = if let Some(file_path) = input
             .file_path
@@ -464,6 +465,7 @@ impl Tool for SkillManageTool {
                 fallback_for_tools,
             } => {
                 let canonical = validate_skill_name(&name)?;
+                ctx.assert_skill_allowed(&canonical)?;
                 if self.catalog.resolve(&canonical).is_some() {
                     return Err(ToolError::invalid(format!(
                         "skill `{canonical}` already exists"
@@ -664,6 +666,7 @@ impl Tool for SkillManageTool {
             }
             SkillManageToolInput::Restore { name, archive_id } => {
                 let canonical = validate_skill_name(&name)?;
+                ctx.assert_skill_allowed(&canonical)?;
                 if self.catalog.resolve(&canonical).is_some() {
                     return Err(ToolError::invalid(format!(
                         "skill `{canonical}` already exists in the managed root"
@@ -697,6 +700,7 @@ impl Tool for SkillManageTool {
                 reason,
             } => {
                 let canonical = validate_skill_name(&name)?;
+                ctx.assert_skill_allowed(&canonical)?;
                 let archive = resolve_skill_archive(
                     &managed_root.path,
                     &canonical,

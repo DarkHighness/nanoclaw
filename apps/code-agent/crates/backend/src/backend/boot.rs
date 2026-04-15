@@ -185,9 +185,80 @@ pub struct CodeAgentSubagentProfileResolver {
     pub base_tool_context: Arc<RwLock<ToolExecutionContext>>,
     pub skill_catalog: SkillCatalog,
     pub plugin_instructions: Arc<RwLock<Vec<String>>>,
+    pub configured_runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
 }
 
 impl CodeAgentSubagentProfileResolver {
+    fn resolve_allowed_skill_names(
+        &self,
+        profile: &ResolvedAgentProfile,
+    ) -> agent::runtime::Result<Option<BTreeSet<String>>> {
+        let Some(allowed_skills) = profile.allowed_skills.as_ref() else {
+            return Ok(None);
+        };
+        let mut allowed = BTreeSet::new();
+        for query in allowed_skills {
+            let skill = self.skill_catalog.resolve(query).ok_or_else(|| {
+                agent::runtime::RuntimeError::invalid_state(format!(
+                    "unknown allowed skill `{query}` for subagent profile `{}`",
+                    profile.profile_name
+                ))
+            })?;
+            allowed.insert(skill.name);
+        }
+        Ok(Some(allowed))
+    }
+
+    fn resolve_skill_catalog(
+        &self,
+        profile: &ResolvedAgentProfile,
+    ) -> agent::runtime::Result<SkillCatalog> {
+        let Some(allowed_skill_names) = self.resolve_allowed_skill_names(profile)? else {
+            return Ok(self.skill_catalog.clone());
+        };
+        let filtered = self
+            .skill_catalog
+            .all()
+            .into_iter()
+            .filter(|skill| allowed_skill_names.contains(&skill.name))
+            .collect();
+        Ok(SkillCatalog::from_parts(
+            self.skill_catalog.roots(),
+            filtered,
+        ))
+    }
+
+    fn resolve_runtime_hooks(
+        &self,
+        profile: &ResolvedAgentProfile,
+        skill_catalog: &SkillCatalog,
+    ) -> Vec<HookRegistration> {
+        let hooks = self.configured_runtime_hooks.read().unwrap().clone();
+        if profile.allowed_skills.is_none() {
+            return hooks;
+        }
+        let allowed_skill_names = skill_catalog
+            .all()
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect::<BTreeSet<_>>();
+        let disallowed_skill_hooks = self
+            .skill_catalog
+            .all()
+            .into_iter()
+            .filter(|skill| !allowed_skill_names.contains(&skill.name))
+            .flat_map(|skill| skill.hooks)
+            .collect::<Vec<_>>();
+        hooks
+            .into_iter()
+            .filter(|hook| {
+                !disallowed_skill_hooks
+                    .iter()
+                    .any(|candidate| candidate == hook)
+            })
+            .collect()
+    }
+
     pub fn resolve_agent_profile(
         &self,
         launch: &SubagentLaunchSpec,
@@ -225,6 +296,8 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
     ) -> agent::runtime::Result<SubagentRuntimeProfile> {
         let base_tool_context = self.base_tool_context.read().unwrap().clone();
         let profile = self.resolve_agent_profile(launch)?;
+        let skill_catalog = self.resolve_skill_catalog(&profile)?;
+        let runtime_hooks = self.resolve_runtime_hooks(&profile, &skill_catalog);
         let backend: Arc<dyn ModelBackend> = Arc::new(
             build_agent_backend(&profile, &self.env_map).map_err(|error| {
                 agent::runtime::RuntimeError::invalid_state(format!(
@@ -235,10 +308,27 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
         );
         let compactor: Arc<dyn ConversationCompactor> =
             Arc::new(ModelConversationCompactor::new(backend.clone()));
+        let mut tool_context = tool_context_for_profile(&base_tool_context, &profile);
+        tool_context = tool_context.with_allowed_mcp_servers(profile.allowed_mcp_servers.clone());
+        tool_context =
+            tool_context.with_allowed_skill_names(profile.allowed_skills.as_ref().map(|_| {
+                skill_catalog
+                    .all()
+                    .into_iter()
+                    .map(|skill| skill.name)
+                    .collect()
+            }));
+        let instructions = build_system_preamble(
+            base_tool_context.workspace_root.as_path(),
+            &profile,
+            &skill_catalog,
+            &self.plugin_instructions.read().unwrap(),
+            &base_tool_context.model_visibility,
+        );
         Ok(SubagentRuntimeProfile {
             profile_name: profile.profile_name.clone(),
             backend,
-            tool_context: tool_context_for_profile(&base_tool_context, &profile),
+            tool_context,
             conversation_compactor: compactor,
             compaction_config: CompactionConfig {
                 enabled: profile.auto_compact,
@@ -246,13 +336,11 @@ impl SubagentProfileResolver for CodeAgentSubagentProfileResolver {
                 trigger_tokens: profile.compact_trigger_tokens,
                 preserve_recent_messages: profile.compact_preserve_recent_messages,
             },
-            instructions: build_system_preamble(
-                base_tool_context.workspace_root.as_path(),
-                &profile,
-                &self.skill_catalog,
-                &self.plugin_instructions.read().unwrap(),
-                &base_tool_context.model_visibility,
-            ),
+            instructions,
+            hooks: runtime_hooks,
+            skill_catalog,
+            allowed_tools: profile.allowed_tools.clone(),
+            allowed_mcp_servers: profile.allowed_mcp_servers.clone(),
             supports_tool_calls: profile.model.capabilities.tool_calls,
         })
     }
@@ -887,6 +975,7 @@ where
         base_tool_context: session_tool_context.clone(),
         skill_catalog: skill_catalog.clone(),
         plugin_instructions: plugin_instructions.clone(),
+        configured_runtime_hooks: configured_runtime_hooks.clone(),
     });
     let subagent_progress_sink = Arc::new(SessionEventPublisher::new(events.clone()));
     let approval_policy: Arc<dyn ToolApprovalPolicy> = Arc::new(

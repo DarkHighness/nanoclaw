@@ -5825,6 +5825,7 @@ mod tests {
             plugin_instructions: Arc::new(std::sync::RwLock::new(vec![
                 "Plugin instruction".to_string(),
             ])),
+            configured_runtime_hooks: Arc::new(std::sync::RwLock::new(Vec::new())),
         };
 
         let profile = resolver
@@ -5892,6 +5893,7 @@ mod tests {
             plugin_instructions: Arc::new(std::sync::RwLock::new(vec![
                 "Plugin instruction".to_string(),
             ])),
+            configured_runtime_hooks: Arc::new(std::sync::RwLock::new(Vec::new())),
         };
 
         let launch = SubagentLaunchSpec {
@@ -5920,6 +5922,159 @@ mod tests {
         let profile = resolver.resolve_profile(&launch).unwrap();
         assert!(profile.supports_tool_calls);
         assert!(profile.instructions.join("\n").contains("Review only"));
+    }
+
+    #[test]
+    fn subagent_profile_resolver_applies_role_scoped_tool_mcp_and_skill_policy() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=test-key\n").unwrap();
+        let skill_root = agent::SkillRoot::managed(PathBuf::from("/skills"));
+        let review_skill = agent::Skill {
+            name: "review".to_string(),
+            description: "Review changes.".to_string(),
+            aliases: vec!["code-review".to_string()],
+            body: "Inspect the patch for regressions.".to_string(),
+            root_dir: PathBuf::from("/skills/review"),
+            tags: vec!["review".to_string()],
+            hooks: Vec::new(),
+            references: Vec::new(),
+            scripts: Vec::new(),
+            assets: Vec::new(),
+            metadata: BTreeMap::new(),
+            extension_metadata: BTreeMap::new(),
+            activation: agent::skills::SkillActivation::default(),
+            provenance: agent::SkillProvenance {
+                root: skill_root.clone(),
+                skill_dir: PathBuf::from("/skills/review"),
+                hub: None,
+                shadowed_copies: Vec::new(),
+            },
+        };
+        let handoff_skill = agent::Skill {
+            name: "handoff".to_string(),
+            description: "Prepare a handoff.".to_string(),
+            aliases: vec!["resume".to_string()],
+            body: "Record the current state for the next agent.".to_string(),
+            root_dir: PathBuf::from("/skills/handoff"),
+            tags: vec!["handoff".to_string()],
+            hooks: Vec::new(),
+            references: Vec::new(),
+            scripts: Vec::new(),
+            assets: Vec::new(),
+            metadata: BTreeMap::new(),
+            extension_metadata: BTreeMap::new(),
+            activation: agent::skills::SkillActivation::default(),
+            provenance: agent::SkillProvenance {
+                root: skill_root.clone(),
+                skill_dir: PathBuf::from("/skills/handoff"),
+                hub: None,
+                shadowed_copies: Vec::new(),
+            },
+        };
+        let resolver = CodeAgentSubagentProfileResolver {
+            core: CoreConfig::default().with_override(|config| {
+                config.agents.roles.insert(
+                    "reviewer".to_string(),
+                    AgentProfileConfig {
+                        system_prompt: Some("Review only".to_string()),
+                        allowed_tools: Some(vec![
+                            agent::types::ToolName::from("read"),
+                            agent::types::ToolName::from("grep"),
+                        ]),
+                        allowed_mcp_servers: Some(vec![agent::types::McpServerName::from("docs")]),
+                        allowed_skills: Some(vec!["code-review".to_string()]),
+                        sandbox: Some(AgentSandboxMode::ReadOnly),
+                        ..AgentProfileConfig::default()
+                    },
+                );
+            }),
+            env_map: EnvMap::from_workspace_dir(dir.path()).unwrap(),
+            base_tool_context: Arc::new(std::sync::RwLock::new(ToolExecutionContext {
+                workspace_root: PathBuf::from("/workspace"),
+                worktree_root: Some(PathBuf::from("/workspace")),
+                workspace_only: true,
+                ..Default::default()
+            })),
+            skill_catalog: agent::SkillCatalog::from_parts(
+                vec![skill_root],
+                vec![review_skill, handoff_skill],
+            ),
+            plugin_instructions: Arc::new(std::sync::RwLock::new(Vec::new())),
+            configured_runtime_hooks: Arc::new(std::sync::RwLock::new(Vec::new())),
+        };
+
+        let launch = SubagentLaunchSpec::from_task(AgentTaskSpec {
+            task_id: "review".into(),
+            role: "reviewer".to_string(),
+            prompt: "review".to_string(),
+            origin: agent::types::TaskOrigin::AgentCreated,
+            steer: None,
+            allowed_tools: Vec::new(),
+            requested_write_set: Vec::new(),
+            dependency_ids: Vec::new(),
+            timeout_seconds: None,
+        });
+
+        let resolved = resolver.resolve_agent_profile(&launch).unwrap();
+        assert_eq!(
+            resolved
+                .allowed_tools
+                .as_ref()
+                .map(|tools| tools.iter().map(ToString::to_string).collect::<Vec<_>>()),
+            Some(vec!["read".to_string(), "grep".to_string()])
+        );
+        assert_eq!(
+            resolved
+                .allowed_mcp_servers
+                .as_ref()
+                .map(|servers| servers.iter().map(ToString::to_string).collect::<Vec<_>>()),
+            Some(vec!["docs".to_string()])
+        );
+        assert_eq!(
+            resolved.allowed_skills,
+            Some(vec!["code-review".to_string()])
+        );
+
+        let profile = resolver.resolve_profile(&launch).unwrap();
+        assert_eq!(
+            profile
+                .allowed_tools
+                .as_ref()
+                .map(|tools| tools.iter().map(ToString::to_string).collect::<Vec<_>>()),
+            Some(vec!["read".to_string(), "grep".to_string()])
+        );
+        assert_eq!(
+            profile
+                .allowed_mcp_servers
+                .as_ref()
+                .map(|servers| servers.iter().map(ToString::to_string).collect::<Vec<_>>()),
+            Some(vec!["docs".to_string()])
+        );
+        assert_eq!(
+            profile
+                .skill_catalog
+                .all()
+                .into_iter()
+                .map(|skill| skill.name)
+                .collect::<Vec<_>>(),
+            vec!["review".to_string()]
+        );
+        assert_eq!(
+            profile
+                .tool_context
+                .allowed_mcp_servers
+                .as_ref()
+                .map(|servers| servers.iter().map(ToString::to_string).collect::<Vec<_>>()),
+            Some(vec!["docs".to_string()])
+        );
+        assert_eq!(
+            profile
+                .tool_context
+                .allowed_skill_names
+                .as_ref()
+                .map(|names| names.iter().cloned().collect::<Vec<_>>()),
+            Some(vec!["review".to_string()])
+        );
     }
 
     #[test]

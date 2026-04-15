@@ -5,11 +5,13 @@ use crate::SessionControlHandler;
 #[cfg(feature = "agentic-tools")]
 use crate::TaskManager;
 use crate::UserInputHandler;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use types::{
-    AgentId, AgentSessionId, CallId, SessionId, ToolName, ToolVisibilityContext, TurnId, WorktreeId,
+    AgentId, AgentSessionId, CallId, McpServerName, SessionId, ToolName, ToolVisibilityContext,
+    TurnId, WorktreeId,
 };
 
 pub trait ToolWriteGuard: Send + Sync {
@@ -37,6 +39,8 @@ pub struct ToolExecutionContext {
     pub agent_id: Option<AgentId>,
     pub agent_name: Option<String>,
     pub task_id: Option<String>,
+    pub allowed_mcp_servers: Option<BTreeSet<McpServerName>>,
+    pub allowed_skill_names: Option<BTreeSet<String>>,
     pub tool_name: Option<ToolName>,
     pub tool_call_id: Option<CallId>,
     pub model_visibility: ToolVisibilityContext,
@@ -71,6 +75,8 @@ impl fmt::Debug for ToolExecutionContext {
             .field("agent_id", &self.agent_id)
             .field("agent_name", &self.agent_name)
             .field("task_id", &self.task_id)
+            .field("allowed_mcp_servers", &self.allowed_mcp_servers)
+            .field("allowed_skill_names", &self.allowed_skill_names)
             .field("tool_name", &self.tool_name)
             .field("tool_call_id", &self.tool_call_id)
             .field("model_visibility", &self.model_visibility)
@@ -167,6 +173,38 @@ impl ToolExecutionContext {
     }
 
     #[must_use]
+    pub fn is_mcp_server_allowed(&self, server_name: &McpServerName) -> bool {
+        self.allowed_mcp_servers
+            .as_ref()
+            .is_none_or(|servers| servers.contains(server_name))
+    }
+
+    pub fn assert_mcp_server_allowed(&self, server_name: &McpServerName) -> Result<()> {
+        if self.is_mcp_server_allowed(server_name) {
+            return Ok(());
+        }
+        Err(crate::ToolError::invalid_state(format!(
+            "MCP server `{server_name}` is not allowed for this agent"
+        )))
+    }
+
+    #[must_use]
+    pub fn is_skill_allowed(&self, skill_name: &str) -> bool {
+        self.allowed_skill_names
+            .as_ref()
+            .is_none_or(|skills| skills.contains(skill_name))
+    }
+
+    pub fn assert_skill_allowed(&self, skill_name: &str) -> Result<()> {
+        if self.is_skill_allowed(skill_name) {
+            return Ok(());
+        }
+        Err(crate::ToolError::invalid_state(format!(
+            "skill `{skill_name}` is not allowed for this agent"
+        )))
+    }
+
+    #[must_use]
     pub fn sandbox_scope(&self) -> sandbox::SandboxScope {
         sandbox::SandboxScope {
             workspace_root: self.effective_root().to_path_buf(),
@@ -236,6 +274,20 @@ impl ToolExecutionContext {
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         });
         scoped.write_guard = Some(write_guard);
+        scoped
+    }
+
+    #[must_use]
+    pub fn with_allowed_mcp_servers(&self, servers: Option<Vec<McpServerName>>) -> Self {
+        let mut scoped = self.clone();
+        scoped.allowed_mcp_servers = servers.map(|entries| entries.into_iter().collect());
+        scoped
+    }
+
+    #[must_use]
+    pub fn with_allowed_skill_names(&self, skill_names: Option<Vec<String>>) -> Self {
+        let mut scoped = self.clone();
+        scoped.allowed_skill_names = skill_names.map(|entries| entries.into_iter().collect());
         scoped
     }
 }

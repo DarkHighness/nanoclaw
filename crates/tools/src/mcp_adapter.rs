@@ -42,8 +42,11 @@ impl Tool for McpToolAdapter {
         &self,
         call_id: ToolCallId,
         arguments: Value,
-        _ctx: &ToolExecutionContext,
+        ctx: &ToolExecutionContext,
     ) -> Result<ToolResult> {
+        if let Some(server_name) = mcp_server_name_for_spec(&self.spec) {
+            ctx.assert_mcp_server_allowed(server_name)?;
+        }
         let mut result = (self.handler)(call_id.clone(), arguments).await?;
         let upstream_call_id = result.call_id.clone();
         let upstream_tool_name = result.tool_name.clone();
@@ -61,6 +64,18 @@ impl Tool for McpToolAdapter {
             self.spec.name.as_str(),
         ));
         Ok(result)
+    }
+}
+
+fn mcp_server_name_for_spec(spec: &ToolSpec) -> Option<&types::McpServerName> {
+    match &spec.source {
+        types::ToolSource::McpTool { server_name }
+        | types::ToolSource::McpResource { server_name }
+            if server_name.as_str() != "*" =>
+        {
+            Some(server_name)
+        }
+        _ => None,
     }
 }
 

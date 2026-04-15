@@ -48,13 +48,16 @@ pub struct SubagentRuntimeProfile {
     pub conversation_compactor: Arc<dyn ConversationCompactor>,
     pub compaction_config: CompactionConfig,
     pub instructions: Vec<String>,
+    pub hooks: Vec<HookRegistration>,
+    pub skill_catalog: SkillCatalog,
+    pub allowed_tools: Option<Vec<ToolName>>,
+    pub allowed_mcp_servers: Option<Vec<types::McpServerName>>,
     pub supports_tool_calls: bool,
 }
 
 pub trait SubagentProfileResolver: Send + Sync {
-    // Launch overrides such as model/reasoning_effort belong at the spawn surface
-    // instead of inflating persisted task state. The resolver receives the launch
-    // envelope so it can derive the concrete runtime profile just before startup.
+    // Role-scoped system/tooling policy lives in the resolved profile, while the
+    // Codex-style launch surface only overrides transient model selection knobs.
     fn resolve_profile(&self, launch: &SubagentLaunchSpec) -> Result<SubagentRuntimeProfile>;
 }
 
@@ -194,6 +197,37 @@ fn runtime_progress_event_from_parent_event(
     }
 }
 
+fn known_mcp_server_names(spec: &types::ToolSpec) -> Vec<types::McpServerName> {
+    let mut names = spec
+        .mcp_server_boundaries
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    match &spec.source {
+        types::ToolSource::McpTool { server_name }
+        | types::ToolSource::McpResource { server_name } => {
+            if server_name.as_str() != "*" {
+                names.insert(server_name.clone());
+            }
+        }
+        _ => {}
+    }
+    names.into_iter().collect()
+}
+
+fn tool_spec_matches_mcp_server_allowlist(
+    spec: &types::ToolSpec,
+    allowed_servers: &BTreeSet<types::McpServerName>,
+) -> bool {
+    match &spec.source {
+        types::ToolSource::McpTool { server_name } => allowed_servers.contains(server_name),
+        types::ToolSource::McpResource { server_name } => {
+            server_name.as_str() == "*" || allowed_servers.contains(server_name)
+        }
+        _ => true,
+    }
+}
+
 impl RuntimeSubagentExecutor {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
@@ -230,8 +264,13 @@ impl RuntimeSubagentExecutor {
         }
     }
 
-    fn resolve_child_tools(&self, requested: &[ToolName]) -> Result<(ToolRegistry, Vec<ToolName>)> {
-        let allowed_names = if requested.is_empty() {
+    fn resolve_child_tools(
+        &self,
+        requested: &[ToolName],
+        profile_allowed_tools: Option<&[ToolName]>,
+        allowed_mcp_servers: Option<&[types::McpServerName]>,
+    ) -> Result<(ToolRegistry, Vec<ToolName>)> {
+        let mut requested_names = if requested.is_empty() {
             self.tool_registry
                 .names()
                 .into_iter()
@@ -244,14 +283,55 @@ impl RuntimeSubagentExecutor {
                 .cloned()
                 .collect::<Vec<_>>()
         };
+        if let Some(allowed_tools) = profile_allowed_tools {
+            let allowed_tool_names = allowed_tools.iter().cloned().collect::<BTreeSet<_>>();
+            requested_names.retain(|name| allowed_tool_names.contains(name));
+        }
+        let allowed_names =
+            self.filter_tools_by_mcp_server_allowlist(requested_names, allowed_mcp_servers)?;
         let filtered = self.tool_registry.filtered_by_names(&allowed_names);
         let resolved_names = filtered.names();
-        if !requested.is_empty() && resolved_names.is_empty() {
+        if (profile_allowed_tools.is_some() || !requested.is_empty()) && resolved_names.is_empty() {
             return Err(RuntimeError::invalid_state(
                 "spawn_agent: no allowed tools matched the parent registry",
             ));
         }
         Ok((filtered, resolved_names))
+    }
+
+    fn filter_tools_by_mcp_server_allowlist(
+        &self,
+        candidate_names: Vec<ToolName>,
+        allowed_mcp_servers: Option<&[types::McpServerName]>,
+    ) -> Result<Vec<ToolName>> {
+        let Some(allowed_mcp_servers) = allowed_mcp_servers else {
+            return Ok(candidate_names);
+        };
+        let allowed_servers = allowed_mcp_servers.iter().cloned().collect::<BTreeSet<_>>();
+        let known_servers = self
+            .tool_registry
+            .specs()
+            .into_iter()
+            .flat_map(|spec| known_mcp_server_names(&spec))
+            .collect::<BTreeSet<_>>();
+        for server_name in &allowed_servers {
+            if !known_servers.contains(server_name) {
+                return Err(RuntimeError::invalid_state(format!(
+                    "spawn_agent: unknown allowed MCP server `{server_name}`"
+                )));
+            }
+        }
+        Ok(candidate_names
+            .into_iter()
+            .filter(|name| {
+                self.tool_registry
+                    .get(name.as_str())
+                    .map(|tool| tool.spec())
+                    .is_some_and(|spec| {
+                        tool_spec_matches_mcp_server_allowlist(&spec, &allowed_servers)
+                    })
+            })
+            .collect())
     }
 
     async fn build_child_session(
@@ -874,23 +954,24 @@ impl RuntimeSubagentExecutor {
     }
 
     fn build_child_runtime(&self, plan: &ChildLaunchPlan) -> AgentRuntime {
+        let scoped_tool_context = plan.profile.tool_context.clone().with_agent_scope_metadata(
+            plan.handle.agent_id.clone(),
+            Some(plan.task.role.clone()),
+            Some(plan.task.task_id.to_string()),
+            self.write_lease_manager.clone(),
+        );
         AgentRuntimeBuilder::new(plan.profile.backend.clone(), self.store.clone())
             .hook_runner(self.hook_runner.clone())
             .tool_registry(plan.tool_registry.clone())
-            .tool_context(plan.profile.tool_context.clone().with_agent_scope_metadata(
-                plan.handle.agent_id.clone(),
-                Some(plan.task.role.clone()),
-                Some(plan.task.task_id.to_string()),
-                self.write_lease_manager.clone(),
-            ))
+            .tool_context(scoped_tool_context)
             .tool_approval_handler(self.tool_approval_handler.clone())
             .tool_approval_policy(self.tool_approval_policy.clone())
             .conversation_compactor(plan.profile.conversation_compactor.clone())
             .compaction_config(plan.profile.compaction_config.clone())
             .loop_detection_config(self.loop_detection_config.clone())
             .instructions(plan.profile.instructions.clone())
-            .hooks(self.hooks.read().unwrap().clone())
-            .skill_catalog(self.skill_catalog.clone())
+            .hooks(plan.profile.hooks.clone())
+            .skill_catalog(plan.profile.skill_catalog.clone())
             .session(plan.session.clone())
             .build()
     }
@@ -1270,12 +1351,16 @@ impl SubagentExecutor for RuntimeSubagentExecutor {
     ) -> std::result::Result<Vec<AgentHandle>, ToolError> {
         let mut planned = Vec::new();
         for launch in tasks {
-            let (tool_registry, resolved_tools) = self
-                .resolve_child_tools(&launch.task.allowed_tools)
-                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
             let profile = self
                 .profile_resolver
                 .resolve_profile(&launch)
+                .map_err(|error| ToolError::invalid_state(error.to_string()))?;
+            let (tool_registry, resolved_tools) = self
+                .resolve_child_tools(
+                    &launch.task.allowed_tools,
+                    profile.allowed_tools.as_deref(),
+                    profile.allowed_mcp_servers.as_deref(),
+                )
                 .map_err(|error| ToolError::invalid_state(error.to_string()))?;
             let worktree_mode = launch.worktree_mode;
             let task = launch.task;
@@ -2171,6 +2256,8 @@ mod tests {
     struct StaticProfileResolver {
         backend: Arc<dyn ModelBackend>,
         tool_context: ToolExecutionContext,
+        allowed_tools: Option<Vec<ToolName>>,
+        allowed_mcp_servers: Option<Vec<types::McpServerName>>,
         supports_tool_calls: bool,
     }
 
@@ -2183,8 +2270,15 @@ mod tests {
             Self {
                 backend,
                 tool_context,
+                allowed_tools: None,
+                allowed_mcp_servers: None,
                 supports_tool_calls,
             }
+        }
+
+        fn with_allowed_tools(mut self, allowed_tools: Vec<ToolName>) -> Self {
+            self.allowed_tools = Some(allowed_tools);
+            self
         }
     }
 
@@ -2198,6 +2292,10 @@ mod tests {
                 conversation_compactor: Arc::new(NoopConversationCompactor),
                 compaction_config: CompactionConfig::default(),
                 instructions: vec![format!("profile instruction for {}", task.role)],
+                hooks: Vec::new(),
+                skill_catalog: SkillCatalog::default(),
+                allowed_tools: self.allowed_tools.clone(),
+                allowed_mcp_servers: self.allowed_mcp_servers.clone(),
                 supports_tool_calls: self.supports_tool_calls,
             })
         }
@@ -3690,6 +3788,55 @@ mod tests {
             .expect_err("cyclic dependencies must be rejected");
 
         assert!(error.to_string().contains("dependenc"));
+    }
+
+    #[tokio::test]
+    async fn runtime_subagent_executor_enforces_role_allowed_tools() {
+        let backend = Arc::new(ImmediateBackend::default());
+        let store = Arc::new(InMemorySessionStore::new());
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(ReadTool::new());
+        let tool_context = ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            ..Default::default()
+        };
+        let resolver = StaticProfileResolver::new(backend, tool_context.clone(), true)
+            .with_allowed_tools(Vec::new());
+        let executor = RuntimeSubagentExecutor::new(
+            Arc::new(HookRunner::default()),
+            store,
+            registry,
+            tool_context,
+            Arc::new(AlwaysAllowToolApprovalHandler),
+            Arc::new(NoopToolApprovalPolicy),
+            LoopDetectionConfig::default(),
+            Vec::new(),
+            SkillCatalog::default(),
+            Arc::new(resolver),
+            None,
+            None,
+        );
+
+        let error = executor
+            .spawn(
+                SubagentParentContext::default(),
+                launches(vec![AgentTaskSpec {
+                    task_id: "inspect".to_string(),
+                    role: "reviewer".to_string(),
+                    prompt: "inspect".to_string(),
+                    steer: None,
+                    allowed_tools: vec![ToolName::from("read")],
+                    requested_write_set: Vec::new(),
+                    dependency_ids: Vec::new(),
+                    timeout_seconds: None,
+                }]),
+            )
+            .await
+            .expect_err("role-scoped allowlist should gate child tools");
+
+        assert!(error.to_string().contains("no allowed tools matched"));
     }
 
     #[tokio::test]

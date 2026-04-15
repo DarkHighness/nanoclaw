@@ -244,10 +244,11 @@ fn server_requires_host_process(server: &ConnectedMcpServer) -> bool {
 }
 
 fn server_is_visible(ctx: &ToolExecutionContext, server: &ConnectedMcpServer) -> bool {
-    !server_requires_host_process(server)
-        || ctx
-            .model_visibility
-            .has_feature(HOST_FEATURE_HOST_PROCESS_SURFACES)
+    ctx.is_mcp_server_allowed(&server.server_name)
+        && (!server_requires_host_process(server)
+            || ctx
+                .model_visibility
+                .has_feature(HOST_FEATURE_HOST_PROCESS_SURFACES))
 }
 
 fn aggregate_resource_tool_availability(servers: &[ConnectedMcpServer]) -> ToolAvailability {
@@ -269,6 +270,9 @@ fn execute_list_mcp_resources(
 ) -> ToolsResult<ToolResult> {
     let external_call_id = CallId::from(&call_id);
     let input: ListMcpResourcesInput = serde_json::from_value(arguments)?;
+    if let Some(server_name) = input.server_name.as_ref() {
+        ctx.assert_mcp_server_allowed(server_name)?;
+    }
     let resources = servers
         .iter()
         .filter(|server| server_is_visible(ctx, server))
@@ -348,6 +352,9 @@ fn execute_list_mcp_resource_templates(
 ) -> ToolsResult<ToolResult> {
     let external_call_id = CallId::from(&call_id);
     let input: ListMcpResourceTemplatesInput = serde_json::from_value(arguments)?;
+    if let Some(server_name) = input.server_name.as_ref() {
+        ctx.assert_mcp_server_allowed(server_name)?;
+    }
     let resource_templates = servers
         .iter()
         .filter(|server| server_is_visible(ctx, server))
@@ -419,6 +426,7 @@ async fn execute_read_mcp_resource(
 ) -> ToolsResult<ToolResult> {
     let external_call_id = CallId::from(&call_id);
     let input: ReadMcpResourceInput = serde_json::from_value(arguments)?;
+    ctx.assert_mcp_server_allowed(&input.server_name)?;
     let server = servers
         .iter()
         .find(|server| server.server_name == input.server_name)

@@ -1,7 +1,7 @@
 use agent::AgentWorkspaceLayout;
 use agent::mcp::McpServerConfig;
 use agent::plugins::{PluginEntryConfig, PluginSlotsConfig};
-use agent::types::PluginId;
+use agent::types::{McpServerName, PluginId, ToolName};
 use agent_env::{EnvMap, vars};
 use anyhow::{Result, anyhow, bail, ensure};
 use serde::de::DeserializeOwned;
@@ -86,6 +86,9 @@ pub struct AgentProfileConfig {
     pub model: Option<String>,
     pub system_prompt: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub allowed_tools: Option<Vec<ToolName>>,
+    pub allowed_mcp_servers: Option<Vec<McpServerName>>,
+    pub allowed_skills: Option<Vec<String>>,
     pub temperature: Option<f64>,
     pub max_output_tokens: Option<u64>,
     pub context_window_tokens: Option<usize>,
@@ -237,6 +240,9 @@ pub struct ResolvedAgentProfile {
     pub global_system_prompt: Option<String>,
     pub system_prompt: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub allowed_tools: Option<Vec<ToolName>>,
+    pub allowed_mcp_servers: Option<Vec<McpServerName>>,
+    pub allowed_skills: Option<Vec<String>>,
     pub temperature: Option<f64>,
     pub max_output_tokens: u64,
     pub context_window_tokens: usize,
@@ -470,6 +476,23 @@ impl NanoclawCoreConfig {
                 .map(Some)
                 .unwrap_or_else(|| model.reasoning_effort.clone())
                 .and_then(|value| normalize_optional_string(Some(value))),
+            // Role overlays replace the inherited allowlists so each subagent
+            // profile can fully define its own tool/MCP/skill surface.
+            allowed_tools: normalize_optional_tool_name_list(
+                overlay
+                    .and_then(|profile| profile.allowed_tools.clone())
+                    .or_else(|| base.allowed_tools.clone()),
+            ),
+            allowed_mcp_servers: normalize_optional_mcp_server_name_list(
+                overlay
+                    .and_then(|profile| profile.allowed_mcp_servers.clone())
+                    .or_else(|| base.allowed_mcp_servers.clone()),
+            ),
+            allowed_skills: normalize_optional_string_list_preserve_presence(
+                overlay
+                    .and_then(|profile| profile.allowed_skills.clone())
+                    .or_else(|| base.allowed_skills.clone()),
+            ),
             temperature: overlay
                 .and_then(|profile| profile.temperature)
                 .or(base.temperature)
@@ -836,6 +859,64 @@ fn normalize_optional_string_list(value: Option<Vec<String>>) -> Vec<String> {
     normalized
 }
 
+fn normalize_optional_string_list_preserve_presence(
+    value: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    value.map(|entries| {
+        let mut normalized = Vec::new();
+        let mut seen = BTreeSet::new();
+        for entry in entries {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value = trimmed.to_string();
+            if seen.insert(value.clone()) {
+                normalized.push(value);
+            }
+        }
+        normalized
+    })
+}
+
+fn normalize_optional_tool_name_list(value: Option<Vec<ToolName>>) -> Option<Vec<ToolName>> {
+    value.map(|entries| {
+        let mut normalized = Vec::new();
+        let mut seen = BTreeSet::new();
+        for entry in entries {
+            let trimmed = entry.as_str().trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value = ToolName::from(trimmed);
+            if seen.insert(value.clone()) {
+                normalized.push(value);
+            }
+        }
+        normalized
+    })
+}
+
+fn normalize_optional_mcp_server_name_list(
+    value: Option<Vec<McpServerName>>,
+) -> Option<Vec<McpServerName>> {
+    value.map(|entries| {
+        let mut normalized = Vec::new();
+        let mut seen = BTreeSet::new();
+        for entry in entries {
+            let trimmed = entry.as_str().trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value = McpServerName::from(trimmed);
+            if seen.insert(value.clone()) {
+                normalized.push(value);
+            }
+        }
+        normalized
+    })
+}
+
 fn split_env_paths(value: &str) -> Vec<String> {
     agent_env::split_path_list(value)
         .into_iter()
@@ -958,6 +1039,9 @@ mod tests {
                 [agents.roles.reviewer]
                 model = "fast_review"
                 reasoning_effort = "low"
+                allowed_tools = ["read", "grep", "read"]
+                allowed_mcp_servers = ["docs", "docs", "  "]
+                allowed_skills = ["review", "handoff", "review", ""]
 
                 [internal.summary]
                 model = "fast_review"
@@ -1003,6 +1087,24 @@ mod tests {
             vec!["low".to_string(), "medium".to_string(), "high".to_string()]
         );
         assert_eq!(reviewer.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(
+            reviewer
+                .allowed_tools
+                .as_ref()
+                .map(|tools| tools.iter().map(ToString::to_string).collect::<Vec<_>>()),
+            Some(vec!["read".to_string(), "grep".to_string()])
+        );
+        assert_eq!(
+            reviewer
+                .allowed_mcp_servers
+                .as_ref()
+                .map(|servers| servers.iter().map(ToString::to_string).collect::<Vec<_>>()),
+            Some(vec!["docs".to_string()])
+        );
+        assert_eq!(
+            reviewer.allowed_skills,
+            Some(vec!["review".to_string(), "handoff".to_string()])
+        );
         assert_eq!(summary.max_output_tokens, 16_000);
         assert_eq!(
             config.host.store_dir.as_deref(),
