@@ -269,11 +269,13 @@ narrow the catalog without scripting your own grep pipeline. `manage tool`
 shares that same live startup requirement so it can show the complete tool
 catalog while still toggling the persisted workspace disabled list.
 
-Code-agent also materializes two built-in managed MCP entries by default:
-`context7` and `playwright`. They start enabled, so `/mcp`, `mcp list`, and
-`mcp enable|disable` manage them the same way as persisted workspace MCP
-servers. When no supported launcher is available in `PATH`, startup warns and
-skips connecting that built-in server instead of failing the whole session.
+Code-agent also materializes three built-in managed MCP entries by default:
+`context7`, `playwright`, and `gh_grep`. They start enabled, so `/mcp`,
+`mcp list`, and `mcp enable|disable` manage them the same way as persisted
+workspace MCP servers. `gh_grep` is the built-in Grep by Vercel remote MCP
+server and points at `https://mcp.grep.app`. When no supported launcher is
+available in `PATH`, startup warns and skips the built-in stdio servers instead
+of failing the whole session.
 
 Code-agent also bundles a built-in skill pack by default. It includes an
 official upstream subset sourced from `openai/skills` commit

@@ -17,8 +17,10 @@ use toml_edit::{Array, DocumentMut, Item, Table, value};
 const DISABLED_SKILL_DIR: &str = ".disabled";
 const BUILTIN_CONTEXT7_SERVER: &str = "context7";
 const BUILTIN_PLAYWRIGHT_SERVER: &str = "playwright";
+const BUILTIN_GH_GREP_SERVER: &str = "gh_grep";
 const BUILTIN_CONTEXT7_PACKAGE: &str = "@upstash/context7-mcp@latest";
 const BUILTIN_PLAYWRIGHT_PACKAGE: &str = "@playwright/mcp@latest";
+const BUILTIN_GH_GREP_URL: &str = "https://mcp.grep.app";
 // Bundle built-in skills with their companion references, scripts, agents, and
 // assets instead of flattening them to SKILL.md-only copies. This tree contains
 // an exact vendored subset of openai/skills @
@@ -299,16 +301,21 @@ pub fn filter_unavailable_builtin_mcp_servers(
             if !matches_builtin_core_mcp_server(&server, &definition) {
                 return Some(server);
             }
-            if select_builtin_launcher(env_map, &definition.launchers).is_some() {
-                return Some(server);
+            match definition.transport {
+                BuiltinMcpTransportDefinition::Remote { .. } => Some(server),
+                BuiltinMcpTransportDefinition::Stdio { launchers, .. } => {
+                    if select_builtin_launcher(env_map, launchers).is_some() {
+                        return Some(server);
+                    }
+                    warnings.push(format!(
+                        "built-in MCP server `{}` is enabled but no supported launcher is available in PATH; install one of {} or disable it with `mcp disable {}` or `/mcp`",
+                        definition.name,
+                        render_launcher_list(launchers),
+                        definition.name,
+                    ));
+                    None
+                }
             }
-            warnings.push(format!(
-                "built-in MCP server `{}` is enabled but no supported launcher is available in PATH; install one of {} or disable it with `mcp disable {}` or `/mcp`",
-                definition.name,
-                render_launcher_list(&definition.launchers),
-                definition.name,
-            ));
-            None
         })
         .collect()
 }
@@ -715,11 +722,21 @@ impl BuiltinMcpLauncher {
 }
 
 #[derive(Clone, Copy)]
+enum BuiltinMcpTransportDefinition {
+    Stdio {
+        package: &'static str,
+        launchers: &'static [BuiltinMcpLauncher],
+        passthrough_env: &'static [EnvVar],
+    },
+    Remote {
+        url: &'static str,
+    },
+}
+
+#[derive(Clone, Copy)]
 struct BuiltinMcpDefinition {
     name: &'static str,
-    package: &'static str,
-    launchers: &'static [BuiltinMcpLauncher],
-    passthrough_env: &'static [EnvVar],
+    transport: BuiltinMcpTransportDefinition,
 }
 
 const NODE_PACKAGE_LAUNCHERS: &[BuiltinMcpLauncher] = &[
@@ -732,40 +749,66 @@ fn builtin_mcp_definition(name: &str) -> Option<BuiltinMcpDefinition> {
     match name {
         BUILTIN_CONTEXT7_SERVER => Some(BuiltinMcpDefinition {
             name: BUILTIN_CONTEXT7_SERVER,
-            package: BUILTIN_CONTEXT7_PACKAGE,
-            launchers: NODE_PACKAGE_LAUNCHERS,
-            passthrough_env: &[vars::CONTEXT7_API_KEY],
+            transport: BuiltinMcpTransportDefinition::Stdio {
+                package: BUILTIN_CONTEXT7_PACKAGE,
+                launchers: NODE_PACKAGE_LAUNCHERS,
+                passthrough_env: &[vars::CONTEXT7_API_KEY],
+            },
         }),
         BUILTIN_PLAYWRIGHT_SERVER => Some(BuiltinMcpDefinition {
             name: BUILTIN_PLAYWRIGHT_SERVER,
-            package: BUILTIN_PLAYWRIGHT_PACKAGE,
-            launchers: NODE_PACKAGE_LAUNCHERS,
-            passthrough_env: &[],
+            transport: BuiltinMcpTransportDefinition::Stdio {
+                package: BUILTIN_PLAYWRIGHT_PACKAGE,
+                launchers: NODE_PACKAGE_LAUNCHERS,
+                passthrough_env: &[],
+            },
+        }),
+        BUILTIN_GH_GREP_SERVER => Some(BuiltinMcpDefinition {
+            name: BUILTIN_GH_GREP_SERVER,
+            transport: BuiltinMcpTransportDefinition::Remote {
+                url: BUILTIN_GH_GREP_URL,
+            },
         }),
         _ => None,
     }
 }
 
 fn builtin_core_mcp_servers(env_map: &EnvMap) -> Vec<McpServerConfig> {
-    [BUILTIN_CONTEXT7_SERVER, BUILTIN_PLAYWRIGHT_SERVER]
-        .into_iter()
-        .filter_map(|name| builtin_core_mcp_server(env_map, name))
-        .collect()
+    [
+        BUILTIN_CONTEXT7_SERVER,
+        BUILTIN_PLAYWRIGHT_SERVER,
+        BUILTIN_GH_GREP_SERVER,
+    ]
+    .into_iter()
+    .filter_map(|name| builtin_core_mcp_server(env_map, name))
+    .collect()
 }
 
 fn builtin_core_mcp_server(env_map: &EnvMap, name: &str) -> Option<McpServerConfig> {
     let definition = builtin_mcp_definition(name)?;
-    let launcher = select_builtin_launcher(env_map, &definition.launchers)
-        .unwrap_or(*definition.launchers.first().expect("built-in launcher"));
-    let (command, args) = launcher.render(definition.package);
     Some(McpServerConfig {
         name: definition.name.into(),
         enabled: true,
-        transport: McpTransportConfig::Stdio {
-            command,
-            args,
-            env: builtin_mcp_env(env_map, definition.passthrough_env),
-            cwd: None,
+        transport: match definition.transport {
+            BuiltinMcpTransportDefinition::Stdio {
+                package,
+                launchers,
+                passthrough_env,
+            } => {
+                let launcher = select_builtin_launcher(env_map, launchers)
+                    .unwrap_or(*launchers.first().expect("built-in launcher"));
+                let (command, args) = launcher.render(package);
+                McpTransportConfig::Stdio {
+                    command,
+                    args,
+                    env: builtin_mcp_env(env_map, passthrough_env),
+                    cwd: None,
+                }
+            }
+            BuiltinMcpTransportDefinition::Remote { url } => McpTransportConfig::StreamableHttp {
+                url: url.to_string(),
+                headers: BTreeMap::new(),
+            },
         },
     })
 }
@@ -809,15 +852,26 @@ fn matches_builtin_core_mcp_server(
     server: &McpServerConfig,
     definition: &BuiltinMcpDefinition,
 ) -> bool {
-    let McpTransportConfig::Stdio { command, args, .. } = &server.transport else {
-        return false;
-    };
-    // Built-in launcher preflight should not second-guess arbitrary user
-    // overrides that happen to reuse a reserved built-in name.
-    definition.launchers.iter().any(|launcher| {
-        let (expected_command, expected_args) = launcher.render(definition.package);
-        command == &expected_command && args == &expected_args
-    })
+    match (&server.transport, definition.transport) {
+        (
+            McpTransportConfig::Stdio { command, args, .. },
+            BuiltinMcpTransportDefinition::Stdio {
+                package, launchers, ..
+            },
+        ) => {
+            // Built-in launcher preflight should not second-guess arbitrary
+            // user overrides that happen to reuse a reserved built-in name.
+            launchers.iter().any(|launcher| {
+                let (expected_command, expected_args) = launcher.render(package);
+                command == &expected_command && args == &expected_args
+            })
+        }
+        (
+            McpTransportConfig::StreamableHttp { url, headers },
+            BuiltinMcpTransportDefinition::Remote { url: expected_url },
+        ) => url == expected_url && headers.is_empty(),
+        _ => false,
+    }
 }
 
 fn render_launcher_list(launchers: &[BuiltinMcpLauncher]) -> String {
@@ -1204,12 +1258,13 @@ fn plugin_contribution_summary(plugin: &PluginState) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BUILTIN_CONTEXT7_SERVER, BUILTIN_PLAYWRIGHT_SERVER, add_core_mcp_server,
-        add_managed_plugin, add_managed_skill, delete_core_mcp_server, delete_managed_plugin,
-        delete_managed_skill, disabled_builtin_skill_names, disabled_tool_names,
-        filter_unavailable_builtin_mcp_servers, list_core_mcp_servers, list_managed_plugin_details,
-        list_managed_skill_details, materialize_builtin_skills, set_core_mcp_server_enabled,
-        set_managed_plugin_enabled, set_managed_skill_enabled, set_tool_enabled,
+        BUILTIN_CONTEXT7_SERVER, BUILTIN_GH_GREP_SERVER, BUILTIN_GH_GREP_URL,
+        BUILTIN_PLAYWRIGHT_SERVER, add_core_mcp_server, add_managed_plugin, add_managed_skill,
+        delete_core_mcp_server, delete_managed_plugin, delete_managed_skill,
+        disabled_builtin_skill_names, disabled_tool_names, filter_unavailable_builtin_mcp_servers,
+        list_core_mcp_servers, list_managed_plugin_details, list_managed_skill_details,
+        materialize_builtin_skills, set_core_mcp_server_enabled, set_managed_plugin_enabled,
+        set_managed_skill_enabled, set_tool_enabled,
     };
     use agent::AgentWorkspaceLayout;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
@@ -1259,6 +1314,30 @@ mod tests {
             servers
                 .iter()
                 .any(|server| server.name.as_str() == BUILTIN_PLAYWRIGHT_SERVER && server.enabled)
+        );
+        assert!(
+            servers
+                .iter()
+                .any(|server| server.name.as_str() == BUILTIN_GH_GREP_SERVER && server.enabled)
+        );
+    }
+
+    #[test]
+    fn builtin_remote_mcp_server_uses_streamable_http_transport() {
+        let dir = tempdir().unwrap();
+
+        let servers = list_core_mcp_servers(dir.path()).unwrap();
+        let grep = servers
+            .iter()
+            .find(|server| server.name.as_str() == BUILTIN_GH_GREP_SERVER)
+            .expect("built-in gh_grep MCP server");
+
+        assert_eq!(
+            grep.transport,
+            McpTransportConfig::StreamableHttp {
+                url: BUILTIN_GH_GREP_URL.to_string(),
+                headers: Default::default(),
+            }
         );
     }
 
@@ -1318,12 +1397,18 @@ mod tests {
 
         let retained = filter_unavailable_builtin_mcp_servers(&env_map, servers, &mut warnings);
 
-        assert!(retained.is_empty());
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].name.as_str(), BUILTIN_GH_GREP_SERVER);
         assert_eq!(warnings.len(), 2);
         assert!(
             warnings
                 .iter()
                 .any(|warning| warning.contains("built-in MCP server `context7` is enabled"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .all(|warning| !warning.contains(BUILTIN_GH_GREP_SERVER))
         );
         assert!(
             warnings
