@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [features]
-default = ["notebook-tools"]
+default = ["automation-tools", "browser-tools", "notebook-tools"]
 automation-tools = ["agent/automation-tools"]
 browser-tools = ["agent/browser-tools", "dep:headless_chrome"]
 notebook-tools = ["agent/notebook-tools"]

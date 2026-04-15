@@ -439,6 +439,9 @@ fn tool_headline_prefix(
         ToolRenderKind::CodeDiagnostics => {
             lifecycle_headline_text(status, "Inspecting diagnostics", "Inspected diagnostics")
         }
+        ToolRenderKind::ReviewStart => {
+            lifecycle_headline_text(status, "Reviewing session", "Reviewed session")
+        }
         ToolRenderKind::BrowserOpen => {
             lifecycle_headline_text(status, "Opening browser", "Opened browser")
         }
@@ -529,6 +532,7 @@ fn tool_headline_subject_kind(
         | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics
+        | ToolRenderKind::ReviewStart
         | ToolRenderKind::BrowserOpen
         | ToolRenderKind::BrowserSnapshot
         | ToolRenderKind::BrowserClick

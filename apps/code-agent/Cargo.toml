@@ -5,7 +5,7 @@ license = "MIT"
 version = "0.1.0"
 
 [features]
-default = ["notebook-tools"]
+default = ["automation-tools", "browser-tools", "notebook-tools"]
 automation-tools = ["agent/automation-tools", "code-agent-backend/automation-tools"]
 browser-tools = ["agent/browser-tools", "code-agent-backend/browser-tools"]
 memory-embed = ["agent/memory-embed"]

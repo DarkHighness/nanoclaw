@@ -680,7 +680,17 @@ pub fn host_process_surfaces_allowed(
 mod tests {
     use super::{build_runtime_tooling, host_process_surfaces_allowed, register_subagent_tools};
     use crate::options::AppOptions;
+    #[cfg(feature = "automation-tools")]
+    use agent::CronManager;
     use agent::SkillCatalog;
+    use agent::ToolRegistry;
+    #[cfg(feature = "browser-tools")]
+    use agent::tools::{
+        BrowserClickRequest, BrowserCloseRequest, BrowserEvalRequest, BrowserManager,
+        BrowserOpenRequest, BrowserRuntimeContext, BrowserScreenshotCapture,
+        BrowserScreenshotRequest, BrowserSnapshotRecord, BrowserSnapshotRequest,
+        BrowserTypeRequest,
+    };
     use agent::tools::{
         NetworkPolicy, SandboxBackendKind, SandboxBackendStatus, SandboxPolicy, SubagentExecutor,
         SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext, TaskManager,
@@ -688,8 +698,9 @@ mod tests {
     };
     use agent::types::{
         AgentHandle, AgentId, AgentResultEnvelope, AgentSessionId, AgentTaskSpec, AgentWaitRequest,
-        AgentWaitResponse, SessionId, TaskId, TaskRecord, TaskStatus, TaskSummaryRecord,
-        ToolCallId, ToolName,
+        AgentWaitResponse, BrowserId, BrowserStatus, BrowserSummaryRecord, CronId,
+        CronScheduleRecord, CronStatus, CronSummaryRecord, SessionId, TaskId, TaskRecord,
+        TaskStatus, TaskSummaryRecord, ToolCallId, ToolName,
     };
     use agent_env::EnvMap;
     use async_trait::async_trait;
@@ -851,6 +862,62 @@ mod tests {
             tool_names
                 .iter()
                 .any(|name| name.as_str() == "notebook_read")
+        );
+    }
+
+    #[cfg(feature = "automation-tools")]
+    #[test]
+    fn register_automation_tools_exposes_cron_surface_when_feature_enabled() {
+        let mut tools = ToolRegistry::new();
+        super::register_automation_tools(&mut tools, Arc::new(NoopCronManager));
+
+        let tool_names = tools.names();
+        assert!(tool_names.iter().any(|name| name.as_str() == "cron_create"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "cron_list"));
+        assert!(tool_names.iter().any(|name| name.as_str() == "cron_delete"));
+    }
+
+    #[cfg(feature = "browser-tools")]
+    #[test]
+    fn register_browser_tools_exposes_browser_surface_when_feature_enabled() {
+        let mut tools = ToolRegistry::new();
+        super::register_browser_tools(&mut tools, Arc::new(NoopBrowserManager));
+
+        let tool_names = tools.names();
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "browser_open")
+        );
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "browser_snapshot")
+        );
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "browser_click")
+        );
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "browser_type")
+        );
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "browser_eval")
+        );
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "browser_screenshot")
+        );
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| name.as_str() == "browser_close")
         );
     }
 
@@ -1143,6 +1210,12 @@ mod tests {
 
     struct NoopTaskManager;
 
+    #[cfg(feature = "automation-tools")]
+    struct NoopCronManager;
+
+    #[cfg(feature = "browser-tools")]
+    struct NoopBrowserManager;
+
     #[async_trait]
     impl SubagentExecutor for NoopSubagentExecutor {
         async fn spawn(
@@ -1308,6 +1381,143 @@ mod tests {
             record.summary.status = TaskStatus::Cancelled;
             record.error = reason;
             Ok(record)
+        }
+    }
+
+    #[cfg(feature = "automation-tools")]
+    #[async_trait]
+    impl CronManager for NoopCronManager {
+        async fn create_schedule(
+            &self,
+            _parent: SubagentParentContext,
+            _request: agent::tools::CronCreateRequest,
+        ) -> agent::tools::Result<CronSummaryRecord> {
+            Ok(sample_cron_summary())
+        }
+
+        async fn list_schedules(
+            &self,
+            _parent: SubagentParentContext,
+        ) -> agent::tools::Result<Vec<CronSummaryRecord>> {
+            Ok(vec![sample_cron_summary()])
+        }
+
+        async fn delete_schedule(
+            &self,
+            _parent: SubagentParentContext,
+            _cron_id: &CronId,
+        ) -> agent::tools::Result<CronSummaryRecord> {
+            Ok(sample_cron_summary())
+        }
+    }
+
+    #[cfg(feature = "browser-tools")]
+    #[async_trait]
+    impl BrowserManager for NoopBrowserManager {
+        async fn open_browser(
+            &self,
+            _runtime: BrowserRuntimeContext,
+            _request: BrowserOpenRequest,
+        ) -> agent::tools::Result<BrowserSummaryRecord> {
+            Ok(sample_browser_summary())
+        }
+
+        async fn snapshot_browser(
+            &self,
+            _runtime: BrowserRuntimeContext,
+            _request: BrowserSnapshotRequest,
+        ) -> agent::tools::Result<BrowserSnapshotRecord> {
+            Ok(BrowserSnapshotRecord {
+                browser_id: BrowserId::from("browser_test"),
+                current_url: "https://example.com".to_string(),
+                title: Some("Example".to_string()),
+                text_preview: Vec::new(),
+                interactive_elements: Vec::new(),
+                html_preview: Vec::new(),
+            })
+        }
+
+        async fn click_browser(
+            &self,
+            _runtime: BrowserRuntimeContext,
+            _request: BrowserClickRequest,
+        ) -> agent::tools::Result<BrowserSummaryRecord> {
+            Ok(sample_browser_summary())
+        }
+
+        async fn type_browser(
+            &self,
+            _runtime: BrowserRuntimeContext,
+            _request: BrowserTypeRequest,
+        ) -> agent::tools::Result<BrowserSummaryRecord> {
+            Ok(sample_browser_summary())
+        }
+
+        async fn eval_browser(
+            &self,
+            _runtime: BrowserRuntimeContext,
+            _request: BrowserEvalRequest,
+        ) -> agent::tools::Result<(BrowserSummaryRecord, Value)> {
+            Ok((sample_browser_summary(), json!({"ok": true})))
+        }
+
+        async fn screenshot_browser(
+            &self,
+            _runtime: BrowserRuntimeContext,
+            _request: BrowserScreenshotRequest,
+        ) -> agent::tools::Result<BrowserScreenshotCapture> {
+            Ok(BrowserScreenshotCapture {
+                browser: sample_browser_summary(),
+                mime_type: "image/png".to_string(),
+                byte_length: 0,
+                data_base64: String::new(),
+                full_page: false,
+            })
+        }
+
+        async fn close_browser(
+            &self,
+            _runtime: BrowserRuntimeContext,
+            _request: BrowserCloseRequest,
+        ) -> agent::tools::Result<BrowserSummaryRecord> {
+            Ok(sample_browser_summary())
+        }
+    }
+
+    #[cfg(feature = "automation-tools")]
+    fn sample_cron_summary() -> CronSummaryRecord {
+        CronSummaryRecord {
+            cron_id: CronId::from("cron_test"),
+            session_id: SessionId::from("session_root"),
+            agent_session_id: AgentSessionId::from("agent_session_root"),
+            parent_agent_id: None,
+            latest_task_id: None,
+            role: "worker".to_string(),
+            prompt_summary: "run task".to_string(),
+            status: CronStatus::Scheduled,
+            schedule: CronScheduleRecord::Once { run_at_unix_s: 1 },
+            created_at_unix_s: 1,
+            last_run_at_unix_s: None,
+            run_count: 0,
+        }
+    }
+
+    #[cfg(feature = "browser-tools")]
+    fn sample_browser_summary() -> BrowserSummaryRecord {
+        BrowserSummaryRecord {
+            browser_id: BrowserId::from("browser_test"),
+            session_id: SessionId::from("session_root"),
+            agent_session_id: AgentSessionId::from("agent_session_root"),
+            parent_agent_id: None,
+            task_id: None,
+            status: BrowserStatus::Open,
+            current_url: "https://example.com".to_string(),
+            headless: true,
+            title: Some("Example".to_string()),
+            viewport: None,
+            opened_at_unix_s: 1,
+            updated_at_unix_s: None,
+            closed_at_unix_s: None,
         }
     }
 }
