@@ -250,7 +250,7 @@ mod tests {
     use super::{CheckpointRestoreTool, CheckpointSummarizeTool};
     use crate::{
         CheckpointHandler, CheckpointMutationRequest, Result, SessionCompactionResult,
-        SessionControlHandler, Tool, ToolExecutionContext,
+        SessionControlHandler, SessionReviewResult, SessionReviewScope, Tool, ToolExecutionContext,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -307,6 +307,20 @@ mod tests {
         ) -> Result<SessionCompactionResult> {
             Ok(SessionCompactionResult {
                 compacted: self.compacted,
+            })
+        }
+
+        async fn start_review(
+            &self,
+            _ctx: &ToolExecutionContext,
+            scope: SessionReviewScope,
+        ) -> Result<SessionReviewResult> {
+            Ok(SessionReviewResult {
+                scope,
+                summary: "review unavailable in checkpoint tests".to_string(),
+                tool_call_count: 0,
+                boundary: None,
+                items: Vec::new(),
             })
         }
     }

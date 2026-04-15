@@ -335,6 +335,18 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 preview,
             };
         }
+        ToolRenderKind::ReviewStart => {
+            let scope = arguments
+                .get("scope")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("latest_turn");
+            return ApprovalContent {
+                kind: ApprovalContentKind::Arguments,
+                preview: vec![format!("review recent tool activity ({scope})")],
+            };
+        }
         ToolRenderKind::BrowserOpen => {
             let url = arguments
                 .get("url")

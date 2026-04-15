@@ -16,10 +16,11 @@ It intentionally keeps the host layer thin:
 - operator/debug-only tools: `web_search_backends`
 - optional code-intel tools: `code_search`, `code_symbol_search`, `code_document_symbols`, `code_nav`
   - `code_search` now returns ranked matches with typed scores and uses managed semantic symbols plus lexical snippet fallback when LSP is available
-- agentic tools: `skills_list`, `skill_view`, `skill_manage`, `request_user_input`, `request_permissions`, `checkpoint_list`, `checkpoint_summarize`, `checkpoint_restore`, `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
+- agentic tools: `skills_list`, `skill_view`, `skill_manage`, `request_user_input`, `request_permissions`, `checkpoint_list`, `checkpoint_summarize`, `checkpoint_restore`, `review_start`, `task_create`, `task_get`, `task_list`, `task_update`, `task_stop`, `spawn_agent`, `send_input`, `wait_agent`, `resume_agent`, `list_agents`, `close_agent`
   - `checkpoint_list` enumerates durable pre-mutation restore points captured from `write`, `edit`, and `patch_files`
   - `checkpoint_summarize` compacts earlier visible history without changing workspace files, so models can free context window budget through the tool surface instead of relying on an operator-only slash command
   - `checkpoint_restore` restores workspace code, visible conversation state, or both to a selected checkpoint boundary without relying on git; the operator rollback overlay and model tool surface now share the same restore-mode semantics
+  - `review_start` replays persisted tool lifecycle events from the latest turn or most recent checkpoint boundary and projects them back through the shared `ToolReview` overlay instead of requiring operators to manually inspect each tool transcript cell
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
   - `send_input interrupt=true` now performs a real child restart instead of queuing behind the active turn, and the TUI/history surfaces distinguish queued follow-ups from interrupt-driven restarts

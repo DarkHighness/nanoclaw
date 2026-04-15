@@ -19,6 +19,7 @@ pub enum ToolRenderKind {
     NotebookRead,
     CodeSearch,
     CodeDiagnostics,
+    ReviewStart,
     BrowserOpen,
     BrowserSnapshot,
     BrowserClick,
@@ -53,6 +54,7 @@ impl ToolRenderKind {
             "notebook_read" => Self::NotebookRead,
             "code_search" => Self::CodeSearch,
             "code_diagnostics" => Self::CodeDiagnostics,
+            "review_start" => Self::ReviewStart,
             "browser_open" => Self::BrowserOpen,
             "browser_snapshot" => Self::BrowserSnapshot,
             "browser_click" => Self::BrowserClick,
@@ -608,6 +610,15 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 )];
             }
             return vec!["Inspect workspace diagnostics".to_string()];
+        }
+        ToolRenderKind::ReviewStart => {
+            let scope = arguments
+                .get("scope")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("latest_turn");
+            return vec![format!("Review recent tool activity ({scope})")];
         }
         ToolRenderKind::BrowserOpen => {
             let url = arguments
@@ -1389,6 +1400,7 @@ pub fn tool_completion_state(tool_name: &str, structured: Option<&Value>) -> Too
         | ToolRenderKind::NotebookRead
         | ToolRenderKind::CodeSearch
         | ToolRenderKind::CodeDiagnostics
+        | ToolRenderKind::ReviewStart
         | ToolRenderKind::BrowserOpen
         | ToolRenderKind::BrowserSnapshot
         | ToolRenderKind::BrowserClick
@@ -1472,6 +1484,11 @@ pub fn tool_output_details(
         }
         ToolRenderKind::CodeDiagnostics => {
             if let Some(details) = code_diagnostics_output_details(structured) {
+                return details;
+            }
+        }
+        ToolRenderKind::ReviewStart => {
+            if let Some(details) = review_start_output_details(structured) {
                 return details;
             }
         }
@@ -1559,11 +1576,17 @@ pub fn tool_review_from_preview(
 
 pub fn tool_review(tool_name: &str, structured: Option<&Value>) -> Option<ToolReview> {
     let render_kind = ToolRenderKind::classify(tool_name);
-    if render_kind != ToolRenderKind::FileMutation && render_kind != ToolRenderKind::NotebookEdit {
+    if render_kind != ToolRenderKind::FileMutation
+        && render_kind != ToolRenderKind::NotebookEdit
+        && render_kind != ToolRenderKind::ReviewStart
+    {
         return None;
     }
 
     let structured = structured?;
+    if render_kind == ToolRenderKind::ReviewStart {
+        return review_start_review(structured);
+    }
     let summary = structured
         .get("summary")
         .and_then(Value::as_str)
@@ -3267,6 +3290,114 @@ fn file_mutation_output_details(
     Some(detail_lines)
 }
 
+fn review_start_output_details(structured: Option<&Value>) -> Option<Vec<ToolDetail>> {
+    let structured = structured?;
+    let mut detail_lines = Vec::new();
+    if let Some(scope) = structured
+        .get("scope")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Context,
+            value: format!("scope {scope}"),
+        });
+    }
+    if let Some(boundary) = structured
+        .get("boundary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Snapshot,
+            value: inline_preview_text(boundary, 96),
+        });
+    }
+    if let Some(summary) = structured
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Result,
+            value: inline_preview_text(summary, 96),
+        });
+    }
+    if let Some(review) = review_start_review(structured) {
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::Output,
+            value: review_item_summary(&review),
+        });
+        append_tool_review_action_hint(&mut detail_lines, &review);
+    }
+    Some(detail_lines)
+}
+
+fn review_start_review(structured: &Value) -> Option<ToolReview> {
+    let items = structured
+        .get("items")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|item| {
+            let title = item
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            let preview_lines = item
+                .get("preview_lines")
+                .and_then(Value::as_array)
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if preview_lines.is_empty() {
+                return None;
+            }
+            let preview_kind = match item
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("neutral")
+            {
+                "command" => ToolReviewItemKind::Command,
+                "stdout" => ToolReviewItemKind::Stdout,
+                "stderr" => ToolReviewItemKind::Stderr,
+                "diff" => ToolReviewItemKind::Diff,
+                _ => ToolReviewItemKind::Neutral,
+            };
+            Some(ToolReviewItem {
+                title: title.to_string(),
+                preview_kind,
+                preview_lines,
+            })
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return None;
+    }
+
+    Some(ToolReview {
+        kind: ToolReviewKind::Structured,
+        summary: structured
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        items,
+    })
+}
+
 fn review_item_summary(review: &ToolReview) -> String {
     match review.items.as_slice() {
         [] => format!("no {}", review.kind.plural_label()),
@@ -3755,6 +3886,14 @@ mod tests {
         assert_eq!(
             tool_arguments_preview_lines("code_diagnostics", &json!({"path": "src/lib.rs"})),
             vec!["Inspect diagnostics for src/lib.rs"]
+        );
+        assert_eq!(
+            tool_arguments_preview_lines("review_start", &json!({})),
+            vec!["Review recent tool activity (latest_turn)"]
+        );
+        assert_eq!(
+            tool_arguments_preview_lines("review_start", &json!({"scope": "since_checkpoint"})),
+            vec!["Review recent tool activity (since_checkpoint)"]
         );
         assert_eq!(
             tool_arguments_preview_lines(
@@ -4636,6 +4775,72 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("action [r] review diff"))
         );
+    }
+
+    #[test]
+    fn review_start_surfaces_structured_review_overlay() {
+        let rendered = tool_output_detail_lines(
+            "review_start",
+            "Reviewed recent tool activity",
+            Some(&json!({
+                "scope": "since_checkpoint",
+                "summary": "Reviewed 2 completed tool call(s) and surfaced 2 section(s) since checkpoint_1 (before write).",
+                "boundary": "checkpoint_1 (before write)",
+                "tool_call_count": 2,
+                "items": [
+                    {
+                        "title": "write · src/lib.rs",
+                        "kind": "diff",
+                        "preview_lines": ["--- src/lib.rs", "+++ src/lib.rs"]
+                    },
+                    {
+                        "title": "exec_command · Result",
+                        "kind": "stderr",
+                        "preview_lines": ["boom"]
+                    }
+                ]
+            })),
+        );
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "  └ Context scope since_checkpoint")
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "  └ Snapshot checkpoint_1 (before write)")
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("action [r] review sections"))
+        );
+
+        let review = tool_review(
+            "review_start",
+            Some(&json!({
+                "summary": "Reviewed 2 completed tool call(s) and surfaced 2 section(s) since checkpoint_1 (before write).",
+                "items": [
+                    {
+                        "title": "write · src/lib.rs",
+                        "kind": "diff",
+                        "preview_lines": ["--- src/lib.rs", "+++ src/lib.rs"]
+                    },
+                    {
+                        "title": "exec_command · Result",
+                        "kind": "stderr",
+                        "preview_lines": ["boom"]
+                    }
+                ]
+            })),
+        )
+        .expect("review_start should project a ToolReview");
+
+        assert_eq!(review.kind, ToolReviewKind::Structured);
+        assert_eq!(review.items[0].preview_kind, ToolReviewItemKind::Diff);
+        assert_eq!(review.items[1].preview_kind, ToolReviewItemKind::Stderr);
     }
 
     #[test]
