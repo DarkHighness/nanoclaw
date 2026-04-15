@@ -280,7 +280,10 @@ available in `PATH`, startup warns and skips the built-in stdio servers instead
 of failing the whole session. The built-in launcher preflight understands
 `pnpm dlx`, `npx`, `bunx`, `python3 -m`, `podman run --rm`, and
 `docker run --rm`, so future built-in stdio MCP definitions can target Python
-modules or container images without changing the detection path again.
+modules or container images without changing the detection path again. When a
+stdio MCP server starts under an enforcing sandbox, code-agent resolves the
+launcher to its host absolute path first and mirrors the relevant `PATH` roots
+into the sandbox so user-local `pnpm`/`npx` installs remain reachable.
 
 Code-agent also bundles a built-in skill pack by default. It includes an
 official upstream subset sourced from `openai/skills` commit

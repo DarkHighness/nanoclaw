@@ -5,11 +5,13 @@ use super::policy::{
     ExecRequest, HostProcessExecutor, NetworkPolicy, ProcessExecutor, SandboxMode, SandboxPolicy,
 };
 use crate::{Result, SandboxError};
+use std::collections::BTreeSet;
 #[cfg(target_os = "linux")]
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::OsStr;
 #[cfg(target_os = "linux")]
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,6 +163,7 @@ pub(crate) fn prepare_with_available_backends(
     mut request: ExecRequest,
     availability: BackendAvailability,
 ) -> Result<Command> {
+    normalize_mcp_stdio_request(&mut request);
     if matches!(
         request.sandbox_policy.network,
         NetworkPolicy::AllowDomains(_)
@@ -193,6 +196,130 @@ pub(crate) fn prepare_with_available_backends(
     } else {
         HostProcessExecutor.prepare(request)
     }
+}
+
+fn normalize_mcp_stdio_request(request: &mut ExecRequest) {
+    if !matches!(
+        request.origin,
+        super::policy::ExecutionOrigin::McpStdioServer { .. }
+    ) {
+        return;
+    }
+
+    let inherited_path = std::env::var_os("PATH");
+    let effective_path = request
+        .env
+        .get("PATH")
+        .map(OsStr::new)
+        .or(inherited_path.as_deref());
+    let Some(resolved_program) =
+        resolve_mcp_stdio_program(&request.program, request.cwd.as_deref(), effective_path)
+    else {
+        return;
+    };
+
+    // Built-in MCP entries intentionally keep launcher commands portable
+    // (`pnpm`, `npx`, `bunx`, etc.). When the host enforces a filesystem
+    // sandbox, the child process only sees explicitly mounted roots, so resolve
+    // the launcher on the host first and mirror the relevant executable roots
+    // before entering bubblewrap/seatbelt.
+    request.program = resolved_program.program.display().to_string();
+    extend_unique_paths(
+        &mut request.sandbox_policy.filesystem.readable_roots,
+        resolved_program.mount_roots.iter().cloned(),
+    );
+    extend_unique_paths(
+        &mut request.sandbox_policy.filesystem.executable_roots,
+        resolved_program.mount_roots,
+    );
+}
+
+#[derive(Debug)]
+struct ResolvedMcpProgram {
+    program: PathBuf,
+    mount_roots: Vec<PathBuf>,
+}
+
+fn resolve_mcp_stdio_program(
+    program: &str,
+    cwd: Option<&Path>,
+    path_var: Option<&OsStr>,
+) -> Option<ResolvedMcpProgram> {
+    let candidate = Path::new(program);
+    let resolved_program = if candidate.components().count() > 1 {
+        resolve_direct_program(candidate, cwd)?
+    } else {
+        resolve_program_from_path(candidate, path_var)?
+    };
+    let resolved_program = canonicalize_existing_path(resolved_program);
+
+    let mut mount_roots = existing_path_dirs(path_var);
+    if let Some(parent) = resolved_program.parent() {
+        mount_roots.push(parent.to_path_buf());
+    }
+    Some(ResolvedMcpProgram {
+        program: resolved_program,
+        mount_roots: dedup_paths(mount_roots),
+    })
+}
+
+fn resolve_direct_program(program: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
+    let candidate = if program.is_absolute() {
+        program.to_path_buf()
+    } else {
+        let base_dir = cwd
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())?;
+        base_dir.join(program)
+    };
+    candidate.is_file().then_some(candidate)
+}
+
+fn resolve_program_from_path(program: &Path, path_var: Option<&OsStr>) -> Option<PathBuf> {
+    let executable = program.to_str()?;
+    std::env::split_paths(path_var?).find_map(|dir| resolve_executable_candidate(&dir, executable))
+}
+
+fn resolve_executable_candidate(dir: &Path, executable: &str) -> Option<PathBuf> {
+    let direct = dir.join(executable);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    #[cfg(windows)]
+    {
+        for extension in ["exe", "cmd", "bat"] {
+            let candidate = dir.join(format!("{executable}.{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn existing_path_dirs(path_var: Option<&OsStr>) -> Vec<PathBuf> {
+    path_var
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|dir| dir.is_dir())
+        .map(canonicalize_existing_path)
+        .collect()
+}
+
+fn canonicalize_existing_path(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+fn extend_unique_paths(target: &mut Vec<PathBuf>, additional: impl IntoIterator<Item = PathBuf>) {
+    *target = dedup_paths(target.iter().cloned().chain(additional).collect());
+}
+
+fn dedup_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    paths
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 pub(crate) fn sandbox_backend_status_with_availability(
@@ -376,7 +503,7 @@ fn detect_available_backends() -> BackendAvailability {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendAvailability, ManagedPolicyProcessExecutor, SandboxBackendStatus,
+        BackendAvailability, BackendPathStatus, ManagedPolicyProcessExecutor, SandboxBackendStatus,
         describe_sandbox_policy, prepare_with_available_backends,
         sandbox_backend_status_with_availability,
     };
@@ -385,6 +512,7 @@ mod tests {
         ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy,
     };
     use std::collections::BTreeMap;
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]
@@ -573,6 +701,70 @@ mod tests {
         ]);
 
         assert_eq!(first, second);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_bwrap_resolves_mcp_stdio_launchers_from_host_path() {
+        let workspace = tempdir().unwrap();
+        let tool_bin = tempdir().unwrap();
+        let launcher = tool_bin.path().join("pnpm");
+        fs::write(&launcher, "#!/bin/sh\nexit 0\n").unwrap();
+
+        let command = prepare_with_available_backends(
+            ExecRequest {
+                program: "pnpm".to_string(),
+                args: vec![
+                    "dlx".to_string(),
+                    "@upstash/context7-mcp@latest".to_string(),
+                ],
+                cwd: Some(workspace.path().to_path_buf()),
+                env: BTreeMap::from([("PATH".to_string(), tool_bin.path().display().to_string())]),
+                stdin: ProcessStdio::Null,
+                stdout: ProcessStdio::Null,
+                stderr: ProcessStdio::Null,
+                kill_on_drop: true,
+                origin: ExecutionOrigin::McpStdioServer {
+                    server_name: "context7".into(),
+                },
+                runtime_scope: RuntimeScope::default(),
+                sandbox_policy: SandboxPolicy {
+                    mode: SandboxMode::WorkspaceWrite,
+                    filesystem: FilesystemPolicy {
+                        readable_roots: vec![workspace.path().to_path_buf()],
+                        writable_roots: vec![workspace.path().to_path_buf()],
+                        executable_roots: vec![],
+                        protected_paths: vec![],
+                    },
+                    network: NetworkPolicy::Off,
+                    host_escape: HostEscapePolicy::Deny,
+                    fail_if_unavailable: false,
+                },
+            },
+            BackendAvailability {
+                linux_bwrap: Some(BackendPathStatus::Available("/bin/true".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let bind_root = tool_bin.path().canonicalize().unwrap();
+        let bind_root_str = bind_root.display().to_string();
+        let resolved_launcher = launcher.canonicalize().unwrap();
+        let separator = args
+            .iter()
+            .position(|value| value == "--")
+            .expect("bubblewrap separator");
+
+        assert!(args.windows(3).any(|window| {
+            window == ["--ro-bind", bind_root_str.as_str(), bind_root_str.as_str()]
+        }));
+        assert_eq!(args[separator + 1], resolved_launcher.display().to_string());
     }
 
     #[test]
