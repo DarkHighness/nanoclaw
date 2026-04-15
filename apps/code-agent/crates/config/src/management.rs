@@ -7,6 +7,7 @@ use agent::types::PluginId;
 use agent::{AgentWorkspaceLayout, PluginBootResolverConfig, build_plugin_activation_plan};
 use agent_env::{EnvMap, EnvVar, vars};
 use anyhow::{Context, Result, anyhow, bail};
+use include_dir::{Dir, DirEntry, include_dir};
 use nanoclaw_config::CoreConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -18,33 +19,12 @@ const BUILTIN_CONTEXT7_SERVER: &str = "context7";
 const BUILTIN_PLAYWRIGHT_SERVER: &str = "playwright";
 const BUILTIN_CONTEXT7_PACKAGE: &str = "@upstash/context7-mcp@latest";
 const BUILTIN_PLAYWRIGHT_PACKAGE: &str = "@playwright/mcp@latest";
-const BUILTIN_CODEBASE_INSPECTION_SKILL: &str =
-    include_str!("../../../skills/codebase-inspection/SKILL.md");
-const BUILTIN_GITHUB_CODE_REVIEW_SKILL: &str =
-    include_str!("../../../skills/github-code-review/SKILL.md");
-const BUILTIN_REGRESSION_DEBUGGING_SKILL: &str =
-    include_str!("../../../skills/regression-debugging/SKILL.md");
-
-#[derive(Clone, Copy)]
-struct BuiltinSkillDefinition {
-    name: &'static str,
-    markdown: &'static str,
-}
-
-const BUILTIN_SKILL_DEFINITIONS: &[BuiltinSkillDefinition] = &[
-    BuiltinSkillDefinition {
-        name: "codebase-inspection",
-        markdown: BUILTIN_CODEBASE_INSPECTION_SKILL,
-    },
-    BuiltinSkillDefinition {
-        name: "github-code-review",
-        markdown: BUILTIN_GITHUB_CODE_REVIEW_SKILL,
-    },
-    BuiltinSkillDefinition {
-        name: "regression-debugging",
-        markdown: BUILTIN_REGRESSION_DEBUGGING_SKILL,
-    },
-];
+// Bundle exact upstream skill packages so built-in skills keep their companion
+// references, scripts, agents, and assets instead of flattening to SKILL.md-only
+// copies. The vendored tree is sourced from openai/skills @
+// e6afb0d74cc75d220df2faf3dd6c635c2dc6a108 and intentionally excludes official
+// skills that depend on Codex-only host integrations unavailable in nanoclaw.
+static BUILTIN_SKILLS_SOURCE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../skills");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedSkillArtifact {
@@ -160,26 +140,13 @@ pub(crate) fn materialize_builtin_core_mcp_servers(env_map: &EnvMap, config: &mu
 
 pub fn materialize_builtin_skills(workspace_root: &Path) -> Result<PathBuf> {
     let root = builtin_skill_root(workspace_root);
+    if root.exists() {
+        std::fs::remove_dir_all(&root)
+            .with_context(|| format!("failed to reset {}", root.display()))?;
+    }
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create {}", root.display()))?;
-    for definition in BUILTIN_SKILL_DEFINITIONS {
-        let skill_dir = root.join(definition.name);
-        std::fs::create_dir_all(&skill_dir)
-            .with_context(|| format!("failed to create {}", skill_dir.display()))?;
-        let skill_path = skill_dir.join("SKILL.md");
-        let needs_write = match std::fs::read_to_string(&skill_path) {
-            Ok(existing) => existing != definition.markdown,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("failed to read {}", skill_path.display()));
-            }
-        };
-        if needs_write {
-            std::fs::write(&skill_path, definition.markdown)
-                .with_context(|| format!("failed to write {}", skill_path.display()))?;
-        }
-    }
+    write_embedded_skill_dir(&BUILTIN_SKILLS_SOURCE, &root)?;
     Ok(root)
 }
 
@@ -188,6 +155,34 @@ pub fn builtin_skill_root(workspace_root: &Path) -> PathBuf {
         .apps_dir()
         .join("code-agent")
         .join("builtin-skills")
+}
+
+fn write_embedded_skill_dir(dir: &Dir<'_>, destination: &Path) -> Result<()> {
+    for entry in dir.entries() {
+        match entry {
+            DirEntry::Dir(child) => {
+                let child_destination = destination.join(
+                    child
+                        .path()
+                        .file_name()
+                        .ok_or_else(|| anyhow!("missing directory name in embedded skill tree"))?,
+                );
+                std::fs::create_dir_all(&child_destination)
+                    .with_context(|| format!("failed to create {}", child_destination.display()))?;
+                write_embedded_skill_dir(child, &child_destination)?;
+            }
+            DirEntry::File(file) => {
+                let file_destination = destination.join(
+                    file.path()
+                        .file_name()
+                        .ok_or_else(|| anyhow!("missing file name in embedded skill tree"))?,
+                );
+                std::fs::write(&file_destination, file.contents())
+                    .with_context(|| format!("failed to write {}", file_destination.display()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn disabled_builtin_skill_names(workspace_root: &Path) -> Result<BTreeSet<String>> {
@@ -1403,10 +1398,10 @@ mod tests {
         let details = list_managed_skill_details(workspace.path()).await.unwrap();
 
         assert!(details.iter().any(|detail| {
-            detail.skill_name == "codebase-inspection" && detail.builtin && detail.enabled
+            detail.skill_name == "frontend-skill" && detail.builtin && detail.enabled
         }));
         assert!(details.iter().any(|detail| {
-            detail.skill_name == "github-code-review" && detail.builtin && detail.enabled
+            detail.skill_name == "skill-creator" && detail.builtin && detail.enabled
         }));
     }
 
@@ -1415,7 +1410,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         materialize_builtin_skills(workspace.path()).unwrap();
 
-        let disabled = set_managed_skill_enabled(workspace.path(), "github-code-review", false)
+        let disabled = set_managed_skill_enabled(workspace.path(), "frontend-skill", false)
             .await
             .unwrap();
         let details = list_managed_skill_details(workspace.path()).await.unwrap();
@@ -1425,15 +1420,15 @@ mod tests {
         assert!(
             disabled
                 .skill_path
-                .ends_with(".nanoclaw/apps/code-agent/builtin-skills/github-code-review")
+                .ends_with(".nanoclaw/apps/code-agent/builtin-skills/frontend-skill")
         );
         assert!(
             disabled_builtin_skill_names(workspace.path())
                 .unwrap()
-                .contains("github-code-review")
+                .contains("frontend-skill")
         );
         assert!(details.iter().any(|detail| {
-            detail.skill_name == "github-code-review" && detail.builtin && !detail.enabled
+            detail.skill_name == "frontend-skill" && detail.builtin && !detail.enabled
         }));
     }
 
@@ -1442,14 +1437,14 @@ mod tests {
         let workspace = tempdir().unwrap();
         materialize_builtin_skills(workspace.path()).unwrap();
 
-        let error = delete_managed_skill(workspace.path(), "codebase-inspection")
+        let error = delete_managed_skill(workspace.path(), "frontend-skill")
             .await
             .unwrap_err();
 
         assert!(
             error
                 .to_string()
-                .contains("built-in skill `codebase-inspection` cannot be deleted")
+                .contains("built-in skill `frontend-skill` cannot be deleted")
         );
     }
 
@@ -1459,14 +1454,14 @@ mod tests {
         materialize_builtin_skills(workspace.path()).unwrap();
         let source_root = tempdir().unwrap();
         let source = source_root.path().join("code-review");
-        write_skill_source(&source, "github-code-review");
+        write_skill_source(&source, "frontend-skill");
         add_managed_skill(workspace.path(), &source).await.unwrap();
 
         let details = list_managed_skill_details(workspace.path()).await.unwrap();
 
         let matches = details
             .iter()
-            .filter(|detail| detail.skill_name == "github-code-review")
+            .filter(|detail| detail.skill_name == "frontend-skill")
             .collect::<Vec<_>>();
         assert_eq!(matches.len(), 1);
         assert!(!matches[0].builtin);
@@ -1474,7 +1469,7 @@ mod tests {
             matches[0].skill_path,
             AgentWorkspaceLayout::new(workspace.path())
                 .skills_dir()
-                .join("github-code-review")
+                .join("frontend-skill")
         );
     }
 

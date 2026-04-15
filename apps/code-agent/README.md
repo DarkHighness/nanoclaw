@@ -212,7 +212,7 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp enable docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp delete docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill list
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill show review
-cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill show codebase-inspection
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill show frontend-skill
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill add ./my-skill
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill disable review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill enable review
@@ -247,8 +247,13 @@ Code-agent also materializes two built-in managed MCP entries by default:
 servers. When no supported launcher is available in `PATH`, startup warns and
 skips connecting that built-in server instead of failing the whole session.
 
-Code-agent also bundles three built-in skills by default:
-`codebase-inspection`, `github-code-review`, and `regression-debugging`.
+Code-agent also bundles an official upstream skill pack by default, sourced
+from `openai/skills` commit `e6afb0d74cc75d220df2faf3dd6c635c2dc6a108`.
+The current built-in set includes:
+`skill-creator`, `cli-creator`, `doc`, `frontend-skill`,
+`gh-address-comments`, `gh-fix-ci`, `pdf`, `playwright`, `screenshot`,
+`security-best-practices`, `security-ownership-map`, and
+`security-threat-model`.
 They are materialized under the app-owned hidden bundle
 `.nanoclaw/apps/code-agent/builtin-skills`, start enabled, and show up in both
 `skill list|show` and `/skill`. Disabling a built-in skill updates

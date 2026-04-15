@@ -9,6 +9,7 @@ agent = { path = "../../../../crates/core", features = ["agentic-tools", "code-i
 agent-env.workspace = true
 anyhow.workspace = true
 code-agent-contracts = { path = "../contracts" }
+include_dir = "0.7.4"
 nanoclaw-config = { path = "../../../../crates/config" }
 serde.workspace = true
 shlex.workspace = true

@@ -692,7 +692,7 @@ mod tests {
             app_dir.join("code-agent.toml"),
             r#"
                 [skills]
-                disabled_builtin = [" github-code-review ", ""]
+                disabled_builtin = [" frontend-skill ", ""]
             "#,
         )
         .unwrap();
@@ -702,19 +702,20 @@ mod tests {
 
         assert!(
             builtin_skill_root(dir.path())
-                .join("codebase-inspection/SKILL.md")
+                .join("frontend-skill/SKILL.md")
                 .is_file()
         );
         assert!(
             builtin_skill_root(dir.path())
-                .join("github-code-review/SKILL.md")
+                .join("skill-creator/SKILL.md")
                 .is_file()
         );
         assert!(
-            config
-                .disabled_builtin_skills
-                .contains("github-code-review")
+            builtin_skill_root(dir.path())
+                .join("playwright/SKILL.md")
+                .is_file()
         );
+        assert!(config.disabled_builtin_skills.contains("frontend-skill"));
         assert_eq!(config.disabled_builtin_skills.len(), 1);
     }
 

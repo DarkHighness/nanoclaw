@@ -1,0 +1,21 @@
+Bundled from https://github.com/openai/skills
+Commit: e6afb0d74cc75d220df2faf3dd6c635c2dc6a108
+
+Selected official skill directories:
+- skills/.system/skill-creator
+- skills/.curated/cli-creator
+- skills/.curated/doc
+- skills/.curated/frontend-skill
+- skills/.curated/gh-address-comments
+- skills/.curated/gh-fix-ci
+- skills/.curated/pdf
+- skills/.curated/playwright
+- skills/.curated/screenshot
+- skills/.curated/security-best-practices
+- skills/.curated/security-ownership-map
+- skills/.curated/security-threat-model
+
+Official upstream skills that currently remain unbundled here depend on host
+surfaces that nanoclaw does not expose as first-class built-ins yet, such as
+Codex-specific docs/image integrations, app-specific third-party connectors, or
+specialized workflows that are outside code-agent's core coding surface.

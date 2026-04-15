@@ -1308,7 +1308,7 @@ Use the local review skill.
 
         let filtered = filter_disabled_builtin_skills(
             dir.path(),
-            &BTreeSet::from(["github-code-review".to_string()]),
+            &BTreeSet::from(["frontend-skill".to_string()]),
             catalog,
         );
         let names = filtered
@@ -1318,7 +1318,7 @@ Use the local review skill.
             .collect::<Vec<_>>();
 
         assert!(names.contains(&"local-review".to_string()));
-        assert!(names.contains(&"codebase-inspection".to_string()));
-        assert!(!names.contains(&"github-code-review".to_string()));
+        assert!(names.contains(&"pdf".to_string()));
+        assert!(!names.contains(&"frontend-skill".to_string()));
     }
 }
