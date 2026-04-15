@@ -5,7 +5,6 @@ use crate::backend::{
     merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots,
 };
 use agent::plugins::discover_plugins;
-use agent::runtime::UserMessageAugmentor;
 use agent::{SkillCatalog, ToolRegistry};
 use code_agent_config::{
     builtin_skill_root, filter_unavailable_builtin_mcp_servers, list_core_mcp_servers,
@@ -234,13 +233,6 @@ impl CodeAgentSession {
         );
         runtime.replace_base_instructions(instructions);
         *self.memory_backend.write().unwrap() = driver_outcome.primary_memory_backend.clone();
-        runtime.replace_user_message_augmentor(driver_outcome.primary_memory_backend.clone().map(
-            |backend| {
-                Arc::new(
-                    crate::backend::memory_recall::WorkspaceMemoryRecallAugmentor::new(backend),
-                ) as Arc<dyn UserMessageAugmentor>
-            },
-        ));
 
         let side_question_context = Self::side_question_context_from_runtime(&runtime, None);
         let tool_names = runtime.tool_registry_names();

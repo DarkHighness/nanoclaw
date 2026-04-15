@@ -2381,14 +2381,11 @@ async fn forced_session_note_refresh_uses_summary_message_boundary() {
         session_id: session_id.clone(),
         agent_session_id: agent_session_id.clone(),
         visible_transcript: vec![summary_message.clone(), tail_message.clone()],
-        context_tokens: 0,
-        completed_turn_count: 1,
-        tool_call_count: 0,
-        compaction_summary_message_id: Some(summary_message.message_id.clone()),
+        compaction_summary_message_id: summary_message.message_id.clone(),
     };
 
     session.mark_session_memory_refreshed(&context, Some(summary_message.message_id.clone()));
-    session.maybe_refresh_session_memory_note(context, true);
+    session.maybe_refresh_session_memory_note(context);
     timeout(Duration::from_secs(1), async {
         loop {
             if note_backend.requests().len() == 1 {
@@ -2479,13 +2476,10 @@ async fn session_note_refresh_runs_in_background_without_blocking_caller() {
         session_id: session_id.clone(),
         agent_session_id: agent_session_id.clone(),
         visible_transcript: vec![Message::assistant("fresh transcript delta")],
-        context_tokens: 12_000,
-        completed_turn_count: 1,
-        tool_call_count: 0,
-        compaction_summary_message_id: None,
+        compaction_summary_message_id: MessageId::from("summary-message"),
     };
 
-    session.maybe_refresh_session_memory_note(context, true);
+    session.maybe_refresh_session_memory_note(context);
     timeout(Duration::from_secs(1), async {
         loop {
             if note_backend.requests().len() == 1 {
@@ -2567,12 +2561,9 @@ async fn session_switch_invalidates_in_flight_refresh_state_updates() {
         session_id: session_id.clone(),
         agent_session_id: agent_session_id.clone(),
         visible_transcript: vec![Message::assistant("old session delta")],
-        context_tokens: 12_000,
-        completed_turn_count: 1,
-        tool_call_count: 0,
-        compaction_summary_message_id: None,
+        compaction_summary_message_id: MessageId::from("summary-message"),
     };
-    session.maybe_refresh_session_memory_note(old_context, true);
+    session.maybe_refresh_session_memory_note(old_context);
     timeout(Duration::from_secs(1), async {
         loop {
             if note_backend.requests().len() == 1 {
@@ -2624,176 +2615,6 @@ async fn session_switch_invalidates_in_flight_refresh_state_updates() {
             .join(format!(".nanoclaw/memory/working/sessions/{session_id}.md"))
             .exists()
     );
-}
-
-#[tokio::test]
-async fn episodic_capture_appends_daily_log_entries_in_background() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(InMemorySessionStore::new());
-    let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
-        .hook_runner(Arc::new(HookRunner::default()))
-        .tool_context(ToolExecutionContext {
-            workspace_root: dir.path().to_path_buf(),
-            workspace_only: true,
-            ..Default::default()
-        })
-        .build();
-    let session_id = runtime.session_id();
-    let agent_session_id = runtime.agent_session_id();
-    let mut startup = startup_snapshot(dir.path());
-    startup.active_session_ref = session_id.to_string();
-    startup.root_agent_session_id = agent_session_id.to_string();
-    let memory_backend: Arc<dyn MemoryBackend> = Arc::new(MemoryCoreBackend::new(
-        dir.path().to_path_buf(),
-        Default::default(),
-    ));
-    let capture_backend = ScriptedTextBackend::new(vec![
-        "- User prefers canary deploys\n- Incident coordination moved to pager".to_string(),
-    ]);
-    let session = build_session_with_backends(
-        runtime,
-        Arc::new(NoopSubagentExecutor),
-        store,
-        startup,
-        Vec::new(),
-        Vec::new(),
-        Some(memory_backend),
-        Some(Arc::new(capture_backend.clone())),
-    );
-    let context = SessionMemoryRefreshContext {
-        session_id: session_id.clone(),
-        agent_session_id: agent_session_id.clone(),
-        visible_transcript: vec![
-            Message::user("remember that canary deploys are preferred"),
-            Message::assistant("I'll keep that in mind and note the incident channel."),
-        ],
-        context_tokens: 1_000,
-        completed_turn_count: 1,
-        tool_call_count: 0,
-        compaction_summary_message_id: None,
-    };
-    session.maybe_capture_session_episodic_memory(context);
-    let logs_root = dir.path().join(".nanoclaw/memory/episodic/logs");
-    timeout(Duration::from_secs(1), async {
-        loop {
-            let has_log_file = std::fs::read_dir(&logs_root)
-                .ok()
-                .into_iter()
-                .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir())
-                .flat_map(|year_dir| {
-                    std::fs::read_dir(year_dir)
-                        .ok()
-                        .into_iter()
-                        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
-                        .map(|entry| entry.path())
-                        .filter(|path| path.is_dir())
-                        .collect::<Vec<_>>()
-                })
-                .any(|month_dir| {
-                    std::fs::read_dir(month_dir)
-                        .ok()
-                        .into_iter()
-                        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
-                        .any(|entry| entry.path().is_file())
-                });
-            if capture_backend.requests().len() == 1 && has_log_file {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-
-    let requests = capture_backend.requests();
-    assert_eq!(requests.len(), 1);
-    let prompt = requests[0].messages[0].text_content();
-    assert!(prompt.contains("append-only episodic daily log"));
-    assert!(prompt.contains("canary deploys are preferred"));
-
-    timeout(Duration::from_secs(1), async {
-        loop {
-            let state = session.session_episodic_capture.lock().unwrap().clone();
-            if !state.capture_in_flight {
-                break;
-            }
-            drop(state);
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-
-    let year_dir = std::fs::read_dir(&logs_root)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let month_dir = std::fs::read_dir(&year_dir)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let log_path = std::fs::read_dir(&month_dir)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let recorded = std::fs::read_to_string(log_path).unwrap();
-    assert!(recorded.contains("scope: episodic"));
-    assert!(recorded.contains("layer: daily-log"));
-    assert!(recorded.contains("User prefers canary deploys"));
-    assert!(recorded.contains("Incident coordination moved to pager"));
-    let state = session.session_episodic_capture.lock().unwrap().clone();
-    assert!(!state.capture_in_flight);
-    assert_eq!(state.active_session_id, Some(session_id));
-}
-
-#[tokio::test]
-async fn reset_session_memory_refresh_state_rebases_episodic_capture_cursor() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(InMemorySessionStore::new());
-    let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
-        .hook_runner(Arc::new(HookRunner::default()))
-        .tool_context(ToolExecutionContext {
-            workspace_root: dir.path().to_path_buf(),
-            workspace_only: true,
-            ..Default::default()
-        })
-        .build();
-    let session = build_session(
-        runtime,
-        Arc::new(NoopSubagentExecutor),
-        store,
-        startup_snapshot(dir.path()),
-    );
-    let resumed_tail = Message::assistant("resume tail");
-
-    session
-        .reset_session_memory_refresh_state(&SideQuestionContextSnapshot {
-            session_id: SessionId::from("session-new"),
-            agent_session_id: AgentSessionId::from("agent-session-new"),
-            instructions: Vec::new(),
-            transcript: vec![resumed_tail.clone()],
-            tools: Vec::new(),
-        })
-        .await;
-
-    let state = session.session_episodic_capture.lock().unwrap().clone();
-    assert_eq!(
-        state.active_session_id,
-        Some(SessionId::from("session-new"))
-    );
-    assert_eq!(
-        state.last_captured_message_id,
-        Some(resumed_tail.message_id.clone())
-    );
-    assert!(!state.capture_in_flight);
 }
 
 #[tokio::test]

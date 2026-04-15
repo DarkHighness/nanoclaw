@@ -3,9 +3,6 @@ use crate::backend::boot_runtime::{
     SwitchableCodeIntelBackend, SwitchableCommandHookExecutor, SwitchableHostProcessExecutor,
 };
 use crate::backend::session_catalog;
-use crate::backend::session_episodic_capture::{
-    build_session_episodic_capture_prompt, parse_session_episodic_capture_entries,
-};
 use crate::backend::session_history::{self, preview_id};
 use crate::backend::session_memory_compaction::{
     SESSION_MEMORY_STALE_THRESHOLD_MS, SharedSessionMemoryRefreshState,
@@ -76,15 +73,15 @@ use agent::{AgentRuntime, RuntimeCommand, ToolExecutionContext};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
+use memory::SideQuestionContextSnapshot;
 #[cfg(test)]
 use memory::{CompactionWorkingSnapshot, SessionMemoryRefreshContext};
-use memory::{SessionEpisodicCaptureState, SideQuestionContextSnapshot};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use store::{SessionStore, SessionSummary};
 use tokio::fs;
@@ -92,14 +89,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Duration, timeout};
 use tracing::{info, warn};
 
-// Working memory should refresh early enough to preserve continuity between
-// turns instead of waiting for late compaction-sized contexts.
-const SESSION_MEMORY_MIN_TOKENS_TO_INIT: usize = 4_000;
-const SESSION_MEMORY_MIN_TOKENS_BETWEEN_UPDATES: usize = 2_000;
-const SESSION_MEMORY_TOOL_CALLS_BETWEEN_UPDATES: usize = 1;
 const SESSION_MEMORY_UPDATE_TIMEOUT_MS: u64 = 15_000;
 const SESSION_NOTE_TITLE_LOAD_CONCURRENCY_LIMIT: usize = 8;
-const WORKSPACE_MEMORY_RECALL_METADATA_KEY: &str = "workspace_memory_recall";
 const STDIO_MCP_DISABLED_WARNING_PREFIX: &str =
     "sandbox backend unavailable; skipped stdio MCP servers to avoid host subprocess execution:";
 const MCP_RESOURCE_TOOL_NAMES: [&str; 3] = [
@@ -176,7 +167,6 @@ pub struct CodeAgentSession {
     session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
     memory_backend: Arc<RwLock<Option<Arc<dyn MemoryBackend>>>>,
     session_memory_refresh: SharedSessionMemoryRefreshState,
-    session_episodic_capture: Arc<Mutex<SessionEpisodicCaptureState>>,
     side_question_context: Arc<RwLock<Option<SideQuestionContextSnapshot>>>,
     runtime_turn_active: Arc<AtomicBool>,
     managed_surface_reload: ManagedSurfaceReloadConfig,
@@ -231,15 +221,6 @@ impl CodeAgentSession {
         let session_id = runtime.session_id();
         let runtime = Arc::new(AsyncMutex::new(runtime));
         session_memory_refresh.lock().unwrap().active_session_id = Some(session_id.clone());
-        let initial_captured_message_id = side_question_context
-            .as_ref()
-            .and_then(|snapshot| snapshot.transcript.last())
-            .map(|message| message.message_id.clone());
-        let session_episodic_capture = Arc::new(Mutex::new(SessionEpisodicCaptureState {
-            active_session_id: Some(session_id),
-            last_captured_message_id: initial_captured_message_id,
-            ..SessionEpisodicCaptureState::default()
-        }));
         let session = Self {
             runtime,
             control_plane,
@@ -274,7 +255,6 @@ impl CodeAgentSession {
             session_memory_model_backend,
             memory_backend: Arc::new(RwLock::new(memory_backend)),
             session_memory_refresh,
-            session_episodic_capture,
             side_question_context: Arc::new(RwLock::new(side_question_context)),
             runtime_turn_active: Arc::new(AtomicBool::new(false)),
             managed_surface_reload,

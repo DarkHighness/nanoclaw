@@ -42,6 +42,18 @@ pub fn build_system_preamble(
             .to_string(),
         "Prefer skills for reusable instruction-plus-existing-tool workflows. Use tool_discover when you need a typed runtime capability, host-managed lifecycle, or other integration a skill cannot supply on its own."
             .to_string(),
+        "Do not assume the host will inject memory automatically on each turn. Decide yourself when prior workspace memory is relevant."
+            .to_string(),
+        "Use memory_search when the task may depend on prior decisions, user preferences, previous sessions, incidents, or other project context that is not derivable from the current files alone."
+            .to_string(),
+        "Use memory_get to verify a specific memory hit before relying on it, and use memory_list when you need to browse the memory inventory before choosing what to read."
+            .to_string(),
+        "Use memory_record, memory_promote, and memory_forget intentionally when the user asks to remember something or when you are preserving a verified handoff-worthy fact. Compact-triggered working-memory snapshots are host-maintained separately."
+            .to_string(),
+        "Do not wait for host compaction before preserving important session state. When the current task gains handoff-worthy state that would matter after resume, interruption, or later follow-up, update the working session note yourself with memory_record using scope=working, layer=session, and mode=replace."
+            .to_string(),
+        "If you are updating an existing session note, read it first when needed so you preserve the useful structure while replacing stale sections."
+            .to_string(),
     ];
     if tool_visibility.has_feature(HOST_FEATURE_REQUEST_USER_INPUT) {
         preamble.push(
@@ -350,6 +362,15 @@ mod tests {
                 .contains("Prefer skills for reusable instruction-plus-existing-tool workflows.")
         );
         assert!(preamble.contains("Use tool_discover when you need a typed runtime capability"));
+        assert!(
+            preamble
+                .contains("Do not assume the host will inject memory automatically on each turn.")
+        );
+        assert!(preamble.contains("Use memory_search when the task may depend on prior decisions"));
+        assert!(preamble.contains(
+            "Do not wait for host compaction before preserving important session state."
+        ));
+        assert!(preamble.contains("scope=working, layer=session, and mode=replace"));
     }
 
     #[test]

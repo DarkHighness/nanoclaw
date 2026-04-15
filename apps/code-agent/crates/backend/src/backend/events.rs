@@ -73,20 +73,6 @@ impl SessionEventObserver {
             _ => None,
         })
     }
-
-    pub fn completed_turn_count(&self) -> usize {
-        self.captured
-            .iter()
-            .filter(|event| matches!(event, SessionEvent::TurnCompleted { .. }))
-            .count()
-    }
-
-    pub fn requested_tool_call_count(&self) -> usize {
-        self.captured
-            .iter()
-            .filter(|event| matches!(event, SessionEvent::ToolCallRequested { .. }))
-            .count()
-    }
 }
 
 impl RuntimeObserver for SessionEventObserver {

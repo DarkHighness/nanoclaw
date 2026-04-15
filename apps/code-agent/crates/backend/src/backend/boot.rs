@@ -17,7 +17,6 @@ use crate::backend::boot_runtime::{
     host_process_surfaces_allowed, register_monitor_tools, register_subagent_tools,
     register_worktree_tools,
 };
-use crate::backend::memory_recall::WorkspaceMemoryRecallAugmentor;
 use crate::backend::session_memory_compaction::{
     SessionMemoryConversationCompactor, SessionMemoryRefreshState, SharedSessionMemoryRefreshState,
 };
@@ -981,15 +980,7 @@ where
         .instructions(instructions)
         .hooks(runtime_hooks)
         .skill_catalog(skill_catalog.clone());
-    let runtime = if let Some(memory_backend) = memory_backend.clone() {
-        runtime_builder
-            .user_message_augmentor(Arc::new(WorkspaceMemoryRecallAugmentor::new(
-                memory_backend,
-            )))
-            .build()
-    } else {
-        runtime_builder.build()
-    };
+    let runtime = runtime_builder.build();
 
     Ok(RuntimeBuildResult {
         runtime,

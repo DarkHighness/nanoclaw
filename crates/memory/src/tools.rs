@@ -190,7 +190,7 @@ impl Tool for MemorySearchTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_search",
-            "Search layered memory Markdown files with scope, type, tag, and runtime-aware retrieval.",
+            "Search workspace memory when prior decisions, user preferences, previous sessions, incidents, or other non-code context may matter for the current task.",
             serde_json::to_value(schema_for!(MemorySearchToolInput)).expect("memory_search schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -262,7 +262,7 @@ impl Tool for MemoryGetTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_get",
-            "Read a specific memory file from the configured memory corpus, optionally starting at a line offset.",
+            "Read a specific memory note after memory_search or memory_list so you can verify the exact source before relying on it.",
             serde_json::to_value(schema_for!(MemoryGetToolInput)).expect("memory_get schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -327,7 +327,7 @@ impl Tool for MemoryListTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_list",
-            "List the current memory inventory with scope, type, status, description hooks, and runtime metadata.",
+            "Browse the current memory inventory before choosing which note to open with memory_get.",
             serde_json::to_value(schema_for!(MemoryListToolInput)).expect("memory_list schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -390,7 +390,7 @@ impl Tool for MemoryRecordTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_record",
-            "Record working memory under .nanoclaw/memory, including specialized `plans`/`claims`/`handoffs` working layers and append-only episodic daily logs.",
+            "Write workspace memory intentionally when the user asks you to remember something, when you need to persist a verified handoff-worthy fact, or when you need to replace the current working session note with updated state under .nanoclaw/memory.",
             serde_json::to_value(schema_for!(MemoryRecordToolInput)).expect("memory_record schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),

@@ -99,72 +99,73 @@ reuse.
 
 ## Query-Time Recall
 
-Normal turns may still inject memory recall, but not through base instructions.
+Normal turns no longer receive host-injected recall messages.
 
-The runtime now treats query-time recall as a separate synthetic message that is
-prepended before the operator's original user message:
+Instead, memory lookup is model-driven:
 
-- current-session working memory is consulted first when available
-- broader working memory, procedural memory, semantic memory, and finally
-  episodic memory are consulted in that order when earlier levels do not
-  provide enough useful recall
-- recall is best-effort and timeout-bounded
-- recall is inserted as its own transcript message
-- the operator prompt remains a separate message with unchanged bytes
-- hooks, session events, and prompt previews continue to observe the original
-  user request, not a merged recall blob
+- the system prompt tells the agent when prior workspace memory may matter
+- the agent decides when to call `memory_search`, `memory_list`, and
+  `memory_get`
+- the operator prompt stays byte-for-byte unchanged instead of being prefixed
+  with a synthetic host recall blob
+- hooks, prompt previews, and runtime events continue to observe the original
+  user request rather than a rewritten prompt
 
-This boundary matters for both auditability and cache behavior. The recall path
-must not rebuild base instructions per turn, and it must not collapse recall
-into the same user message that the operator actually typed.
+This boundary matters for both auditability and cache behavior. Recall policy
+now lives in the prompt-plus-tool contract, not in a host-side per-turn
+augmentor.
 
-Because `memory-core` lexical retrieval uses strict token conjunction, the
-augmentor shapes natural-language questions into concise content-term queries
-before searching. That keeps prompts like "Should I use a canary deploy before
-restart?" recallable without requiring the memory files to literally contain
-every conversational filler token.
+The active session has a separate raw-state path before any memory extraction:
 
-Single-keyword prompts may now trigger recall as long as they contain at least
-one usable content term. That intentionally biases toward higher recall
-frequency instead of waiting for multi-word questions.
+- the visible transcript remains the immediate source of truth for the current
+  live conversation
+- the host session store still persists the full event stream even before
+  compaction
+- `memory-core` is the distilled layer, not the only place where session state
+  exists
 
-Durable recall now uses a more Claude-like two-stage path:
-
-- working memory remains search-first so the active session note can win on the
-  current task state
-- procedural and semantic memory first go through a header-level selector that
-  ranks candidate files using title, description, type, tags, and path labels
-- only the selected durable files are read back for short snippets
-- primer-style entrypoints such as `AGENTS.md`, `MEMORY.md`, and the generated
-  auto-memory index are excluded from this durable selector because they are
-  already part of the stable startup context
-- if header selection finds nothing useful, the augmentor falls back to body
-  search so content-only memories do not become unreachable
+That means "not yet compacted" does not imply "lost". It only means the
+conversation may still exist as raw session history rather than as a distilled
+working-memory note.
 
 ## Compaction Snapshots
 
 Claude-style memory continuity is not only about durable recall. It also relies
-on a compacted session keeping a usable working-memory handoff for the next
-turns and for later resume.
+on the current session exposing a usable working-memory handoff for later
+resume, interruption, and follow-up turns.
 
-`nanoclaw` now persists that handoff as working memory:
+`nanoclaw` now treats that handoff as a shared working-session note with two
+write paths:
 
-- when conversation compaction completes, the host writes the latest compact
-  summary into `.nanoclaw/memory/working/sessions/<session>.md`
-- that write replaces the previous continuation snapshot for the same target so
-  the file stays a bounded latest-state handoff instead of an append-only log
-- the target stays stable across agent-session rotation, so repeated compaction
-  updates one session note instead of scattering snapshots across many files
-- the record is tagged as a continuation snapshot for the current runtime
-  session
-- later query-time recall checks this working scope before consulting durable
-  procedural and semantic memories
+- before compaction, the model may update the note itself through
+  `memory_record(scope=working, layer=session, mode=replace)` when the task
+  state changes in a handoff-worthy way
+- at compaction time, the host still writes the latest compact summary into the
+  same `.nanoclaw/memory/working/sessions/<session>.md` target as a fallback
+  and reconciliation path
 
-That keeps post-compaction continuity in the memory system itself instead of
-depending only on one synthetic transcript summary message.
+That distinction is deliberate:
 
-The compactor now also asks for Claude-style session-memory headings so the
-persisted working note has a more stable structure:
+- the note should not first appear only after compaction
+- the host should not run token-threshold or tool-count heuristics to decide
+  every ordinary refresh
+- compaction remains the narrow host-owned moment where session continuity must
+  be repaired even if the model never updated the note earlier
+
+The shared session note still has stable replace semantics:
+
+- `.nanoclaw/memory/working/sessions/<session>.md` stays the stable per-session
+  working-memory location
+- writes replace the previous note instead of appending to an ever-growing log
+- the target stays stable across agent-session rotation, so one root session
+  accumulates one bounded continuation note rather than many scattered
+  snapshots
+
+That keeps current-session continuity queryable inside the memory system
+without requiring every recovery path to reconstruct meaning from raw
+transcript alone.
+
+The host-owned compaction path still normalizes notes into a stable structure:
 
 - `Session Title`
 - `Current State`
@@ -177,8 +178,7 @@ persisted working note has a more stable structure:
 - `Key results`
 - `Worklog`
 
-The host now renders those snapshots into a fixed session-note skeleton instead
-of persisting free-form Markdown directly:
+When compaction writes or rewrites the note:
 
 - `.nanoclaw/memory/working/sessions/<session>.md` always keeps the full Claude
   section list plus the per-section italic guidance lines
@@ -189,85 +189,62 @@ of persisting free-form Markdown directly:
   content inside one stable note shape rather than swapping between arbitrary
   summary layouts
 
-Compaction now also exposes two host-visible message boundaries:
+Compaction also remains the place where the host can attach a trustworthy
+summary boundary:
 
 - `compacted_through_message_id`: the last pre-compaction message that was
   folded into the summary window
 - `summary_message_id`: the synthetic summary message that replaced that window
 
-The host uses the summary boundary, not the raw source boundary, when it
-calculates later transcript deltas for incremental session-note refreshes.
-That avoids replaying already-compacted transcript text after the summary has
-become the new visible history anchor.
-
-## Incremental Session Notes
-
-Claude-style session memory is not only refreshed at compaction time.
-
-`nanoclaw` now also performs bounded incremental updates to the structured
-session note using an internal maintenance request:
-
-- the first incremental refresh starts once the visible context reaches 4,000
-  tokens
-- later refreshes happen after another 2,000 context tokens or 1 tool call
-- the refresh runs in a background sidecar task instead of blocking the main
-  turn completion path
-- only one refresh may be in flight for a session at a time; stale in-flight
-  work is abandoned after 60 seconds so later turns can recover
-- the update request only receives transcript entries that were not already
-  covered by the last summary boundary
-- the model must return the full note while preserving the host-owned section
-  skeleton and italic guidance lines exactly
-- refreshed notes still use replace semantics in
-  `.nanoclaw/memory/working/sessions/<session>.md`
-- the update prompt now reminds the model to keep each section under roughly
-  2,000 tokens and the full note under roughly 12,000 tokens
-- when the existing note is already over those limits, the update prompt points
-  at the specific oversized sections so the next refresh condenses them instead
-  of only appending more detail
-
-The session note now persists that boundary in its own frontmatter:
+The session note persists that boundary in its own frontmatter:
 
 - every persisted session note carries `last_summarized_message_id`
-- incremental refresh writes the latest visible message id that the refreshed
-  note now covers
-- compaction snapshots write the synthetic `summary_message_id` they produced
-- resume and cold-start recovery now reload that durable boundary instead of
+- host-written compaction snapshots write the synthetic `summary_message_id`
+  they produced
+- resume and cold-start recovery can reload that durable boundary instead of
   guessing coverage from the current visible transcript tail
 
-This keeps the session note closer to Claude's continuously-maintained working
-memory without pushing note maintenance into base instructions or per-turn
-prompt-prefix churn, and it mirrors Claude's "background extraction with
-bounded stale recovery" shape more closely than a synchronous post-turn write.
+## Model-Driven Session Notes
+
+The important pre-compaction question is therefore not "should the host run a
+periodic background summarizer?" but "how does the note come into existence
+before the first compaction?"
+
+The current answer is prompt-driven note maintenance:
+
+- the system prompt tells the model not to wait for host compaction before
+  preserving important session state
+- when the current task gains state that would matter after resume,
+  interruption, or handoff, the model should update the working session note
+  itself with `memory_record(scope=working, layer=session, mode=replace)`
+- if a session note already exists, the model can read it first and preserve
+  useful sections while replacing stale content
+- this keeps refresh policy inside the prompt contract instead of a host
+  threshold policy based on token counts or tool counts
+
+This is intentionally best-effort rather than absolute. If a process crashes
+before the model updates its note, the raw session transcript still exists in
+the session store, and later compaction or resume can reconstruct continuity
+from there.
 
 ## Episodic Daily Capture
 
-Claude-style memory is not only a bounded working note. It also keeps an
-append-only capture layer that can feed later memory extraction and
-consolidation without depending on the current session note body.
+`memory_record` still supports `scope=episodic` with the append-only
+`daily-log` layer at `.nanoclaw/memory/episodic/logs/YYYY/MM/YYYY-MM-DD.md`.
 
-`nanoclaw` now mirrors that lower-level capture path in two places:
+That layer remains available for explicit use, but the host no longer runs a
+normal-turn background episodic extractor. Episodic capture is now tool-driven
+in the same way as other non-compaction memory writes:
 
-- `memory_record` now supports `scope=episodic` with a default `daily-log`
-  layer that writes to
-  `.nanoclaw/memory/episodic/logs/YYYY/MM/YYYY-MM-DD.md`
-- those daily-log records are append-only and reject `replace`, because this
-  layer is meant to preserve raw captured facts rather than act like a mutable
-  working note
-- the host now runs a background episodic-capture request after completed
-  turns, using only the visible transcript delta since the last captured
-  message id
-- the capture request is tool-free, returns at most five concise bullets, and
-  is constrained to record durable facts such as preferences, corrections,
-  incidents, coordination pointers, and explicit "remember this" instructions
-- if the model finds nothing worth preserving, no daily-log entry is written
-- session switches and resumes reset the capture cursor to the latest visible
-  transcript tail so historical transcript already covered by the current
-  session state is not appended again
+- the model can write explicit daily-log entries when the user asks to remember
+  something or when a durable raw fact should be preserved for later
+  consolidation
+- the append-only constraint still prevents silent rewrite of previously
+  captured facts
 
-This keeps episodic capture out of base instructions and out of the structured
-working note itself. The daily log is raw material for later consolidation, not
-an automatically-promoted durable memory file.
+This keeps ordinary turn-by-turn extraction policy in the prompt/tool layer
+instead of the host scheduler while preserving a raw episodic surface for
+intentional use.
 
 That closes an important Claude-style gap: `nanoclaw` no longer depends only on
 working-memory snapshots plus manual promotion tools. It now has an append-only

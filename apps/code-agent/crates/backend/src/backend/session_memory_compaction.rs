@@ -23,8 +23,6 @@ pub struct SessionMemoryRefreshState {
     pub refresh_in_flight: bool,
     pub refresh_started_at: Option<Instant>,
     pub refresh_epoch: u64,
-    pub tokens_at_last_update: usize,
-    pub tool_calls_since_update: usize,
     pub last_summarized_message_id: Option<MessageId>,
 }
 
@@ -226,8 +224,6 @@ mod tests {
             refresh_in_flight: false,
             refresh_started_at: None,
             refresh_epoch: 0,
-            tokens_at_last_update: 0,
-            tool_calls_since_update: 0,
             last_summarized_message_id: Some(last_summarized.clone()),
         }))
     }
@@ -328,8 +324,6 @@ mod tests {
             refresh_in_flight: false,
             refresh_started_at: None,
             refresh_epoch: 0,
-            tokens_at_last_update: 0,
-            tool_calls_since_update: 0,
             last_summarized_message_id: None,
         }));
         let fallback = Arc::new(RecordingFallbackCompactor::default());
@@ -381,8 +375,6 @@ mod tests {
                     ),
             ),
             refresh_epoch: 0,
-            tokens_at_last_update: 0,
-            tool_calls_since_update: 0,
             last_summarized_message_id: Some(second.message_id.clone()),
         }));
         let refresh_state_writer = refresh_state.clone();
