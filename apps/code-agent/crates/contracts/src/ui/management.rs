@@ -7,6 +7,7 @@ pub struct ManagedMcpServerSummary {
     pub tool_count: usize,
     pub prompt_count: usize,
     pub resource_count: usize,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

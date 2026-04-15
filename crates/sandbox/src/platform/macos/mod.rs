@@ -24,8 +24,8 @@ pub(crate) fn prepare_macos_seatbelt_command(
     sandbox_exec_path: &Path,
 ) -> Result<Command> {
     let proxy_config = match &request.sandbox_policy.network {
-        NetworkPolicy::AllowDomains(domains) => {
-            proxy::configure_allow_domains_proxy_env(&mut request.env, domains)?
+        NetworkPolicy::Allowlist(allowlist) => {
+            proxy::configure_allow_domains_proxy_env(&mut request.env, &allowlist.domains)?
         }
         _ => proxy::AllowDomainsProxyConfig::default(),
     };

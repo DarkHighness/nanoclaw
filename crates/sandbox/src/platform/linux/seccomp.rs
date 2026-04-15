@@ -23,7 +23,7 @@ pub(crate) fn select_seccomp_profile(network: &NetworkPolicy) -> LinuxSeccompPro
     match network {
         NetworkPolicy::Full => LinuxSeccompProfile::FullNetwork,
         NetworkPolicy::Off => LinuxSeccompProfile::NoNetwork,
-        NetworkPolicy::AllowDomains(_) => LinuxSeccompProfile::ProxyOnlyUnixSockets,
+        NetworkPolicy::Allowlist(_) => LinuxSeccompProfile::ProxyOnlyUnixSockets,
     }
 }
 

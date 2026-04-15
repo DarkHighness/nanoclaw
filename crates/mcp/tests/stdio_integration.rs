@@ -34,6 +34,8 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
     let config = McpServerConfig {
         name: "fixture".into(),
         enabled: true,
+        bootstrap_network: None,
+        runtime_network: None,
         transport: McpTransportConfig::Stdio {
             command: env!("CARGO_BIN_EXE_test_stdio_server").to_string(),
             args: Vec::new(),

@@ -18,7 +18,7 @@ pub(crate) fn permission_profile_from_granted(
     let (network_full, network_domains) = match granted.network.as_ref() {
         None => (false, Vec::new()),
         Some(GrantedNetworkPermissions::Full) => (true, Vec::new()),
-        Some(GrantedNetworkPermissions::AllowDomains(domains)) => (false, domains.clone()),
+        Some(GrantedNetworkPermissions::Allowlist(allowlist)) => (false, allowlist.domains.clone()),
     };
 
     PermissionProfile {

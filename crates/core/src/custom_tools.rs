@@ -18,9 +18,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::{Duration, timeout};
 use tools::{
     DynamicTool, DynamicToolHandler, ExecRequest, ExecutionOrigin, FilesystemPolicy,
-    HOST_FEATURE_HOST_PROCESS_SURFACES, HostEscapePolicy, NetworkPolicy, ProcessExecutor,
-    ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy, ToolError, ToolExecutionContext,
-    ToolRegistry,
+    HOST_FEATURE_HOST_PROCESS_SURFACES, HostEscapePolicy, NetworkAllowlist, NetworkPolicy,
+    ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy, ToolError,
+    ToolExecutionContext, ToolRegistry,
 };
 use types::{
     CallId, MessagePart, PluginId, ToolApprovalProfile, ToolAttachment, ToolAvailability,
@@ -773,7 +773,7 @@ fn hook_network_to_sandbox(policy: &types::HookNetworkPolicy) -> NetworkPolicy {
         types::HookNetworkPolicy::Deny => NetworkPolicy::Off,
         types::HookNetworkPolicy::Allow => NetworkPolicy::Full,
         types::HookNetworkPolicy::AllowDomains { domains } => {
-            NetworkPolicy::AllowDomains(domains.clone())
+            NetworkPolicy::Allowlist(NetworkAllowlist::with_domains(domains.clone()))
         }
     }
 }
@@ -803,16 +803,27 @@ fn intersect_network_policy(left: &NetworkPolicy, right: &NetworkPolicy) -> Netw
     match (left, right) {
         (NetworkPolicy::Off, _) | (_, NetworkPolicy::Off) => NetworkPolicy::Off,
         (NetworkPolicy::Full, policy) | (policy, NetworkPolicy::Full) => policy.clone(),
-        (NetworkPolicy::AllowDomains(left_domains), NetworkPolicy::AllowDomains(right_domains)) => {
-            let allowed = left_domains
+        (NetworkPolicy::Allowlist(left), NetworkPolicy::Allowlist(right)) => {
+            let allowed_domains = left
+                .domains
                 .iter()
-                .filter(|domain| right_domains.contains(*domain))
+                .filter(|domain| right.domains.contains(*domain))
                 .cloned()
                 .collect::<Vec<_>>();
+            let allowed_cidrs = left
+                .cidrs
+                .iter()
+                .filter(|cidr| right.cidrs.contains(*cidr))
+                .cloned()
+                .collect::<Vec<_>>();
+            let allowed = NetworkAllowlist {
+                domains: allowed_domains,
+                cidrs: allowed_cidrs,
+            };
             if allowed.is_empty() {
                 NetworkPolicy::Off
             } else {
-                NetworkPolicy::AllowDomains(allowed)
+                NetworkPolicy::Allowlist(allowed)
             }
         }
     }

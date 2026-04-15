@@ -283,7 +283,15 @@ of failing the whole session. The built-in launcher preflight understands
 modules or container images without changing the detection path again. When a
 stdio MCP server starts under an enforcing sandbox, code-agent resolves the
 launcher to its host absolute path first and mirrors the relevant `PATH` roots
-into the sandbox so user-local `pnpm`/`npx` installs remain reachable.
+into the sandbox so user-local `pnpm`/`npx` installs remain reachable. By
+default, stdio MCP servers run with a trust-first host-managed policy unless a
+server entry explicitly sets `bootstrap_network` or `runtime_network`, which
+lets user-defined npm mirrors and private registries work without pre-declaring
+their domains. MCP startup is best-effort: disconnected servers stay visible in
+`mcp diagnostics` and `/mcp` with their last connection error instead of
+aborting the whole session, and servers whose tool names collide with existing
+local tools are reported as disconnected conflicts rather than panicking the
+registry.
 
 Code-agent also bundles a built-in skill pack by default. It includes an
 official upstream subset sourced from `openai/skills` commit

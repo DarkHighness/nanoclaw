@@ -134,9 +134,9 @@ pub fn request_permission_profile_from_granted(
                 enabled: Some(true),
                 allow_domains: None,
             },
-            GrantedNetworkPermissions::AllowDomains(domains) => NetworkPermissionRequest {
+            GrantedNetworkPermissions::Allowlist(allowlist) => NetworkPermissionRequest {
                 enabled: None,
-                allow_domains: Some(domains.clone()),
+                allow_domains: Some(allowlist.domains.clone()),
             },
         }),
         file_system: (!profile.file_system.is_empty()).then(|| FileSystemPermissionRequest {
@@ -209,7 +209,9 @@ fn normalize_network_permissions(
                     "request_permissions network.allow_domains cannot be empty",
                 ));
             }
-            Ok(Some(GrantedNetworkPermissions::AllowDomains(domains)))
+            Ok(Some(GrantedNetworkPermissions::Allowlist(
+                sandbox::NetworkAllowlist::with_domains(domains),
+            )))
         }
         (None, None) => Ok(None),
         (Some(false), _) => unreachable!("validated above"),
@@ -258,13 +260,21 @@ fn network_permissions_are_subset(
         (_, None) => true,
         (Some(GrantedNetworkPermissions::Full), Some(_)) => true,
         (
-            Some(GrantedNetworkPermissions::AllowDomains(requested_domains)),
-            Some(GrantedNetworkPermissions::AllowDomains(granted_domains)),
-        ) => granted_domains.iter().all(|domain| {
-            requested_domains
-                .iter()
-                .any(|requested| requested == domain)
-        }),
+            Some(GrantedNetworkPermissions::Allowlist(requested_allowlist)),
+            Some(GrantedNetworkPermissions::Allowlist(granted_allowlist)),
+        ) => {
+            granted_allowlist.domains.iter().all(|domain| {
+                requested_allowlist
+                    .domains
+                    .iter()
+                    .any(|requested| requested == domain)
+            }) && granted_allowlist.cidrs.iter().all(|cidr| {
+                requested_allowlist
+                    .cidrs
+                    .iter()
+                    .any(|requested| requested == cidr)
+            })
+        }
         _ => false,
     }
 }
@@ -312,9 +322,9 @@ mod tests {
                 read_roots: vec![PathBuf::from("/tmp/read")],
                 write_roots: vec![PathBuf::from("/tmp/write")],
             },
-            network: Some(GrantedNetworkPermissions::AllowDomains(vec![
-                "example.com".to_string(),
-            ])),
+            network: Some(GrantedNetworkPermissions::Allowlist(
+                sandbox::NetworkAllowlist::with_domains(vec!["example.com".to_string()]),
+            )),
         };
 
         let round_tripped = request_permission_profile_from_granted(&profile);

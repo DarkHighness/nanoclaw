@@ -131,8 +131,10 @@ pub fn describe_sandbox_policy(policy: &SandboxPolicy, status: &SandboxBackendSt
     };
     let network = match &policy.network {
         NetworkPolicy::Off => "network off".to_string(),
-        NetworkPolicy::AllowDomains(domains) => {
-            format!("network allowlist({})", domains.join(","))
+        NetworkPolicy::Allowlist(allowlist) => {
+            let mut entries = allowlist.domains.clone();
+            entries.extend(allowlist.cidrs.clone());
+            format!("network allowlist({})", entries.join(","))
         }
         NetworkPolicy::Full => "network full".to_string(),
     };
@@ -164,10 +166,8 @@ pub(crate) fn prepare_with_available_backends(
     availability: BackendAvailability,
 ) -> Result<Command> {
     normalize_mcp_stdio_request(&mut request);
-    if matches!(
-        request.sandbox_policy.network,
-        NetworkPolicy::AllowDomains(_)
-    ) && !allow_domains_backend_available(&availability)
+    if matches!(request.sandbox_policy.network, NetworkPolicy::Allowlist(_))
+        && !allow_domains_backend_available(&availability)
     {
         return Err(SandboxError::invalid_state(
             "domain-scoped network policy requires a compatible enforcing sandbox backend",
@@ -402,13 +402,13 @@ fn attach_allow_domains_proxy_support(request: &mut ExecRequest) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn maybe_attach_macos_allow_domains_proxy(request: &mut ExecRequest) -> Result<()> {
-    let NetworkPolicy::AllowDomains(domains) = &request.sandbox_policy.network else {
+    let NetworkPolicy::Allowlist(allowlist) = &request.sandbox_policy.network else {
         return Ok(());
     };
     if super::platform::macos::has_allow_domains_proxy_config(&request.env) {
         return Ok(());
     }
-    let allowlist = DomainAllowlist::new(domains.clone())
+    let allowlist = DomainAllowlist::new(allowlist.domains.clone())
         .map_err(|error| SandboxError::invalid_state(error.to_string()))?;
     let endpoint = start_retained_proxy(ProxyConfig::localhost(allowlist))
         .map_err(|error| SandboxError::invalid_state(error.to_string()))?;
@@ -418,7 +418,7 @@ fn maybe_attach_macos_allow_domains_proxy(request: &mut ExecRequest) -> Result<(
 
 #[cfg(target_os = "linux")]
 fn maybe_attach_linux_allow_domains_proxy(request: &mut ExecRequest) -> Result<()> {
-    let NetworkPolicy::AllowDomains(domains) = &request.sandbox_policy.network else {
+    let NetworkPolicy::Allowlist(allowlist) = &request.sandbox_policy.network else {
         return Ok(());
     };
     if request
@@ -428,7 +428,7 @@ fn maybe_attach_linux_allow_domains_proxy(request: &mut ExecRequest) -> Result<(
         return Ok(());
     }
 
-    let allowlist = DomainAllowlist::new(domains.clone())
+    let allowlist = DomainAllowlist::new(allowlist.domains.clone())
         .map_err(|error| SandboxError::invalid_state(error.to_string()))?;
     let socket_path = default_linux_allow_domains_socket_path(allowlist.domains());
     let endpoint = start_retained_proxy(ProxyConfig {
@@ -674,7 +674,9 @@ mod tests {
                         executable_roots: vec![],
                         protected_paths: vec![],
                     },
-                    network: NetworkPolicy::AllowDomains(vec!["example.com".to_string()]),
+                    network: NetworkPolicy::Allowlist(NetworkAllowlist::with_domains(vec![
+                        "example.com".to_string(),
+                    ])),
                     host_escape: HostEscapePolicy::Deny,
                     fail_if_unavailable: false,
                 },

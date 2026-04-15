@@ -200,7 +200,9 @@ bounded_async_test!(
         let (server_addr, _worker) = spawn_http_ok_server();
         let executor = ManagedPolicyProcessExecutor::new();
         let mut policy = workspace_policy(workspace.path());
-        policy.network = NetworkPolicy::AllowDomains(vec!["localhost".to_string()]);
+        policy.network = NetworkPolicy::Allowlist(tools::NetworkAllowlist::with_domains(vec![
+            "localhost".to_string(),
+        ]));
 
         let output = run_direct_command(
             &executor,
@@ -238,7 +240,9 @@ bounded_async_test!(
         let workspace = tempdir().unwrap();
         let executor = ManagedPolicyProcessExecutor::new();
         let mut policy = workspace_policy(workspace.path());
-        policy.network = NetworkPolicy::AllowDomains(vec!["example.com".to_string()]);
+        policy.network = NetworkPolicy::Allowlist(tools::NetworkAllowlist::with_domains(vec![
+            "example.com".to_string(),
+        ]));
         let mut env = BTreeMap::new();
         env.insert(
             LINUX_ALLOW_DOMAINS_PROXY_SOCKET_PATH_ENV.to_string(),
@@ -273,7 +277,9 @@ bounded_async_test!(
         let _listener = UnixListener::bind(&host_socket_path).unwrap();
 
         let mut policy = workspace_policy(workspace.path());
-        policy.network = NetworkPolicy::AllowDomains(vec!["example.com".to_string()]);
+        policy.network = NetworkPolicy::Allowlist(tools::NetworkAllowlist::with_domains(vec![
+            "example.com".to_string(),
+        ]));
 
         let mut env = BTreeMap::new();
         env.insert(

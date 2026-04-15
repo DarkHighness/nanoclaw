@@ -50,6 +50,7 @@ pub use mcp_adapter::*;
 pub use permissions::*;
 pub use process::*;
 pub use registry::*;
+pub use sandbox::NetworkAllowlist;
 pub use schema::*;
 pub use session_control::*;
 pub use user_input::*;

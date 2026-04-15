@@ -3,7 +3,10 @@ use crate::backend::SessionBrowserManager;
 #[cfg(feature = "automation-tools")]
 use crate::backend::SessionCronManager;
 use crate::backend::boot_inputs::DriverHostInputs;
-use crate::backend::boot_mcp::build_startup_diagnostics_snapshot;
+use crate::backend::boot_mcp::{
+    build_startup_diagnostics_snapshot, connect_and_prepare_mcp_servers, filter_mcp_tool_conflicts,
+    mcp_connection_sandbox_policy, summarize_mcp_servers,
+};
 #[cfg(feature = "automation-tools")]
 use crate::backend::boot_runtime::register_automation_tools;
 #[cfg(feature = "browser-tools")]
@@ -36,8 +39,7 @@ use crate::provider::{
 };
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
-    catalog_resource_tools_as_registry_entries, catalog_tools_as_registry_entries,
-    connect_and_catalog_mcp_servers_with_options,
+    catalog_resource_tools_as_registry_entries,
 };
 use agent::runtime::{
     CompactionConfig, ConversationCompactor, ModelBackend, ModelConversationCompactor,
@@ -76,6 +78,7 @@ struct RuntimeBuildResult {
     plugin_instructions: Arc<RwLock<Vec<String>>>,
     mcp_servers: Vec<ConnectedMcpServer>,
     mcp_server_configs: Vec<McpServerConfig>,
+    mcp_connection_failures: BTreeMap<String, String>,
     runtime_hook_state: Arc<RwLock<Vec<HookRegistration>>>,
     configured_runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
     driver_tool_names: Vec<String>,
@@ -374,6 +377,7 @@ where
         plugin_instructions,
         mcp_servers,
         mcp_server_configs,
+        mcp_connection_failures,
         runtime_hook_state,
         configured_runtime_hooks,
         driver_tool_names,
@@ -436,6 +440,7 @@ where
         store,
         mcp_servers,
         mcp_server_configs,
+        mcp_connection_failures,
         runtime_hook_state,
         configured_runtime_hooks,
         mcp_process_executor,
@@ -619,9 +624,10 @@ where
     });
     let runtime_hooks = plugin_plan.hooks.clone();
     let plugin_mcp_servers = plugin_plan.mcp_servers.clone();
-    // Managed MCP UI should see the same core-plus-plugin catalog that a later
-    // surface refresh would operate on, even though boot only auto-connects the
-    // plugin/driver subset today.
+    // Managed MCP UI should see the same core-plus-plugin catalog that later
+    // surface refreshes operate on. Driver-provided MCP servers remain runtime
+    // host inputs rather than managed entries, so they get merged just before
+    // connection below.
     let configured_mcp_server_configs = dedup_mcp_servers(resolve_mcp_servers(
         &merge_boot_mcp_servers(options.core.mcp_servers.clone(), plugin_mcp_servers.clone()),
         workspace_root,
@@ -753,7 +759,19 @@ where
         plugin_instructions,
         &driver_outcome,
     );
-    let resolved_mcp_servers = dedup_mcp_servers(resolve_mcp_servers(&mcp_servers, workspace_root));
+    // Boot should connect the same effective MCP set that session reloads use:
+    // managed/core entries first, then plugin/driver additions. Dedup keeps
+    // the first config per name so explicit workspace overrides still win over
+    // plugin or driver defaults.
+    let resolved_mcp_servers = dedup_mcp_servers(resolve_mcp_servers(
+        &merge_boot_mcp_servers(options.core.mcp_servers.clone(), mcp_servers),
+        workspace_root,
+    ));
+    #[cfg(feature = "browser-tools")]
+    let browser_manager: Arc<dyn agent::tools::BrowserManager> =
+        Arc::new(SessionBrowserManager::new(store.clone(), events.clone()));
+    #[cfg(feature = "browser-tools")]
+    register_browser_tools(&mut tools, browser_manager);
     progress(BootProgressUpdate {
         stage: BootProgressStage::Mcp,
         status: BootProgressStatus::Started,
@@ -776,29 +794,45 @@ where
         &mut startup_warnings,
     );
     let mut connected_mcp_servers = Vec::new();
+    let mut mcp_connection_failures = BTreeMap::new();
     if !boot_mcp_servers.is_empty() {
-        let connected = connect_and_catalog_mcp_servers_with_options(
-            &boot_mcp_servers,
-            McpConnectOptions {
-                process_executor: process_executor.clone(),
-                sandbox_policy: sandbox_policy.clone(),
-                ..Default::default()
-            },
+        let mut prepared = connect_and_prepare_mcp_servers(
+            boot_mcp_servers
+                .iter()
+                .cloned()
+                .map(|server| {
+                    let sandbox_policy = mcp_connection_sandbox_policy(&sandbox_policy, &server);
+                    (
+                        server,
+                        McpConnectOptions {
+                            process_executor: process_executor.clone(),
+                            sandbox_policy,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
         )
-        .await
-        .context("failed to connect plugin MCP servers")?;
-        for server in &connected {
-            for adapter in catalog_tools_as_registry_entries(server.client.clone())
-                .await
-                .context("failed to register plugin MCP tools")?
-            {
+        .await;
+        let conflicts = filter_mcp_tool_conflicts(&tools, prepared.connected);
+        prepared.failures.extend(conflicts.failures);
+        prepared.connected = conflicts.connected;
+        mcp_connection_failures = prepared.failures;
+        for (_, adapters) in &prepared.connected {
+            for adapter in adapters.clone() {
                 tools.register(adapter);
             }
         }
-        for resource_tool in catalog_resource_tools_as_registry_entries(connected.clone()) {
+        connected_mcp_servers = prepared
+            .connected
+            .into_iter()
+            .map(|(server, _)| server)
+            .collect();
+        for resource_tool in
+            catalog_resource_tools_as_registry_entries(connected_mcp_servers.clone())
+        {
             tools.register(resource_tool);
         }
-        connected_mcp_servers = connected;
     }
     let disabled_tool_names = disabled_tool_names(options, &options.env_map);
     let mut disabled_tool_hits = BTreeSet::new();
@@ -899,13 +933,8 @@ where
             events.clone(),
             runtime_tooling.process_executor.clone(),
         ));
-    #[cfg(feature = "browser-tools")]
-    let browser_manager: Arc<dyn agent::tools::BrowserManager> =
-        Arc::new(SessionBrowserManager::new(store.clone(), events.clone()));
     #[cfg(feature = "automation-tools")]
     register_automation_tools(&mut tools, cron_manager);
-    #[cfg(feature = "browser-tools")]
-    register_browser_tools(&mut tools, browser_manager);
     register_monitor_tools(&mut tools, monitor_manager.clone());
     register_worktree_tools(&mut tools, worktree_manager.clone());
     register_subagent_tools(&mut tools, subagent_executor.clone(), task_manager);
@@ -925,13 +954,18 @@ where
         .into_iter()
         .filter(|spec| spec.is_model_visible(&tool_context.model_visibility))
         .collect::<Vec<_>>();
-    let startup_diagnostics = build_startup_diagnostics_snapshot(
+    let mut startup_diagnostics = build_startup_diagnostics_snapshot(
         workspace_root,
         &tool_specs,
         &connected_mcp_servers,
         &plugin_plan,
         &startup_warnings,
         &driver_outcome,
+    );
+    startup_diagnostics.mcp_servers = summarize_mcp_servers(
+        &configured_mcp_server_configs,
+        &connected_mcp_servers,
+        &mcp_connection_failures,
     );
     let memory_backend = driver_outcome.primary_memory_backend.clone();
     let runtime_builder = AgentRuntimeBuilder::new(backend.clone(), store.clone())
@@ -975,6 +1009,7 @@ where
         plugin_instructions,
         mcp_servers: connected_mcp_servers,
         mcp_server_configs: configured_mcp_server_configs,
+        mcp_connection_failures,
         runtime_hook_state,
         configured_runtime_hooks,
         driver_tool_names: driver_outcome.tool_names.clone(),
@@ -1167,7 +1202,8 @@ mod tests {
         filter_boot_mcp_servers, filter_disabled_builtin_skills, filter_runtime_hooks,
         merge_boot_mcp_servers,
     };
-    use crate::backend::dedup_mcp_servers;
+    use crate::backend::{dedup_mcp_servers, merge_driver_host_inputs};
+    use agent::DriverActivationOutcome;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::skills::load_skill_roots;
     use agent::types::{
@@ -1223,6 +1259,8 @@ mod tests {
                 McpServerConfig {
                     name: "stdio".into(),
                     enabled: true,
+                    bootstrap_network: None,
+                    runtime_network: None,
                     transport: McpTransportConfig::Stdio {
                         command: "stdio-server".to_string(),
                         args: Vec::new(),
@@ -1233,6 +1271,8 @@ mod tests {
                 McpServerConfig {
                     name: "http".into(),
                     enabled: true,
+                    bootstrap_network: None,
+                    runtime_network: None,
                     transport: McpTransportConfig::StreamableHttp {
                         url: "https://example.test/mcp".to_string(),
                         headers: BTreeMap::new(),
@@ -1256,6 +1296,8 @@ mod tests {
             vec![McpServerConfig {
                 name: "context7".into(),
                 enabled: true,
+                bootstrap_network: None,
+                runtime_network: None,
                 transport: McpTransportConfig::Stdio {
                     command: "core-context7".to_string(),
                     args: Vec::new(),
@@ -1267,6 +1309,8 @@ mod tests {
                 McpServerConfig {
                     name: "context7".into(),
                     enabled: true,
+                    bootstrap_network: None,
+                    runtime_network: None,
                     transport: McpTransportConfig::Stdio {
                         command: "plugin-context7".to_string(),
                         args: Vec::new(),
@@ -1277,6 +1321,8 @@ mod tests {
                 McpServerConfig {
                     name: "plugin-docs".into(),
                     enabled: true,
+                    bootstrap_network: None,
+                    runtime_network: None,
                     transport: McpTransportConfig::StreamableHttp {
                         url: "https://example.test/mcp".to_string(),
                         headers: BTreeMap::new(),
@@ -1299,6 +1345,86 @@ mod tests {
             deduped
                 .iter()
                 .any(|server| server.name.as_str() == "plugin-docs")
+        );
+    }
+
+    #[test]
+    fn boot_mcp_merge_keeps_core_entries_ahead_of_plugin_and_driver_defaults() {
+        let merged_driver = merge_driver_host_inputs(
+            Vec::new(),
+            vec![McpServerConfig {
+                name: "plugin-docs".into(),
+                enabled: true,
+                bootstrap_network: None,
+                runtime_network: None,
+                transport: McpTransportConfig::StreamableHttp {
+                    url: "https://example.test/plugin".to_string(),
+                    headers: BTreeMap::new(),
+                },
+            }],
+            Vec::new(),
+            &DriverActivationOutcome {
+                mcp_servers: vec![
+                    McpServerConfig {
+                        name: "context7".into(),
+                        enabled: true,
+                        bootstrap_network: None,
+                        runtime_network: None,
+                        transport: McpTransportConfig::Stdio {
+                            command: "driver-context7".to_string(),
+                            args: Vec::new(),
+                            env: BTreeMap::new(),
+                            cwd: None,
+                        },
+                    },
+                    McpServerConfig {
+                        name: "driver-logs".into(),
+                        enabled: true,
+                        bootstrap_network: None,
+                        runtime_network: None,
+                        transport: McpTransportConfig::StreamableHttp {
+                            url: "https://example.test/driver".to_string(),
+                            headers: BTreeMap::new(),
+                        },
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        let deduped = dedup_mcp_servers(merge_boot_mcp_servers(
+            vec![McpServerConfig {
+                name: "context7".into(),
+                enabled: true,
+                bootstrap_network: None,
+                runtime_network: None,
+                transport: McpTransportConfig::Stdio {
+                    command: "core-context7".to_string(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    cwd: None,
+                },
+            }],
+            merged_driver.mcp_servers,
+        ));
+
+        assert_eq!(deduped.len(), 3);
+        let context7 = deduped
+            .iter()
+            .find(|server| server.name.as_str() == "context7")
+            .expect("context7 should be retained");
+        assert!(matches!(
+            context7.transport,
+            McpTransportConfig::Stdio { ref command, .. } if command == "core-context7"
+        ));
+        assert!(
+            deduped
+                .iter()
+                .any(|server| server.name.as_str() == "plugin-docs")
+        );
+        assert!(
+            deduped
+                .iter()
+                .any(|server| server.name.as_str() == "driver-logs")
         );
     }
 

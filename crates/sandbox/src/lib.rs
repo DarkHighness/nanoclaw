@@ -13,7 +13,7 @@ pub use manager::{
 pub use policy::{
     ExecRequest, ExecutionOrigin, FilesystemAccess, FilesystemPolicy, GrantedFilesystemPermissions,
     GrantedNetworkPermissions, GrantedPermissionProfile, HostEscapePolicy, HostProcessExecutor,
-    NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy,
-    SandboxScope, apply_granted_permission_profile, assert_filesystem_access,
+    NetworkAllowlist, NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode,
+    SandboxPolicy, SandboxScope, apply_granted_permission_profile, assert_filesystem_access,
     normalize_granted_permission_path,
 };

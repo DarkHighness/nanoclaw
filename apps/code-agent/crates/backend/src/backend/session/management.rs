@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::mcp_connection_sandbox_policy;
 use crate::backend::{
     build_plugin_activation_plan, build_system_preamble, dedup_mcp_servers,
     merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots,
@@ -20,49 +21,18 @@ use std::sync::Arc;
 
 impl CodeAgentSession {
     pub async fn list_managed_mcp_servers(&self) -> Result<Vec<ManagedMcpServerSummary>> {
-        let connected = self
-            .connected_mcp_servers_snapshot()
-            .into_iter()
-            .map(|server| {
-                (
-                    server.server_name.to_string(),
-                    ManagedMcpServerSummary {
-                        name: server.server_name.to_string(),
-                        transport: match server.boundary.transport {
-                            agent::types::McpTransportKind::Stdio => "stdio".to_string(),
-                            agent::types::McpTransportKind::StreamableHttp => "http".to_string(),
-                        },
-                        enabled: true,
-                        connected: true,
-                        tool_count: server.catalog.tools.len(),
-                        prompt_count: server.catalog.prompts.len(),
-                        resource_count: server.catalog.resources.len(),
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
         let mut summaries = self
-            .configured_mcp_servers
-            .read()
-            .unwrap()
-            .iter()
-            .map(|server| {
-                let mut summary =
-                    connected
-                        .get(server.name.as_str())
-                        .cloned()
-                        .unwrap_or_else(|| ManagedMcpServerSummary {
-                            name: server.name.to_string(),
-                            transport: managed_mcp_transport_label(server),
-                            enabled: server.enabled,
-                            connected: false,
-                            tool_count: 0,
-                            prompt_count: 0,
-                            resource_count: 0,
-                        });
-                summary.enabled = server.enabled;
-                summary.transport = managed_mcp_transport_label(server);
-                summary
+            .configured_mcp_server_summaries(true)
+            .into_iter()
+            .map(|server| ManagedMcpServerSummary {
+                name: server.server_name,
+                transport: server.transport,
+                enabled: server.enabled,
+                connected: server.connected,
+                tool_count: server.tool_count,
+                prompt_count: server.prompt_count,
+                resource_count: server.resource_count,
+                last_error: server.last_error,
             })
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| left.name.cmp(&right.name));
@@ -327,6 +297,11 @@ impl CodeAgentSession {
                     registry.remove(tool.name.as_str());
                 }
             }
+            self.clear_mcp_connection_failures_for_names(
+                removed_servers
+                    .iter()
+                    .map(|server| server.server_name.to_string()),
+            );
         }
 
         let connected_names = self
@@ -341,21 +316,26 @@ impl CodeAgentSession {
             .filter(|server| !connected_names.contains(&server.name))
             .collect::<Vec<_>>();
         if !pending_configs.is_empty() {
-            let connected = connect_and_catalog_mcp_servers_with_options(
-                &pending_configs,
-                McpConnectOptions {
-                    process_executor: self.mcp_process_executor.clone(),
-                    sandbox_policy: sandbox_policy.clone(),
-                    ..Default::default()
-                },
+            let outcome = connect_and_prepare_mcp_servers(
+                pending_configs
+                    .iter()
+                    .cloned()
+                    .map(|server| {
+                        let sandbox_policy = mcp_connection_sandbox_policy(sandbox_policy, &server);
+                        (
+                            server,
+                            McpConnectOptions {
+                                process_executor: self.mcp_process_executor.clone(),
+                                sandbox_policy,
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .collect(),
             )
-            .await?;
-            let mut prepared = Vec::with_capacity(connected.len());
-            for server in connected {
-                let adapters = catalog_tools_as_registry_entries(server.client.clone()).await?;
-                prepared.push((server, adapters));
-            }
-            self.attach_connected_stdio_mcp_servers(runtime, prepared);
+            .await;
+            self.record_mcp_connection_failures(&pending_configs, &outcome.failures);
+            self.attach_connected_stdio_mcp_servers(runtime, outcome.connected);
         } else {
             self.rebuild_mcp_resource_tools(runtime);
         }
@@ -368,13 +348,6 @@ fn relativize_to_workspace(workspace_root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
-}
-
-fn managed_mcp_transport_label(server: &McpServerConfig) -> String {
-    match server.transport {
-        McpTransportConfig::Stdio { .. } => "stdio".to_string(),
-        McpTransportConfig::StreamableHttp { .. } => "http".to_string(),
-    }
 }
 
 fn resolved_plugin_roots(

@@ -2,8 +2,8 @@ use crate::{Result, RuntimeError};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use tools::{
-    FilesystemPolicy, HostEscapePolicy, NetworkPolicy, SandboxMode, SandboxPolicy,
-    ToolExecutionContext,
+    FilesystemPolicy, HostEscapePolicy, NetworkAllowlist, NetworkPolicy, SandboxMode,
+    SandboxPolicy, ToolExecutionContext,
 };
 use tracing::{debug, warn};
 use types::{HookExecutionPolicy, HookNetworkPolicy, HookRegistration};
@@ -239,7 +239,7 @@ pub(crate) fn tool_context_for_execution(execution: &HookExecutionPolicy) -> Too
             HookNetworkPolicy::Deny => NetworkPolicy::Off,
             HookNetworkPolicy::Allow => NetworkPolicy::Full,
             HookNetworkPolicy::AllowDomains { domains } => {
-                NetworkPolicy::AllowDomains(domains.clone())
+                NetworkPolicy::Allowlist(NetworkAllowlist::with_domains(domains.clone()))
             }
         }),
         workspace_only: true,
@@ -297,13 +297,13 @@ fn assert_network_allowed(tool_context: &ToolExecutionContext, url: &str) -> Res
             "hook network access denied for url `{url}`"
         ))),
         NetworkPolicy::Full => Ok(()),
-        NetworkPolicy::AllowDomains(domains) => {
+        NetworkPolicy::Allowlist(allowlist) => {
             let host = reqwest::Url::parse(url)
                 .map_err(|error| RuntimeError::hook(format!("invalid hook HTTP url: {error}")))?
                 .host_str()
                 .ok_or_else(|| RuntimeError::hook("hook HTTP url missing host"))?
                 .to_string();
-            if domains.iter().any(|domain| domain == &host) {
+            if allowlist.domains.iter().any(|domain| domain == &host) {
                 Ok(())
             } else {
                 Err(RuntimeError::hook(format!(
@@ -382,16 +382,27 @@ fn intersect_network_policy(left: &NetworkPolicy, right: &NetworkPolicy) -> Netw
     match (left, right) {
         (NetworkPolicy::Off, _) | (_, NetworkPolicy::Off) => NetworkPolicy::Off,
         (NetworkPolicy::Full, policy) | (policy, NetworkPolicy::Full) => policy.clone(),
-        (NetworkPolicy::AllowDomains(left_domains), NetworkPolicy::AllowDomains(right_domains)) => {
-            let allowed = left_domains
+        (NetworkPolicy::Allowlist(left), NetworkPolicy::Allowlist(right)) => {
+            let allowed_domains = left
+                .domains
                 .iter()
-                .filter(|domain| right_domains.contains(*domain))
+                .filter(|domain| right.domains.contains(*domain))
                 .cloned()
                 .collect::<Vec<_>>();
+            let allowed_cidrs = left
+                .cidrs
+                .iter()
+                .filter(|cidr| right.cidrs.contains(*cidr))
+                .cloned()
+                .collect::<Vec<_>>();
+            let allowed = NetworkAllowlist {
+                domains: allowed_domains,
+                cidrs: allowed_cidrs,
+            };
             if allowed.is_empty() {
                 NetworkPolicy::Off
             } else {
-                NetworkPolicy::AllowDomains(allowed)
+                NetworkPolicy::Allowlist(allowed)
             }
         }
     }

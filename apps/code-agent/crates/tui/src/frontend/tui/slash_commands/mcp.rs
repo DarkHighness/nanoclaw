@@ -183,14 +183,19 @@ fn format_managed_mcp_server_detail(summary: &ManagedMcpServerSummary) -> String
     } else {
         "Disconnected"
     };
-    format!(
+    let mut detail = format!(
         "{} · {} · tools={} · prompts={} · resources={}",
         summary.transport,
         connection,
         summary.tool_count,
         summary.prompt_count,
         summary.resource_count
-    )
+    );
+    if let Some(error) = &summary.last_error {
+        detail.push_str(" · ");
+        detail.push_str(error);
+    }
+    detail
 }
 
 fn format_managed_skill_detail(summary: &ManagedSkillSummary) -> String {

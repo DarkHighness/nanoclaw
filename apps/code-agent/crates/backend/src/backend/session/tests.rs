@@ -733,6 +733,7 @@ fn build_session_with_runtime_state(
         store,
         mcp_servers,
         configured_mcp_servers,
+        BTreeMap::new(),
         runtime_hooks,
         configured_runtime_hooks,
         process_executor.clone() as Arc<dyn agent::tools::ProcessExecutor>,
@@ -762,6 +763,8 @@ fn local_stdio_mcp_config(server_name: &str) -> McpServerConfig {
     McpServerConfig {
         name: server_name.into(),
         enabled: true,
+        bootstrap_network: None,
+        runtime_network: None,
         transport: McpTransportConfig::Stdio {
             command: "fixture-mcp".to_string(),
             args: Vec::new(),
@@ -1529,6 +1532,7 @@ async fn managed_mcp_listing_includes_configured_servers_before_connection() {
     assert_eq!(servers[0].name, "fixture");
     assert!(servers[0].enabled);
     assert!(!servers[0].connected);
+    assert_eq!(servers[0].last_error, None);
 }
 
 #[tokio::test]
@@ -1587,7 +1591,19 @@ async fn detaching_stdio_mcp_servers_removes_tools_and_restores_warning() {
             .get("read_mcp_resource")
             .is_none()
     );
-    assert_eq!(diagnostics.mcp_servers, Vec::<McpServerSummary>::new());
+    assert_eq!(
+        diagnostics.mcp_servers,
+        vec![McpServerSummary {
+            server_name: "fixture".to_string(),
+            transport: "stdio".to_string(),
+            enabled: true,
+            connected: false,
+            tool_count: 0,
+            prompt_count: 0,
+            resource_count: 0,
+            last_error: None,
+        }]
+    );
     assert!(diagnostics.warnings.iter().any(|warning| {
         warning.starts_with(STDIO_MCP_DISABLED_WARNING_PREFIX) && warning.contains("fixture")
     }));

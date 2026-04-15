@@ -25,9 +25,26 @@ pub enum McpTransportConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum McpNetworkPolicyConfig {
+    Off,
+    Full,
+    Allowlist {
+        #[serde(default)]
+        domains: Vec<String>,
+        #[serde(default)]
+        cidrs: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: McpServerName,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_network: Option<McpNetworkPolicyConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_network: Option<McpNetworkPolicyConfig>,
     pub transport: McpTransportConfig,
 }

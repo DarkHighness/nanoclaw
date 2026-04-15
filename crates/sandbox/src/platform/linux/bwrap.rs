@@ -35,9 +35,10 @@ pub(crate) fn prepare_linux_bwrap_command(
         ..request.sandbox_policy.clone()
     };
     let proxy_bridge = match &effective_policy.network {
-        NetworkPolicy::AllowDomains(domains) => {
-            Some(resolve_allow_domains_proxy_bridge(domains, &request.env)?)
-        }
+        NetworkPolicy::Allowlist(allowlist) => Some(resolve_allow_domains_proxy_bridge(
+            &allowlist.domains,
+            &request.env,
+        )?),
         _ => None,
     };
     let socat_path = if proxy_bridge.is_some() {
@@ -136,7 +137,7 @@ pub(crate) fn prepare_linux_bwrap_command(
 }
 
 fn requires_network_namespace_isolation(network: &NetworkPolicy) -> bool {
-    matches!(network, NetworkPolicy::Off | NetworkPolicy::AllowDomains(_))
+    matches!(network, NetworkPolicy::Off | NetworkPolicy::Allowlist(_))
 }
 
 fn ensure_policy_mount_source_exists(path: &Path, label: &str) -> Result<()> {

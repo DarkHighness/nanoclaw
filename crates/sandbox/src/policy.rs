@@ -23,9 +23,30 @@ pub struct FilesystemPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkAllowlist {
+    pub domains: Vec<String>,
+    pub cidrs: Vec<String>,
+}
+
+impl NetworkAllowlist {
+    #[must_use]
+    pub fn with_domains(domains: Vec<String>) -> Self {
+        Self {
+            domains,
+            cidrs: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.domains.is_empty() && self.cidrs.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetworkPolicy {
     Off,
-    AllowDomains(Vec<String>),
+    Allowlist(NetworkAllowlist),
     Full,
 }
 
@@ -49,7 +70,7 @@ impl GrantedFilesystemPermissions {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GrantedNetworkPermissions {
-    AllowDomains(Vec<String>),
+    Allowlist(NetworkAllowlist),
     Full,
 }
 
@@ -557,21 +578,13 @@ fn widen_network_policy(
         (NetworkPolicy::Full, _) => NetworkPolicy::Full,
         (policy, None) => policy.clone(),
         (_, Some(GrantedNetworkPermissions::Full)) => NetworkPolicy::Full,
-        (NetworkPolicy::Off, Some(GrantedNetworkPermissions::AllowDomains(domains))) => {
-            NetworkPolicy::AllowDomains(domains.clone())
+        (NetworkPolicy::Off, Some(GrantedNetworkPermissions::Allowlist(allowlist))) => {
+            NetworkPolicy::Allowlist(allowlist.clone())
         }
         (
-            NetworkPolicy::AllowDomains(existing),
-            Some(GrantedNetworkPermissions::AllowDomains(domains)),
-        ) => NetworkPolicy::AllowDomains(
-            existing
-                .iter()
-                .chain(domains.iter())
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-        ),
+            NetworkPolicy::Allowlist(existing),
+            Some(GrantedNetworkPermissions::Allowlist(allowlist)),
+        ) => NetworkPolicy::Allowlist(merge_network_allowlists(existing, allowlist)),
     }
 }
 
@@ -584,19 +597,20 @@ fn merge_granted_network(
             Some(GrantedNetworkPermissions::Full)
         }
         (
-            Some(GrantedNetworkPermissions::AllowDomains(left_domains)),
-            Some(GrantedNetworkPermissions::AllowDomains(right_domains)),
-        ) => Some(GrantedNetworkPermissions::AllowDomains(
-            left_domains
-                .iter()
-                .chain(right_domains.iter())
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
+            Some(GrantedNetworkPermissions::Allowlist(left_allowlist)),
+            Some(GrantedNetworkPermissions::Allowlist(right_allowlist)),
+        ) => Some(GrantedNetworkPermissions::Allowlist(
+            merge_network_allowlists(left_allowlist, right_allowlist),
         )),
         (Some(network), None) | (None, Some(network)) => Some(network.clone()),
         (None, None) => None,
+    }
+}
+
+fn merge_network_allowlists(left: &NetworkAllowlist, right: &NetworkAllowlist) -> NetworkAllowlist {
+    NetworkAllowlist {
+        domains: union_strings(&left.domains, &right.domains),
+        cidrs: union_strings(&left.cidrs, &right.cidrs),
     }
 }
 
@@ -619,12 +633,21 @@ fn union_paths(left: &[PathBuf], right: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
+fn union_strings(left: &[String], right: &[String]) -> Vec<String> {
+    left.iter()
+        .chain(right.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         FilesystemAccess, GrantedFilesystemPermissions, GrantedNetworkPermissions,
-        GrantedPermissionProfile, HostEscapePolicy, NetworkPolicy, SandboxMode, SandboxPolicy,
-        SandboxScope, apply_granted_permission_profile, assert_filesystem_access,
+        GrantedPermissionProfile, HostEscapePolicy, NetworkAllowlist, NetworkPolicy, SandboxMode,
+        SandboxPolicy, SandboxScope, apply_granted_permission_profile, assert_filesystem_access,
     };
     use tempfile::tempdir;
 
@@ -778,9 +801,9 @@ mod tests {
                     read_roots: vec![extra.path().to_path_buf()],
                     write_roots: vec![extra.path().to_path_buf()],
                 },
-                network: Some(GrantedNetworkPermissions::AllowDomains(vec![
-                    "example.com".to_string(),
-                ])),
+                network: Some(GrantedNetworkPermissions::Allowlist(
+                    NetworkAllowlist::with_domains(vec!["example.com".to_string()]),
+                )),
             },
         )
         .unwrap();
@@ -800,7 +823,9 @@ mod tests {
         );
         assert_eq!(
             widened.network,
-            NetworkPolicy::AllowDomains(vec!["example.com".to_string()])
+            NetworkPolicy::Allowlist(NetworkAllowlist::with_domains(vec![
+                "example.com".to_string(),
+            ]))
         );
     }
 }

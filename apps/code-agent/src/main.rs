@@ -1067,6 +1067,8 @@ impl McpAddArgs {
         Ok(agent::mcp::McpServerConfig {
             name: name.into(),
             enabled: true,
+            bootstrap_network: None,
+            runtime_network: None,
             transport,
         })
     }
@@ -4107,11 +4109,25 @@ fn write_mcp_server_summary_line(
     writer: &mut impl Write,
     summary: &McpServerSummary,
 ) -> io::Result<()> {
+    let status = if summary.connected {
+        "connected"
+    } else {
+        "disconnected"
+    };
     writeln!(
         writer,
-        "{}  tools={} · prompts={} · resources={}",
-        summary.server_name, summary.tool_count, summary.prompt_count, summary.resource_count,
-    )
+        "{} [{} / {}]  tools={} · prompts={} · resources={}",
+        summary.server_name,
+        summary.transport,
+        status,
+        summary.tool_count,
+        summary.prompt_count,
+        summary.resource_count,
+    )?;
+    if let Some(error) = &summary.last_error {
+        writeln!(writer, "  error: {error}")?;
+    }
+    Ok(())
 }
 
 fn write_mcp_prompt_summaries(
@@ -4827,6 +4843,8 @@ mod tests {
             &McpServerConfig {
                 name: "docs".into(),
                 enabled: false,
+                bootstrap_network: None,
+                runtime_network: None,
                 transport: McpTransportConfig::Stdio {
                     command: "npx".to_string(),
                     args: vec!["-y".to_string(), "remote-mcp".to_string()],
@@ -4856,6 +4874,8 @@ mod tests {
             &[McpServerConfig {
                 name: "docs".into(),
                 enabled: true,
+                bootstrap_network: None,
+                runtime_network: None,
                 transport: McpTransportConfig::Stdio {
                     command: "npx".to_string(),
                     args: vec!["-y".to_string(), "remote-mcp".to_string()],
@@ -5047,6 +5067,8 @@ mod tests {
             &McpServerConfig {
                 name: "docs".into(),
                 enabled: true,
+                bootstrap_network: None,
+                runtime_network: None,
                 transport: McpTransportConfig::Stdio {
                     command: "npx".to_string(),
                     args: vec!["-y".to_string(), "remote-mcp".to_string()],
@@ -5499,9 +5521,13 @@ mod tests {
                 total_plugin_count: 2,
                 mcp_servers: vec![McpServerSummary {
                     server_name: "memory".to_string(),
+                    transport: "stdio".to_string(),
+                    enabled: true,
+                    connected: true,
                     tool_count: 2,
                     prompt_count: 1,
                     resource_count: 4,
+                    last_error: None,
                 }],
                 plugin_details: vec!["memory slot: workspace".to_string()],
                 warnings: vec!["stdio server skipped".to_string()],
@@ -5514,7 +5540,7 @@ mod tests {
         assert!(rendered.contains("Startup Diagnostics"));
         assert!(rendered.contains("tools: 12 local · 3 mcp"));
         assert!(rendered.contains("MCP Servers"));
-        assert!(rendered.contains("memory  tools=2 · prompts=1 · resources=4"));
+        assert!(rendered.contains("memory [stdio / connected]  tools=2 · prompts=1 · resources=4"));
         assert!(rendered.contains("Warnings"));
         assert!(rendered.contains("Diagnostics"));
     }
@@ -5654,6 +5680,8 @@ mod tests {
             vec![McpServerConfig {
                 name: "existing-mcp".into(),
                 enabled: true,
+                bootstrap_network: None,
+                runtime_network: None,
                 transport: McpTransportConfig::Stdio {
                     command: "stdio-server".to_string(),
                     args: Vec::new(),
@@ -5679,6 +5707,8 @@ mod tests {
                 mcp_servers: vec![McpServerConfig {
                     name: "driver-mcp".into(),
                     enabled: true,
+                    bootstrap_network: None,
+                    runtime_network: None,
                     transport: McpTransportConfig::StreamableHttp {
                         url: "https://example.test/mcp".to_string(),
                         headers: BTreeMap::new(),
@@ -5912,6 +5942,8 @@ mod tests {
             vec![McpServerConfig {
                 name: "existing-mcp".into(),
                 enabled: true,
+                bootstrap_network: None,
+                runtime_network: None,
                 transport: McpTransportConfig::Stdio {
                     command: "stdio-server".to_string(),
                     args: Vec::new(),
@@ -5974,6 +6006,8 @@ mod tests {
                 McpServerConfig {
                     name: "dup".into(),
                     enabled: true,
+                    bootstrap_network: None,
+                    runtime_network: None,
                     transport: McpTransportConfig::Stdio {
                         command: "first".to_string(),
                         args: Vec::new(),
@@ -5984,6 +6018,8 @@ mod tests {
                 McpServerConfig {
                     name: "dup".into(),
                     enabled: true,
+                    bootstrap_network: None,
+                    runtime_network: None,
                     transport: McpTransportConfig::Stdio {
                         command: "second".to_string(),
                         args: Vec::new(),
@@ -6018,6 +6054,8 @@ mod tests {
             &[McpServerConfig {
                 name: "disabled".into(),
                 enabled: false,
+                bootstrap_network: None,
+                runtime_network: None,
                 transport: McpTransportConfig::StreamableHttp {
                     url: "https://example.test/mcp".to_string(),
                     headers: BTreeMap::new(),

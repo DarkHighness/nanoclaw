@@ -94,9 +94,9 @@ mod tests {
                     read_roots: Vec::new(),
                     write_roots: vec!["/tmp/shared".into()],
                 },
-                network: Some(GrantedNetworkPermissions::AllowDomains(vec![
-                    "example.com".to_string(),
-                ])),
+                network: Some(GrantedNetworkPermissions::Allowlist(
+                    tools::NetworkAllowlist::with_domains(vec!["example.com".to_string()]),
+                )),
             },
         );
 
@@ -131,7 +131,9 @@ mod tests {
         );
         assert_eq!(
             policy.network,
-            NetworkPolicy::AllowDomains(vec!["example.com".to_string()])
+            NetworkPolicy::Allowlist(tools::NetworkAllowlist::with_domains(vec![
+                "example.com".to_string(),
+            ]))
         );
     }
 }

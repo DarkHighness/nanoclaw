@@ -124,6 +124,33 @@ pub async fn connect_and_catalog_mcp_servers_with_options(
     run_indexed_tasks_ordered(tasks, MCP_CONNECT_CONCURRENCY_LIMIT).await
 }
 
+pub async fn connect_and_catalog_mcp_servers_with_configured_options(
+    configs: Vec<(McpServerConfig, McpConnectOptions)>,
+) -> Result<Vec<ConnectedMcpServer>> {
+    info!(
+        server_count = configs.len(),
+        "connecting and cataloging MCP servers with per-server options"
+    );
+    let tasks = configs
+        .into_iter()
+        .enumerate()
+        .map(|(index, (config, options))| async move {
+            let client = connect_mcp_server_with_options(&config, options).await?;
+            let catalog = client.catalog().await?;
+            Ok::<_, McpError>((
+                index,
+                ConnectedMcpServer {
+                    server_name: config.name,
+                    boundary: boundary_for_transport(&config.transport),
+                    client,
+                    catalog,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    run_indexed_tasks_ordered(tasks, MCP_CONNECT_CONCURRENCY_LIMIT).await
+}
+
 async fn run_indexed_tasks_ordered<T, E, Fut>(
     tasks: Vec<Fut>,
     concurrency_limit: usize,
@@ -202,30 +229,30 @@ impl McpClient for RmcpClient {
             .into_iter()
             .map(|tool| tool_spec_from_rmcp(&self.server_name, &self.boundary, tool))
             .collect::<Result<Vec<_>>>()?;
-        let prompts = self
-            .peer
-            .list_all_prompts()
-            .await
-            .map_err(|error| McpError::protocol(error.to_string()))?
-            .into_iter()
-            .map(mcp_prompt_from_listing)
-            .collect();
-        let resources = self
-            .peer
-            .list_all_resources()
-            .await
-            .map_err(|error| McpError::protocol(error.to_string()))?
-            .into_iter()
-            .map(mcp_resource_from_listing)
-            .collect();
-        let resource_templates = self
-            .peer
-            .list_all_resource_templates()
-            .await
-            .map_err(|error| McpError::protocol(error.to_string()))?
-            .into_iter()
-            .map(mcp_resource_template_from_listing)
-            .collect();
+        let prompts = optional_catalog_listing(
+            &self.server_name,
+            "prompts/list",
+            self.peer.list_all_prompts().await,
+        )?
+        .into_iter()
+        .map(mcp_prompt_from_listing)
+        .collect();
+        let resources = optional_catalog_listing(
+            &self.server_name,
+            "resources/list",
+            self.peer.list_all_resources().await,
+        )?
+        .into_iter()
+        .map(mcp_resource_from_listing)
+        .collect();
+        let resource_templates = optional_catalog_listing(
+            &self.server_name,
+            "resources/templates/list",
+            self.peer.list_all_resource_templates().await,
+        )?
+        .into_iter()
+        .map(mcp_resource_template_from_listing)
+        .collect();
 
         Ok(McpCatalog {
             server_name: self.server_name.clone(),
@@ -287,6 +314,37 @@ impl McpClient for RmcpClient {
             messages: prompt_messages_to_messages(&result.messages),
         })
     }
+}
+
+fn optional_catalog_listing<T, E>(
+    server_name: &McpServerName,
+    method: &'static str,
+    result: std::result::Result<Vec<T>, E>,
+) -> Result<Vec<T>>
+where
+    E: std::fmt::Display,
+{
+    match result {
+        Ok(values) => Ok(values),
+        Err(error) if is_method_not_found_error(&error.to_string()) => {
+            // The MCP spec treats prompts/resources as optional capabilities.
+            // Real servers often implement only tools and respond with
+            // `-32601 Method not found` for the corresponding list method. The
+            // client should degrade that optional surface to an empty list
+            // instead of disconnecting the whole server.
+            debug!(
+                server = %server_name,
+                method,
+                "MCP server does not implement optional catalog listing"
+            );
+            Ok(Vec::new())
+        }
+        Err(error) => Err(McpError::protocol(error.to_string())),
+    }
+}
+
+fn is_method_not_found_error(message: &str) -> bool {
+    message.contains("-32601") || message.contains("Method not found")
 }
 
 #[derive(Clone)]
@@ -675,7 +733,10 @@ fn prompt_message_to_message(message: &PromptMessage) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_indexed_tasks_ordered, tool_spec_from_rmcp};
+    use super::{
+        is_method_not_found_error, optional_catalog_listing, run_indexed_tasks_ordered,
+        tool_spec_from_rmcp,
+    };
     use rmcp::model::{Tool, ToolAnnotations};
     use serde_json::{Map, Value, json};
     use std::sync::Arc;
@@ -751,6 +812,20 @@ mod tests {
         )
         .unwrap();
         assert!(remote_spec.availability.feature_flags.is_empty());
+    }
+
+    #[test]
+    fn optional_catalog_listing_treats_method_not_found_as_empty() {
+        let values = optional_catalog_listing::<usize, _>(
+            &"fixture".into(),
+            "prompts/list",
+            Err("Mcp error: -32601: Method not found"),
+        )
+        .unwrap();
+        assert!(values.is_empty());
+        assert!(is_method_not_found_error(
+            "Mcp error: -32601: Method not found"
+        ));
     }
 
     fn update_peak(peak: &AtomicUsize, candidate: usize) {

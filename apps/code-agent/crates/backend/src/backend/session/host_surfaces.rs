@@ -1,8 +1,9 @@
 use super::*;
+use crate::backend::mcp_connection_sandbox_policy;
 use code_agent_config::filter_unavailable_builtin_mcp_servers;
 
 impl CodeAgentSession {
-    fn configured_stdio_mcp_server_names(&self) -> Vec<String> {
+    pub(super) fn configured_stdio_mcp_server_names(&self) -> Vec<String> {
         self.configured_mcp_servers
             .read()
             .unwrap()
@@ -61,6 +62,30 @@ impl CodeAgentSession {
             .collect()
     }
 
+    pub(super) fn clear_mcp_connection_failures_for_names(
+        &self,
+        names: impl IntoIterator<Item = String>,
+    ) {
+        let mut failures = self.mcp_connection_failures.write().unwrap();
+        for name in names {
+            failures.remove(name.as_str());
+        }
+    }
+
+    pub(super) fn record_mcp_connection_failures(
+        &self,
+        attempted: &[McpServerConfig],
+        failures: &BTreeMap<String, String>,
+    ) {
+        let mut current = self.mcp_connection_failures.write().unwrap();
+        for server in attempted {
+            current.remove(server.name.as_str());
+        }
+        for (name, error) in failures {
+            current.insert(name.clone(), error.clone());
+        }
+    }
+
     pub(super) fn refresh_startup_diagnostics_snapshot(
         &self,
         runtime: &AgentRuntime,
@@ -75,7 +100,7 @@ impl CodeAgentSession {
             .count();
         snapshot.local_tool_count = local_tool_count;
         snapshot.mcp_tool_count = tool_specs.len().saturating_sub(local_tool_count);
-        snapshot.mcp_servers = list_mcp_servers(&self.connected_mcp_servers_snapshot());
+        snapshot.mcp_servers = self.configured_mcp_server_summaries(false);
         snapshot.warnings.retain(|warning| {
             !warning.starts_with(STDIO_MCP_DISABLED_WARNING_PREFIX)
                 && !warning.starts_with(COMMAND_HOOK_DISABLED_WARNING_PREFIX)
@@ -128,21 +153,26 @@ impl CodeAgentSession {
             return Ok(Vec::new());
         }
 
-        let connected = connect_and_catalog_mcp_servers_with_options(
-            &pending_configs,
-            McpConnectOptions {
-                process_executor: self.mcp_process_executor.clone(),
-                sandbox_policy: sandbox_policy.clone(),
-                ..Default::default()
-            },
+        let outcome = connect_and_prepare_mcp_servers(
+            pending_configs
+                .iter()
+                .cloned()
+                .map(|server| {
+                    let sandbox_policy = mcp_connection_sandbox_policy(sandbox_policy, &server);
+                    (
+                        server,
+                        McpConnectOptions {
+                            process_executor: self.mcp_process_executor.clone(),
+                            sandbox_policy,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
         )
-        .await?;
-        let mut prepared = Vec::with_capacity(connected.len());
-        for server in connected {
-            let adapters = catalog_tools_as_registry_entries(server.client.clone()).await?;
-            prepared.push((server, adapters));
-        }
-        Ok(prepared)
+        .await;
+        self.record_mcp_connection_failures(&pending_configs, &outcome.failures);
+        Ok(outcome.connected)
     }
 
     pub(super) fn set_runtime_hooks(
@@ -185,10 +215,20 @@ impl CodeAgentSession {
         }
 
         let registry = runtime.tool_registry_handle();
+        let outcome = filter_mcp_tool_conflicts(&registry, connected_servers);
+        if !outcome.failures.is_empty() {
+            let mut failures = self.mcp_connection_failures.write().unwrap();
+            for (name, error) in outcome.failures {
+                failures.insert(name, error);
+            }
+        }
+        if outcome.connected.is_empty() {
+            return;
+        }
         let mut attached_server_names = Vec::new();
         {
             let mut current_servers = self.mcp_servers.write().unwrap();
-            for (server, adapters) in connected_servers {
+            for (server, adapters) in outcome.connected {
                 // Stdio MCP servers were intentionally skipped at boot when the
                 // host could not service local subprocesses. Once the session
                 // enables that capability, register their per-server tools and
@@ -201,6 +241,7 @@ impl CodeAgentSession {
                 current_servers.push(server);
             }
         }
+        self.clear_mcp_connection_failures_for_names(attached_server_names.clone());
         self.rebuild_mcp_resource_tools(runtime);
         info!(
             "connected deferred stdio MCP servers after permission-mode change: {}",

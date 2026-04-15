@@ -54,7 +54,9 @@ pub use boot::{
 pub use boot_inputs::driver_host_output_lines;
 pub use boot_inputs::{dedup_mcp_servers, merge_driver_host_inputs, resolve_mcp_servers};
 pub use boot_mcp::{
-    list_mcp_prompts, list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
+    connect_and_prepare_mcp_servers, filter_mcp_tool_conflicts, list_mcp_prompts,
+    list_mcp_resources, list_mcp_servers, load_mcp_prompt, load_mcp_resource,
+    mcp_connection_sandbox_policy, summarize_mcp_servers,
 };
 pub use boot_preamble::{build_plugin_activation_plan, build_system_preamble, resolve_skill_roots};
 pub use boot_sandbox::{

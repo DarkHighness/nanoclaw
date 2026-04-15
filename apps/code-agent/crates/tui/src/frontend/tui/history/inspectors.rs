@@ -311,13 +311,20 @@ pub(crate) fn format_startup_diagnostics(
 }
 
 pub(crate) fn format_mcp_server_summary_line(summary: &McpServerSummary) -> InspectorEntry {
-    InspectorEntry::collection(
-        summary.server_name.clone(),
-        Some(format!(
-            "Tools={} Prompts={} Resources={}",
-            summary.tool_count, summary.prompt_count, summary.resource_count
-        )),
-    )
+    let status = if summary.connected {
+        "Connected"
+    } else {
+        "Disconnected"
+    };
+    let mut detail = format!(
+        "{} · {} · Tools={} Prompts={} Resources={}",
+        summary.transport, status, summary.tool_count, summary.prompt_count, summary.resource_count
+    );
+    if let Some(error) = &summary.last_error {
+        detail.push_str(" · ");
+        detail.push_str(error);
+    }
+    InspectorEntry::collection(summary.server_name.clone(), Some(detail))
 }
 
 pub(crate) fn format_mcp_prompt_summary_line(summary: &McpPromptSummary) -> InspectorEntry {

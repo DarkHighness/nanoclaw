@@ -87,8 +87,8 @@ pub(super) fn build_macos_seatbelt_profile(
     match &policy.network {
         NetworkPolicy::Off => {}
         NetworkPolicy::Full => lines.push("(allow network*)".to_string()),
-        NetworkPolicy::AllowDomains(domains) => {
-            if domains.is_empty() {
+        NetworkPolicy::Allowlist(allowlist) => {
+            if allowlist.domains.is_empty() {
                 return Err(SandboxError::invalid_state(
                     "domain-scoped network policy requires at least one allowed domain",
                 ));

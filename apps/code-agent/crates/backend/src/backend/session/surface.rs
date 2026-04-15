@@ -13,6 +13,29 @@ impl CodeAgentSession {
         self.mcp_servers.read().unwrap().clone()
     }
 
+    pub(super) fn mcp_connection_failures_snapshot(&self) -> BTreeMap<String, String> {
+        self.mcp_connection_failures.read().unwrap().clone()
+    }
+
+    pub(super) fn configured_mcp_server_summaries(
+        &self,
+        include_disabled: bool,
+    ) -> Vec<McpServerSummary> {
+        let configured = self
+            .configured_mcp_servers
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|server| include_disabled || server.enabled)
+            .cloned()
+            .collect::<Vec<_>>();
+        summarize_mcp_servers(
+            &configured,
+            &self.connected_mcp_servers_snapshot(),
+            &self.mcp_connection_failures_snapshot(),
+        )
+    }
+
     pub fn skill_summaries(&self) -> Vec<SkillSummary> {
         self.preamble
             .skill_catalog
@@ -57,8 +80,7 @@ impl CodeAgentSession {
     }
 
     pub async fn list_mcp_servers(&self) -> Vec<McpServerSummary> {
-        let servers = self.connected_mcp_servers_snapshot();
-        list_mcp_servers(&servers)
+        self.configured_mcp_server_summaries(false)
     }
 
     pub async fn list_mcp_prompts(&self) -> Vec<McpPromptSummary> {

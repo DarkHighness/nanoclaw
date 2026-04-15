@@ -15,9 +15,13 @@ pub struct StartupDiagnosticsSnapshot {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct McpServerSummary {
     pub server_name: String,
+    pub transport: String,
+    pub enabled: bool,
+    pub connected: bool,
     pub tool_count: usize,
     pub prompt_count: usize,
     pub resource_count: usize,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

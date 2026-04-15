@@ -41,6 +41,7 @@ impl CodeAgentSession {
         let connected_stdio_mcp_servers = if host_process_surfaces_allowed {
             self.connect_pending_stdio_mcp_servers(&policy).await?
         } else {
+            self.clear_mcp_connection_failures_for_names(self.configured_stdio_mcp_server_names());
             Vec::new()
         };
         let (tool_names, side_question_context, startup_diagnostics) = {

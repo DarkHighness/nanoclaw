@@ -816,6 +816,8 @@ fn builtin_core_mcp_server(env_map: &EnvMap, name: &str) -> Option<McpServerConf
     Some(McpServerConfig {
         name: definition.name.into(),
         enabled: true,
+        bootstrap_network: None,
+        runtime_network: None,
         transport: match definition.transport {
             BuiltinMcpTransportDefinition::Stdio {
                 package,
@@ -1304,6 +1306,8 @@ mod tests {
         McpServerConfig {
             name: name.into(),
             enabled: true,
+            bootstrap_network: None,
+            runtime_network: None,
             transport: McpTransportConfig::Stdio {
                 command: "npx".to_string(),
                 args: vec!["demo-mcp".to_string()],
