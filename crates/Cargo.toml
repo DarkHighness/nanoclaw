@@ -3,7 +3,6 @@ default-members = [
     "config",
     "core",
     "env",
-    "inference",
     "memory",
     "mcp",
     "plugins",
@@ -19,7 +18,6 @@ members = [
     "config",
     "core",
     "env",
-    "inference",
     "memory",
     "mcp",
     "plugins",
@@ -89,5 +87,4 @@ wiremock = "0.6.5"
 wasmtime = { version = "34.0.2", default-features = false, features = ["cranelift", "runtime", "std"] }
 wat = "1.241.2"
 agent-env = { path = "env" }
-inference = { path = "inference" }
 sandbox = { path = "sandbox" }

@@ -23,7 +23,6 @@ version = "0.1.0"
 dependencies = [
  "agent-env",
  "anyhow",
- "inference",
  "mcp",
  "memory",
  "plugins",
@@ -1784,18 +1783,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
 dependencies = [
  "rustversion",
-]
-
-[[package]]
-name = "inference"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "error-stack",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]

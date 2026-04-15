@@ -1626,9 +1626,7 @@ async fn load_tool_management_snapshot(
 
 fn should_render_diagnostic_details(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
-        cause.is::<agent::runtime::RuntimeError>()
-            || cause.is::<agent::provider::ProviderError>()
-            || cause.is::<agent::inference::InferenceError>()
+        cause.is::<agent::runtime::RuntimeError>() || cause.is::<agent::provider::ProviderError>()
     })
 }
 

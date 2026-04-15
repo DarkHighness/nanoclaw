@@ -18,7 +18,6 @@ web-tools = ["tools/web-tools"]
 
 [dependencies]
 agent-env = { path = "../env" }
-inference = { path = "../inference" }
 memory = { path = "../memory" }
 mcp = { path = "../mcp" }
 plugins = { path = "../plugins" }

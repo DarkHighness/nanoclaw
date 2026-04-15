@@ -11,7 +11,6 @@ mod plugin_boot;
 mod prelude;
 mod workspace_layout;
 
-pub use inference;
 pub use mcp;
 pub use memory;
 pub use plugins;

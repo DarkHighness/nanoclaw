@@ -25,7 +25,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
- "inference",
  "mcp",
  "memory",
  "plugins",
@@ -1330,19 +1329,6 @@ dependencies = [
  "hashbrown 0.16.1",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "inference"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "error-stack",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
