@@ -675,7 +675,10 @@ backed extraction, archival, and promotion workflows be layered on top.
 - Skill invocation is explicit through both `$skill_name` and `/skill_name`,
   and the system prompt now injects a compact skill index that tells the model
   to load partially relevant skills through `skill_view` before proceeding.
-  `skills_list` remains the broader browsing and refresh surface.
+  `skills_list` remains the broader browsing and refresh surface. Runtime turn
+  requests now also inject host-measured skill-capture counters through
+  `additional_context` so the model can see authoritative tool-call and
+  recovery counts before deciding whether to save or patch a skill.
 - Updating a skill emits an explicit follow-up note in tool output instead of
   mutating the runtime instruction prefix.
 
@@ -686,6 +689,9 @@ backed extraction, archival, and promotion workflows be layered on top.
   - add Hermes-style `skills_list`, `skill_view`, and `skill_manage`
   - inject a compact prompt-time skill index while keeping full skill bodies
     behind `skill_view`
+  - inject per-turn host runtime counters into request additional context so
+    skill capture decisions do not rely on the model estimating tool churn or
+    retry/recovery activity from memory
   - surface installed skills in the TUI as `/skill_name` slash commands while
     keeping `$skill_name` composer directives
   - surface Hermes-style provenance trust/update/audit metadata through typed

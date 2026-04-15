@@ -1,4 +1,4 @@
-use super::AgentRuntime;
+use super::{AgentRuntime, ToolExecutionDisposition};
 use crate::{
     LoopSignalSeverity, Result, RuntimeObserver, RuntimeProgressEvent, ToolApprovalOutcome,
     ToolApprovalPolicyDecision, ToolApprovalRequest, append_transcript_message,
@@ -18,7 +18,7 @@ impl AgentRuntime {
         turn_id: &TurnId,
         call: ToolCall,
         observer: &mut dyn RuntimeObserver,
-    ) -> Result<()> {
+    ) -> Result<ToolExecutionDisposition> {
         let mut call = call;
         let tool_name = call.tool_name.clone();
         let tool = self
@@ -57,7 +57,8 @@ impl AgentRuntime {
         if let Some(reason) = pre_effects.blocked_reason("tool use blocked") {
             return self
                 .record_tool_failure_result(hooks, turn_id, &call, observer, reason)
-                .await;
+                .await
+                .map(|_| ToolExecutionDisposition::Failed);
         }
         match pre_effects
             .permission_decision
@@ -67,7 +68,8 @@ impl AgentRuntime {
                 let error = AgentCoreError::ToolDenied(tool_name.to_string()).to_string();
                 return self
                     .record_tool_failure_result(hooks, turn_id, &call, observer, error)
-                    .await;
+                    .await
+                    .map(|_| ToolExecutionDisposition::Failed);
             }
             PermissionDecision::Ask => {
                 let permission_hooks = self
@@ -111,7 +113,8 @@ impl AgentRuntime {
                                 .or(permission_effects.stop_reason)
                                 .unwrap_or(error),
                         )
-                        .await;
+                        .await
+                        .map(|_| ToolExecutionDisposition::Failed);
                 }
                 hook_approval_reasons.push(
                     permission_effects
@@ -148,7 +151,8 @@ impl AgentRuntime {
                 });
                 return self
                     .record_tool_failure_result(hooks, turn_id, &call, observer, error)
-                    .await;
+                    .await
+                    .map(|_| ToolExecutionDisposition::Failed);
             }
             ToolApprovalPolicyDecision::Abstain => {}
         }
@@ -221,7 +225,8 @@ impl AgentRuntime {
                                 AgentCoreError::PermissionDenied(tool_name.to_string()).to_string()
                             }),
                         )
-                        .await;
+                        .await
+                        .map(|_| ToolExecutionDisposition::Failed);
                 }
             }
         }
@@ -274,7 +279,8 @@ impl AgentRuntime {
                         observer,
                         format!("loop detector blocked tool call: {}", signal.reason),
                     )
-                    .await;
+                    .await
+                    .map(|_| ToolExecutionDisposition::Failed);
             }
         }
 
@@ -356,16 +362,16 @@ impl AgentRuntime {
                 if let Some(reason) = post_effects.blocked_reason("post tool hook blocked") {
                     return Err(AgentCoreError::HookBlocked(reason).into());
                 }
+                return Ok(ToolExecutionDisposition::Completed);
             }
             Err(error) => {
                 self.tool_loop_detector
                     .record_error(&call, &error.to_string());
                 self.record_tool_failure_result(hooks, turn_id, &call, observer, error.to_string())
                     .await?;
+                return Ok(ToolExecutionDisposition::Failed);
             }
         }
-
-        Ok(())
     }
 
     async fn record_tool_failure_result(

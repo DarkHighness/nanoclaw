@@ -103,10 +103,17 @@ async fn runtime_applies_hook_effects_without_mutating_base_instructions() {
     let requests = backend.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].instructions, vec!["static base instruction"]);
-    assert_eq!(
-        requests[0].additional_context,
-        vec!["hook additional context".to_string()]
+    assert!(
+        requests[0]
+            .additional_context
+            .iter()
+            .any(|entry| entry == "hook additional context")
     );
+    assert!(requests[0].additional_context.iter().any(|entry| {
+        entry.contains("## Runtime Skill Capture Signals")
+            && entry.contains("tool_calls_so_far: 0")
+            && entry.contains("error_recovery_signals_so_far: 0")
+    }));
     assert_eq!(requests[0].messages.len(), 2);
     assert_eq!(requests[0].messages[0].role, types::MessageRole::System);
     assert_eq!(

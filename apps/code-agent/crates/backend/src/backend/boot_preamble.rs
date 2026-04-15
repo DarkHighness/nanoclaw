@@ -48,6 +48,8 @@ pub fn build_system_preamble(
             .to_string(),
         "Use tool_discover when you need a typed runtime capability, host-managed lifecycle, or other integration a skill cannot supply on its own."
             .to_string(),
+        "When the runtime provides skill-capture counters in additional context, treat those host-measured tool-call and recovery counts as authoritative for the current turn instead of estimating them from recollection."
+            .to_string(),
         "After completing a complex or iterative task, fixing a tricky error, or discovering a reusable non-trivial workflow, save or update the approach with skill_manage unless an existing skill already captures it."
             .to_string(),
         "When a loaded skill is outdated, incomplete, or wrong, patch it with skill_manage(action='patch') before finishing. Skills that are not maintained become liabilities."
@@ -508,6 +510,11 @@ mod tests {
         assert!(preamble.contains("you MUST inspect it with skill_view"));
         assert!(preamble.contains("release-smoke"));
         assert!(preamble.contains("Use tool_discover when you need a typed runtime capability"));
+        assert!(
+            preamble.contains(
+                "treat those host-measured tool-call and recovery counts as authoritative"
+            )
+        );
         assert!(preamble.contains("save or update the approach with skill_manage"));
         assert!(preamble.contains("skill_manage(action='patch')"));
         assert!(

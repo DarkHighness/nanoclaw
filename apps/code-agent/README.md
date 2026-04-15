@@ -38,6 +38,7 @@ It intentionally keeps the host layer thin:
 - workspace skills loaded from conventional skill roots
 - Hermes-style skill discovery and mutation:
   - the system prompt injects a compact skill index and tells the model to load partially relevant skills with `skill_view` before proceeding
+  - each in-flight turn now injects host-measured skill-capture counters through `additional_context`, so the model can see authoritative tool-call, failed-tool, and provider-retry counts before deciding whether to `skill_manage`
   - `skills_list` still browses the full catalog and refreshes the model's view after skill mutations
   - `skill_view` progressively loads `SKILL.md` content or companion files on demand
   - `skill_manage` mutates only the managed root, supports managed `archive` / `restore`, and is explicitly recommended after reusable workflows, tricky fixes, or stale-skill discovery

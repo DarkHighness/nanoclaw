@@ -1,4 +1,4 @@
-use super::support::{RecordingBackend, RecordingObserver};
+use super::support::{FailingTool, RecordingBackend, RecordingObserver};
 use crate::{
     AgentRuntimeBuilder, AugmentedUserMessage, HookRunner, ModelBackend, Result, RuntimeCommand,
     RuntimeControlPlane, RuntimeProgressEvent, UserMessageAugmentationContext,
@@ -26,6 +26,7 @@ struct ToolTurnRecordingBackend {
 #[derive(Clone)]
 struct RetryThenSuccessBackend {
     attempts: Arc<Mutex<usize>>,
+    requests: Arc<Mutex<Vec<ModelRequest>>>,
     retries_before_success: usize,
 }
 
@@ -39,12 +40,17 @@ impl RetryThenSuccessBackend {
     fn with_failures(retries_before_success: usize) -> Self {
         Self {
             attempts: Arc::new(Mutex::new(0)),
+            requests: Arc::new(Mutex::new(Vec::new())),
             retries_before_success,
         }
     }
 
     fn attempts(&self) -> usize {
         *self.attempts.lock().unwrap()
+    }
+
+    fn requests(&self) -> Vec<ModelRequest> {
+        self.requests.lock().unwrap().clone()
     }
 }
 
@@ -141,8 +147,9 @@ impl ModelBackend for ToolTurnRecordingBackend {
 impl ModelBackend for RetryThenSuccessBackend {
     async fn stream_turn(
         &self,
-        _request: ModelRequest,
+        request: ModelRequest,
     ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+        self.requests.lock().unwrap().push(request);
         let mut attempts = self.attempts.lock().unwrap();
         *attempts = attempts.saturating_add(1);
         if *attempts <= self.retries_before_success {
@@ -157,6 +164,67 @@ impl ModelBackend for RetryThenSuccessBackend {
         Ok(stream::iter(vec![
             Ok(ModelEvent::TextDelta {
                 delta: "ok".to_string(),
+            }),
+            Ok(ModelEvent::ResponseComplete {
+                stop_reason: Some("stop".to_string()),
+                message_id: None,
+                continuation: None,
+                usage: None,
+                reasoning: Vec::new(),
+            }),
+        ])
+        .boxed())
+    }
+}
+
+#[derive(Clone, Default)]
+struct FailingToolTurnRecordingBackend {
+    requests: Arc<Mutex<Vec<ModelRequest>>>,
+}
+
+impl FailingToolTurnRecordingBackend {
+    fn requests(&self) -> Vec<ModelRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ModelBackend for FailingToolTurnRecordingBackend {
+    async fn stream_turn(
+        &self,
+        request: ModelRequest,
+    ) -> Result<BoxStream<'static, Result<ModelEvent>>> {
+        self.requests.lock().unwrap().push(request.clone());
+        let has_tool_result = request.messages.iter().any(|message| {
+            message
+                .parts
+                .iter()
+                .any(|part| matches!(part, types::MessagePart::ToolResult { .. }))
+        });
+        if !has_tool_result {
+            let call = ToolCall {
+                id: ToolCallId::new(),
+                call_id: "call-fail-1".into(),
+                tool_name: "fail".into(),
+                arguments: serde_json::json!({}),
+                origin: ToolOrigin::Local,
+            };
+            return Ok(stream::iter(vec![
+                Ok(ModelEvent::ToolCallRequested { call }),
+                Ok(ModelEvent::ResponseComplete {
+                    stop_reason: Some("tool_use".to_string()),
+                    message_id: None,
+                    continuation: None,
+                    usage: None,
+                    reasoning: Vec::new(),
+                }),
+            ])
+            .boxed());
+        }
+
+        Ok(stream::iter(vec![
+            Ok(ModelEvent::TextDelta {
+                delta: "handled".to_string(),
             }),
             Ok(ModelEvent::ResponseComplete {
                 stop_reason: Some("stop".to_string()),
@@ -282,6 +350,18 @@ async fn runtime_retries_retryable_provider_failures_before_streaming() {
         })
         .collect::<Vec<_>>();
     assert_eq!(retry_events, vec![(429, 1, 5, 4), (429, 2, 5, 3)]);
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].additional_context.iter().any(|entry| {
+        entry.contains("tool_calls_so_far: 0")
+            && entry.contains("provider_retries_so_far: 0")
+            && entry.contains("error_recovery_signals_so_far: 0")
+    }));
+    assert!(requests[2].additional_context.iter().any(|entry| {
+        entry.contains("tool_calls_so_far: 0")
+            && entry.contains("provider_retries_so_far: 2")
+            && entry.contains("error_recovery_signals_so_far: 2")
+    }));
 
     let request_start_count = observer
         .events()
@@ -289,6 +369,82 @@ async fn runtime_retries_retryable_provider_failures_before_streaming() {
         .filter(|event| matches!(event, RuntimeProgressEvent::ModelRequestStarted { .. }))
         .count();
     assert_eq!(request_start_count, 3);
+}
+
+#[tokio::test]
+async fn runtime_injects_skill_capture_counts_after_successful_tool_use() {
+    let dir = tempfile::tempdir().unwrap();
+    tokio::fs::write(dir.path().join("sample.txt"), "hello\nworld")
+        .await
+        .unwrap();
+    let backend = ToolTurnRecordingBackend::default();
+    let mut registry = ToolRegistry::new();
+    registry.register(ReadTool::new());
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(backend.clone()), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_registry(registry)
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .build();
+
+    let outcome = runtime
+        .run_user_prompt("please inspect sample.txt")
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.assistant_text, "done");
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].additional_context.iter().any(|entry| {
+        entry.contains("tool_calls_so_far: 0")
+            && entry.contains("failed_tool_calls_so_far: 0")
+            && entry.contains("provider_retries_so_far: 0")
+    }));
+    assert!(requests[1].additional_context.iter().any(|entry| {
+        entry.contains("tool_calls_so_far: 1")
+            && entry.contains("failed_tool_calls_so_far: 0")
+            && entry.contains("provider_retries_so_far: 0")
+            && entry.contains("error_recovery_signals_so_far: 0")
+    }));
+}
+
+#[tokio::test]
+async fn runtime_injects_skill_capture_counts_after_failed_tool_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = FailingToolTurnRecordingBackend::default();
+    let mut registry = ToolRegistry::new();
+    registry.register(FailingTool);
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(backend.clone()), store)
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_registry(registry)
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_context_window_tokens: Some(128_000),
+            ..Default::default()
+        })
+        .build();
+
+    let outcome = runtime
+        .run_user_prompt("try the failing tool")
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.assistant_text, "handled");
+    let requests = backend.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].additional_context.iter().any(|entry| {
+        entry.contains("tool_calls_so_far: 1")
+            && entry.contains("failed_tool_calls_so_far: 1")
+            && entry.contains("provider_retries_so_far: 0")
+            && entry.contains("error_recovery_signals_so_far: 1")
+    }));
 }
 
 #[tokio::test]

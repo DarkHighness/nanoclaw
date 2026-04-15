@@ -1,4 +1,7 @@
-use super::{AgentRuntime, RunTurnOutcome, provider_state::is_provider_continuation_lost};
+use super::{
+    AgentRuntime, RunTurnOutcome, ToolExecutionDisposition,
+    provider_state::is_provider_continuation_lost,
+};
 use crate::{
     Result, RuntimeObserver, RuntimeProgressEvent, append_transcript_message,
     estimate_prompt_tokens,
@@ -23,8 +26,61 @@ struct TurnResponse {
     token_usage: Option<TokenUsage>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SkillCaptureRuntimeStats {
+    tool_call_count: usize,
+    failed_tool_call_count: usize,
+    provider_retry_count: usize,
+}
+
+impl SkillCaptureRuntimeStats {
+    fn record_tool_result(&mut self, outcome: ToolExecutionDisposition) {
+        self.tool_call_count = self.tool_call_count.saturating_add(1);
+        if matches!(outcome, ToolExecutionDisposition::Failed) {
+            self.failed_tool_call_count = self.failed_tool_call_count.saturating_add(1);
+        }
+    }
+
+    fn record_provider_retry(&mut self) {
+        self.provider_retry_count = self.provider_retry_count.saturating_add(1);
+    }
+
+    fn error_recovery_signal_count(&self) -> usize {
+        self.failed_tool_call_count
+            .saturating_add(self.provider_retry_count)
+    }
+
+    fn render_additional_context(&self) -> String {
+        format!(
+            "## Runtime Skill Capture Signals\n\
+These host counters describe the current turn so far. Treat them as authoritative instead of estimating task complexity or recovery work from memory.\n\
+- tool_calls_so_far: {tool_calls}\n\
+- failed_tool_calls_so_far: {failed_tools}\n\
+- provider_retries_so_far: {provider_retries}\n\
+- error_recovery_signals_so_far: {recovery_signals}\n\
+Use these counters when deciding whether the finished workflow is complex, failure-prone, or reusable enough to justify `skill_manage` before you conclude the task.",
+            tool_calls = self.tool_call_count,
+            failed_tools = self.failed_tool_call_count,
+            provider_retries = self.provider_retry_count,
+            recovery_signals = self.error_recovery_signal_count()
+        )
+    }
+}
+
+const SKILL_CAPTURE_CONTEXT_HEADER: &str = "## Runtime Skill Capture Signals";
 const MAX_PROVIDER_REQUEST_RETRIES: usize = 5;
 const PROVIDER_REQUEST_BASE_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+fn inject_skill_capture_context(
+    additional_context: &mut Vec<String>,
+    stats: &SkillCaptureRuntimeStats,
+) {
+    // Keep one authoritative host-generated counter block per request so the
+    // model can judge skill capture using current runtime facts instead of
+    // accumulating stale estimates across retries or tool-use iterations.
+    additional_context.retain(|entry| !entry.starts_with(SKILL_CAPTURE_CONTEXT_HEADER));
+    additional_context.push(stats.render_additional_context());
+}
 
 impl AgentRuntime {
     pub(super) async fn run_turn_loop(
@@ -35,13 +91,20 @@ impl AgentRuntime {
         observer: &mut dyn RuntimeObserver,
     ) -> Result<RunTurnOutcome> {
         let mut iteration = 0usize;
+        let mut skill_capture_stats = SkillCaptureRuntimeStats::default();
         loop {
             iteration = iteration.saturating_add(1);
             let _ = self
                 .compact_if_needed(turn_id, instructions, observer)
                 .await?;
             let response = self
-                .collect_model_response(turn_id, instructions, iteration, observer)
+                .collect_model_response(
+                    turn_id,
+                    instructions,
+                    iteration,
+                    &mut skill_capture_stats,
+                    observer,
+                )
                 .await?;
             self.persist_assistant_response(turn_id, &response).await?;
             self.update_provider_continuation(response.provider_continuation.clone());
@@ -55,8 +118,10 @@ impl AgentRuntime {
                         call_id = %call.call_id,
                         "dispatching tool call"
                     );
-                    self.handle_tool_call(hooks, turn_id, call, observer)
+                    let outcome = self
+                        .handle_tool_call(hooks, turn_id, call, observer)
                         .await?;
+                    skill_capture_stats.record_tool_result(outcome);
                 }
                 let drained = self.hook_runner.drain_async_invocations().await;
                 let _ = self
@@ -106,9 +171,11 @@ impl AgentRuntime {
         turn_id: &TurnId,
         instructions: &[String],
         iteration: usize,
+        skill_capture_stats: &mut SkillCaptureRuntimeStats,
         observer: &mut dyn RuntimeObserver,
     ) -> Result<TurnResponse> {
         let mut request = self.build_model_request(turn_id, instructions, false);
+        inject_skill_capture_context(&mut request.additional_context, skill_capture_stats);
         self.publish_model_request_started(turn_id, iteration, observer, &request)
             .await?;
 
@@ -141,6 +208,10 @@ impl AgentRuntime {
                         message: error.to_string(),
                     })?;
                     request = self.build_model_request(turn_id, instructions, true);
+                    inject_skill_capture_context(
+                        &mut request.additional_context,
+                        skill_capture_stats,
+                    );
                     retry_count = 0;
                     self.publish_model_request_started(turn_id, iteration, observer, &request)
                         .await?;
@@ -154,6 +225,11 @@ impl AgentRuntime {
                     }
 
                     retry_count = retry_count.saturating_add(1);
+                    skill_capture_stats.record_provider_retry();
+                    inject_skill_capture_context(
+                        &mut request.additional_context,
+                        skill_capture_stats,
+                    );
                     let remaining_retries =
                         MAX_PROVIDER_REQUEST_RETRIES.saturating_sub(retry_count);
                     let delay = retry_hint.retry_after.unwrap_or_else(|| {

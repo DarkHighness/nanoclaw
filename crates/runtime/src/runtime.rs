@@ -46,6 +46,12 @@ pub struct RunTurnOutcome {
     pub assistant_text: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ToolExecutionDisposition {
+    Completed,
+    Failed,
+}
+
 pub struct RollbackVisibleHistoryOutcome {
     pub removed_message_ids: Vec<types::MessageId>,
 }
