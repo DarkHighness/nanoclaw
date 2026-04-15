@@ -93,18 +93,12 @@ enum CliCommand {
     /// Export a persisted session transcript as plain text.
     #[command(name = "export-transcript")]
     ExportTranscript(SessionExportArgs),
-    /// Print the current startup diagnostics snapshot.
-    Diagnostics,
-    /// Manage configured MCP servers.
+    /// Manage and inspect configured MCP servers.
     Mcp(McpCommandArgs),
     /// Manage workspace-local managed skills.
     Skill(SkillCommandArgs),
     /// Manage workspace-local plugins and plugin enablement.
     Plugin(PluginCommandArgs),
-    /// List MCP prompts exposed by connected servers.
-    Prompts,
-    /// List MCP resources exposed by connected servers.
-    Resources,
 }
 
 #[derive(Debug, Args)]
@@ -119,6 +113,12 @@ enum McpSubcommand {
     List,
     /// Inspect one configured MCP server.
     Show(McpNamedArgs),
+    /// Print the current startup diagnostics snapshot for MCP startup.
+    Diagnostics,
+    /// List MCP prompts exposed by connected servers.
+    Prompts,
+    /// List MCP resources exposed by connected servers.
+    Resources,
     /// Add a configured MCP server.
     Add(McpAddArgs),
     /// Delete a configured MCP server.
@@ -474,12 +474,9 @@ impl Cli {
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
-                | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
-                | CliCommand::Plugin(_)
-                | CliCommand::Prompts
-                | CliCommand::Resources,
+                | CliCommand::Plugin(_),
             ) => {}
         }
         args
@@ -503,12 +500,9 @@ impl Cli {
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
-                | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
-                | CliCommand::Plugin(_)
-                | CliCommand::Prompts
-                | CliCommand::Resources,
+                | CliCommand::Plugin(_),
             ) => Ok(LaunchMode::Default),
             None => Ok(LaunchMode::Default),
         }
@@ -517,7 +511,7 @@ impl Cli {
     fn management_command(&self) -> Result<Option<ManagementCommand>> {
         match &self.command {
             Some(CliCommand::Mcp(command)) => {
-                Ok(Some(ManagementCommand::Mcp(command.management_command()?)))
+                Ok(command.management_command()?.map(ManagementCommand::Mcp))
             }
             Some(CliCommand::Skill(command)) => {
                 Ok(Some(ManagementCommand::Skill(command.management_command())))
@@ -538,10 +532,7 @@ impl Cli {
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
-                | CliCommand::ExportTranscript(_)
-                | CliCommand::Diagnostics
-                | CliCommand::Prompts
-                | CliCommand::Resources,
+                | CliCommand::ExportTranscript(_),
             )
             | None => Ok(None),
         }
@@ -595,12 +586,9 @@ impl Cli {
             Some(
                 CliCommand::Resume(_)
                 | CliCommand::Fork(_)
-                | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
-                | CliCommand::Plugin(_)
-                | CliCommand::Prompts
-                | CliCommand::Resources,
+                | CliCommand::Plugin(_),
             )
             | None => Ok(None),
         }
@@ -622,22 +610,17 @@ impl Cli {
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
-                | CliCommand::Diagnostics
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
-                | CliCommand::Plugin(_)
-                | CliCommand::Prompts
-                | CliCommand::Resources,
+                | CliCommand::Plugin(_),
             )
             | None => Ok(None),
         }
     }
 
     fn live_inspect_command(&self) -> Option<LiveInspectCommand> {
-        match self.command {
-            Some(CliCommand::Diagnostics) => Some(LiveInspectCommand::Diagnostics),
-            Some(CliCommand::Prompts) => Some(LiveInspectCommand::Prompts),
-            Some(CliCommand::Resources) => Some(LiveInspectCommand::Resources),
+        match &self.command {
+            Some(CliCommand::Mcp(command)) => command.live_inspect_command(),
             Some(
                 CliCommand::Exec(_)
                 | CliCommand::Resume(_)
@@ -652,7 +635,6 @@ impl Cli {
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
-                | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
                 | CliCommand::Plugin(_),
             )
@@ -675,26 +657,43 @@ impl SessionLookupArgs {
 }
 
 impl McpCommandArgs {
-    fn management_command(&self) -> Result<McpManagementCommand> {
+    fn management_command(&self) -> Result<Option<McpManagementCommand>> {
         match &self.command {
-            McpSubcommand::List => Ok(McpManagementCommand::List),
-            McpSubcommand::Show(command) => Ok(McpManagementCommand::Show {
+            McpSubcommand::List => Ok(Some(McpManagementCommand::List)),
+            McpSubcommand::Show(command) => Ok(Some(McpManagementCommand::Show {
                 name: command.name.clone(),
-            }),
-            McpSubcommand::Add(command) => Ok(McpManagementCommand::Add {
+            })),
+            McpSubcommand::Diagnostics | McpSubcommand::Prompts | McpSubcommand::Resources => {
+                Ok(None)
+            }
+            McpSubcommand::Add(command) => Ok(Some(McpManagementCommand::Add {
                 server: command.server_config()?,
-            }),
-            McpSubcommand::Delete(command) => Ok(McpManagementCommand::Delete {
+            })),
+            McpSubcommand::Delete(command) => Ok(Some(McpManagementCommand::Delete {
                 name: command.name.clone(),
-            }),
-            McpSubcommand::Enable(command) => Ok(McpManagementCommand::SetEnabled {
+            })),
+            McpSubcommand::Enable(command) => Ok(Some(McpManagementCommand::SetEnabled {
                 name: command.name.clone(),
                 enabled: true,
-            }),
-            McpSubcommand::Disable(command) => Ok(McpManagementCommand::SetEnabled {
+            })),
+            McpSubcommand::Disable(command) => Ok(Some(McpManagementCommand::SetEnabled {
                 name: command.name.clone(),
                 enabled: false,
-            }),
+            })),
+        }
+    }
+
+    fn live_inspect_command(&self) -> Option<LiveInspectCommand> {
+        match &self.command {
+            McpSubcommand::Diagnostics => Some(LiveInspectCommand::Diagnostics),
+            McpSubcommand::Prompts => Some(LiveInspectCommand::Prompts),
+            McpSubcommand::Resources => Some(LiveInspectCommand::Resources),
+            McpSubcommand::List
+            | McpSubcommand::Show(_)
+            | McpSubcommand::Add(_)
+            | McpSubcommand::Delete(_)
+            | McpSubcommand::Enable(_)
+            | McpSubcommand::Disable(_) => None,
         }
     }
 }
@@ -2951,8 +2950,8 @@ mod tests {
     }
 
     #[test]
-    fn clap_parses_diagnostics_live_command() {
-        let cli = Cli::parse_from(["code-agent", "diagnostics"]);
+    fn clap_parses_mcp_diagnostics_live_command() {
+        let cli = Cli::parse_from(["code-agent", "mcp", "diagnostics"]);
 
         assert_eq!(
             cli.live_inspect_command(),
@@ -2961,8 +2960,8 @@ mod tests {
     }
 
     #[test]
-    fn clap_parses_resources_live_command() {
-        let cli = Cli::parse_from(["code-agent", "resources"]);
+    fn clap_parses_mcp_resources_live_command() {
+        let cli = Cli::parse_from(["code-agent", "mcp", "resources"]);
 
         assert_eq!(
             cli.live_inspect_command(),

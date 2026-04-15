@@ -221,9 +221,9 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin add ./my-plugi
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin disable review-policy
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin enable review-policy
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin delete review-policy
-cargo run --manifest-path apps/Cargo.toml -p code-agent -- diagnostics
-cargo run --manifest-path apps/Cargo.toml -p code-agent -- prompts
-cargo run --manifest-path apps/Cargo.toml -p code-agent -- resources
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp diagnostics
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp prompts
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp resources
 ```
 
 On exit, the app prints aggregate token usage plus resume and fork hints for the
@@ -250,10 +250,10 @@ normal skill loader surface it.
 runtime actually consults when `plugins.enabled`, `plugins.allow`, or
 `plugins.deny` would otherwise block the requested state change.
 
-The live `diagnostics`, `prompts`, and `resources` commands boot the normal
-runtime surface without entering the TUI. They therefore use the same
-workspace config, sandbox checks, plugin activation, and MCP connection setup
-as an interactive session.
+The live `mcp diagnostics`, `mcp prompts`, and `mcp resources` commands boot
+the normal runtime surface without entering the TUI. They therefore use the
+same workspace config, sandbox checks, plugin activation, and MCP connection
+setup as an interactive session.
 
 ## Environment
 
