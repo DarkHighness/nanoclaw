@@ -1861,21 +1861,47 @@ fn write_mcp_server_summaries(
     servers: &[agent::mcp::McpServerConfig],
 ) -> io::Result<()> {
     if servers.is_empty() {
+        write_collection_header(writer, "MCP Servers", 0)?;
         writeln!(writer, "No configured MCP servers found.")?;
+        write_detail_section(writer, "Next")?;
+        write_detail_field(
+            writer,
+            "manage",
+            format!("{} manage mcp", current_program_name()),
+        )?;
         return Ok(());
     }
 
+    write_collection_header(writer, "MCP Servers", servers.len())?;
     for (index, server) in servers.iter().enumerate() {
         if index > 0 {
             writeln!(writer)?;
         }
-        writeln!(
+        write_summary_item_header(
             writer,
-            "{}  {}",
-            server.name,
-            mcp_transport_label(&server.transport)
+            index + 1,
+            server.name.as_str(),
+            status_label(server.enabled),
+            mcp_transport_label(&server.transport),
         )?;
-        writeln!(writer, "  enabled={}", server.enabled)?;
+        match &server.transport {
+            agent::mcp::McpTransportConfig::Stdio { command, args, .. } => {
+                let launch = if args.is_empty() {
+                    command.clone()
+                } else {
+                    format!("{command} {}", args.join(" "))
+                };
+                write_summary_field(writer, "launch", launch)?;
+            }
+            agent::mcp::McpTransportConfig::StreamableHttp { url, .. } => {
+                write_summary_field(writer, "endpoint", url)?;
+            }
+        }
+        write_summary_field(
+            writer,
+            "inspect",
+            format!("{} mcp show {}", current_program_name(), server.name),
+        )?;
     }
     Ok(())
 }
@@ -1884,13 +1910,10 @@ fn write_mcp_server_details(
     writer: &mut impl Write,
     server: &agent::mcp::McpServerConfig,
 ) -> io::Result<()> {
-    write_detail_header(
-        writer,
-        "MCP Server",
-        server.name.as_str(),
-        status_label(server.enabled),
-    )?;
-    write_detail_section(writer, "Configuration")?;
+    write_show_header(writer, "MCP Server")?;
+    write_detail_section(writer, "Overview")?;
+    write_detail_field(writer, "name", server.name.as_str())?;
+    write_detail_field(writer, "state", status_label(server.enabled))?;
     write_detail_field(writer, "transport", mcp_transport_label(&server.transport))?;
     match &server.transport {
         agent::mcp::McpTransportConfig::Stdio {
@@ -1927,7 +1950,7 @@ fn write_mcp_server_details(
             }
         }
     }
-    write_detail_section(writer, "Next")?;
+    write_detail_section(writer, "Actions")?;
     write_detail_field(
         writer,
         "manage",
@@ -1952,25 +1975,42 @@ fn write_managed_skill_summaries(
     skills: &[ManagedSkillDetail],
 ) -> io::Result<()> {
     if skills.is_empty() {
+        write_collection_header(writer, "Skills", 0)?;
         writeln!(writer, "No managed or built-in skills found.")?;
+        write_detail_section(writer, "Next")?;
+        write_detail_field(
+            writer,
+            "manage",
+            format!("{} manage skill", current_program_name()),
+        )?;
         return Ok(());
     }
 
+    write_collection_header(writer, "Skills", skills.len())?;
     for (index, skill) in skills.iter().enumerate() {
         if index > 0 {
             writeln!(writer)?;
         }
-        writeln!(
+        write_summary_item_header(
             writer,
-            "{}  enabled={}  source={}  path={}",
-            skill.skill_name,
-            skill.enabled,
-            if skill.builtin { "builtin" } else { "managed" },
-            display_workspace_path(workspace_root, &skill.skill_path)
+            index + 1,
+            skill.skill_name.as_str(),
+            status_label(skill.enabled),
+            if skill.builtin { "built-in" } else { "managed" },
+        )?;
+        write_summary_field(
+            writer,
+            "path",
+            display_workspace_path(workspace_root, &skill.skill_path),
         )?;
         if !skill.description.is_empty() {
-            writeln!(writer, "  {}", skill.description)?;
+            write_summary_field(writer, "about", skill.description.as_str())?;
         }
+        write_summary_field(
+            writer,
+            "inspect",
+            format!("{} skill show {}", current_program_name(), skill.skill_name),
+        )?;
     }
     Ok(())
 }
@@ -1980,18 +2020,16 @@ fn write_managed_skill_details(
     workspace_root: &Path,
     skill: &ManagedSkillDetail,
 ) -> io::Result<()> {
-    write_detail_header(
-        writer,
-        "Skill",
-        skill.skill_name.as_str(),
-        status_label(skill.enabled),
-    )?;
-    write_detail_section(writer, "State")?;
+    write_show_header(writer, "Skill")?;
+    write_detail_section(writer, "Overview")?;
+    write_detail_field(writer, "name", skill.skill_name.as_str())?;
+    write_detail_field(writer, "state", status_label(skill.enabled))?;
     write_detail_field(
         writer,
         "source",
         if skill.builtin { "builtin" } else { "managed" },
     )?;
+    write_detail_section(writer, "Files")?;
     write_detail_field(
         writer,
         "path",
@@ -2001,7 +2039,7 @@ fn write_managed_skill_details(
         write_detail_section(writer, "Trigger")?;
         write_detail_field(writer, "description", skill.description.as_str())?;
     }
-    write_detail_section(writer, "Next")?;
+    write_detail_section(writer, "Actions")?;
     write_detail_field(
         writer,
         "manage",
@@ -2026,26 +2064,64 @@ fn write_managed_plugin_summaries(
     plugins: &[ManagedPluginDetail],
 ) -> io::Result<()> {
     if plugins.is_empty() {
+        write_collection_header(writer, "Plugins", 0)?;
         writeln!(writer, "No managed plugins found.")?;
+        write_detail_section(writer, "Next")?;
+        write_detail_field(
+            writer,
+            "add",
+            format!("{} plugin add ./my-plugin", current_program_name()),
+        )?;
+        write_detail_field(
+            writer,
+            "manage",
+            format!("{} manage plugin", current_program_name()),
+        )?;
         return Ok(());
     }
 
+    write_collection_header(writer, "Plugins", plugins.len())?;
     for (index, plugin) in plugins.iter().enumerate() {
         if index > 0 {
             writeln!(writer)?;
         }
-        writeln!(
+        let title = plugin
+            .name
+            .as_deref()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| plugin.plugin_id.to_string());
+        let badge = plugin.version.as_deref().map_or_else(
+            || plugin.kind.clone(),
+            |version| format!("{} v{}", plugin.kind, version),
+        );
+        write_summary_item_header(
             writer,
-            "{}  kind={}  enabled={}  path={}",
-            plugin.plugin_id,
-            plugin.kind,
-            plugin.enabled,
-            display_workspace_path(workspace_root, &plugin.plugin_path)
+            index + 1,
+            title.as_str(),
+            status_label(plugin.enabled),
+            badge,
         )?;
-        writeln!(writer, "  reason: {}", plugin.reason)?;
-        if !plugin.contribution_summary.is_empty() {
-            writeln!(writer, "  contributes: {}", plugin.contribution_summary)?;
+        write_summary_field(writer, "id", plugin.plugin_id.to_string())?;
+        write_summary_field(
+            writer,
+            "path",
+            display_workspace_path(workspace_root, &plugin.plugin_path),
+        )?;
+        write_summary_field(writer, "reason", plugin.reason.as_str())?;
+        if let Some(description) = plugin.description.as_deref() {
+            write_summary_field(writer, "about", description)?;
+        } else if !plugin.contribution_summary.is_empty() {
+            write_summary_field(writer, "about", plugin.contribution_summary.as_str())?;
         }
+        write_summary_field(
+            writer,
+            "inspect",
+            format!(
+                "{} plugin show {}",
+                current_program_name(),
+                plugin.plugin_id
+            ),
+        )?;
     }
     Ok(())
 }
@@ -2059,23 +2135,18 @@ fn write_managed_plugin_details(
         .name
         .clone()
         .unwrap_or_else(|| plugin.plugin_id.to_string());
-    write_detail_header(
-        writer,
-        "Plugin",
-        plugin_subject.as_str(),
-        status_label(plugin.enabled),
-    )?;
-    write_detail_section(writer, "Identity")?;
+    write_show_header(writer, "Plugin")?;
+    write_detail_section(writer, "Overview")?;
+    write_detail_field(writer, "name", plugin_subject.as_str())?;
+    write_detail_field(writer, "state", status_label(plugin.enabled))?;
     write_detail_field(writer, "id", plugin.plugin_id.to_string())?;
-    if let Some(name) = plugin.name.as_deref() {
-        write_detail_field(writer, "name", name)?;
-    }
     if let Some(version) = plugin.version.as_deref() {
         write_detail_field(writer, "version", version)?;
     }
     write_detail_field(writer, "kind", plugin.kind.as_str())?;
     write_detail_section(writer, "State")?;
     write_detail_field(writer, "reason", plugin.reason.as_str())?;
+    write_detail_section(writer, "Files")?;
     write_detail_field(
         writer,
         "path",
@@ -2089,7 +2160,7 @@ fn write_managed_plugin_details(
         write_detail_section(writer, "Contribution")?;
         write_detail_field(writer, "summary", plugin.contribution_summary.as_str())?;
     }
-    write_detail_section(writer, "Next")?;
+    write_detail_section(writer, "Actions")?;
     write_detail_field(
         writer,
         "manage",
@@ -2108,16 +2179,38 @@ fn write_managed_plugin_details(
     Ok(())
 }
 
-fn write_detail_header(
-    writer: &mut impl Write,
-    title: &str,
-    subject: &str,
-    state: &str,
-) -> io::Result<()> {
-    writeln!(writer, "{title}: {subject}")?;
-    writeln!(writer, "{}", "=".repeat(title.len() + subject.len() + 2))?;
-    writeln!(writer, "state: {state}")?;
+fn write_collection_header(writer: &mut impl Write, title: &str, count: usize) -> io::Result<()> {
+    writeln!(writer, "{title} ({count})")?;
+    writeln!(
+        writer,
+        "{}",
+        "=".repeat(title.len() + count.to_string().len() + 3)
+    )?;
     Ok(())
+}
+
+fn write_show_header(writer: &mut impl Write, title: &str) -> io::Result<()> {
+    writeln!(writer, "{title}")?;
+    writeln!(writer, "{}", "=".repeat(title.len()))?;
+    Ok(())
+}
+
+fn write_summary_item_header(
+    writer: &mut impl Write,
+    ordinal: usize,
+    title: &str,
+    state: &str,
+    badge: impl AsRef<str>,
+) -> io::Result<()> {
+    writeln!(writer, "{ordinal}. {title}  [{state}]  {}", badge.as_ref())
+}
+
+fn write_summary_field(
+    writer: &mut impl Write,
+    label: &str,
+    value: impl AsRef<str>,
+) -> io::Result<()> {
+    writeln!(writer, "   {label:10} {}", value.as_ref())
 }
 
 fn write_detail_section(writer: &mut impl Write, title: &str) -> io::Result<()> {
@@ -2710,8 +2803,9 @@ mod tests {
         SandboxFallbackAction, SessionSelector, SkillManagementCommand,
         active_session_is_persisted, choose_sandbox_fallback_action, format_sandbox_abort_message,
         format_session_counts, format_token_count, launch_headless_one_shot, write_exit_summary,
-        write_managed_plugin_details, write_managed_skill_details, write_mcp_prompt_summaries,
-        write_mcp_resource_summaries, write_mcp_server_details, write_session_search_results,
+        write_managed_plugin_details, write_managed_plugin_summaries, write_managed_skill_details,
+        write_managed_skill_summaries, write_mcp_prompt_summaries, write_mcp_resource_summaries,
+        write_mcp_server_details, write_mcp_server_summaries, write_session_search_results,
         write_session_summaries, write_startup_diagnostics,
     };
     use agent::DriverActivationOutcome;
@@ -2967,11 +3061,12 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.contains("Skill: review"));
-        assert!(output.contains("state: enabled"));
-        assert!(output.contains("\nState\n-----\n"));
+        assert!(output.starts_with("Skill\n====="));
+        assert!(output.contains("\nOverview\n--------\n"));
+        assert!(output.contains("  state        enabled"));
+        assert!(output.contains("\nFiles\n-----\n"));
         assert!(output.contains("\nTrigger\n-------\n"));
-        assert!(output.contains("\nNext\n----\n"));
+        assert!(output.contains("\nActions\n-------\n"));
     }
 
     #[test]
@@ -2993,11 +3088,38 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.contains("MCP Server: docs"));
-        assert!(output.contains("state: disabled"));
-        assert!(output.contains("\nConfiguration\n-------------\n"));
+        assert!(output.starts_with("MCP Server\n=========="));
+        assert!(output.contains("\nOverview\n--------\n"));
+        assert!(output.contains("  state        disabled"));
         assert!(output.contains("\nLaunch\n------\n"));
         assert!(output.contains("env keys"));
+        assert!(output.contains("\nActions\n-------\n"));
+    }
+
+    #[test]
+    fn mcp_list_output_uses_summary_cards() {
+        let mut buffer = Vec::new();
+        write_mcp_server_summaries(
+            &mut buffer,
+            &[McpServerConfig {
+                name: "docs".into(),
+                enabled: true,
+                transport: McpTransportConfig::Stdio {
+                    command: "npx".to_string(),
+                    args: vec!["-y".to_string(), "remote-mcp".to_string()],
+                    env: BTreeMap::new(),
+                    cwd: None,
+                },
+            }],
+        )
+        .unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.starts_with("MCP Servers (1)\n==============="));
+        assert!(output.contains("1. docs  [enabled]  stdio"));
+        assert!(output.contains("   launch     npx -y remote-mcp"));
+        assert!(output.contains("   inspect    "));
+        assert!(output.contains("mcp show docs"));
     }
 
     #[test]
@@ -3021,11 +3143,50 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.contains("Plugin: Review Policy"));
-        assert!(output.contains("state: enabled"));
-        assert!(output.contains("\nIdentity\n--------\n"));
+        assert!(output.starts_with("Plugin\n======"));
+        assert!(output.contains("\nOverview\n--------\n"));
+        assert!(output.contains("  name         Review Policy"));
+        assert!(output.contains("  state        enabled"));
         assert!(output.contains("\nState\n-----\n"));
+        assert!(output.contains("\nFiles\n-----\n"));
+        assert!(output.contains("\nActions\n-------\n"));
+    }
+
+    #[test]
+    fn skill_list_output_uses_summary_cards() {
+        let mut buffer = Vec::new();
+        write_managed_skill_summaries(
+            &mut buffer,
+            Path::new("/workspace"),
+            &[ManagedSkillDetail {
+                skill_name: "review".to_string(),
+                description: "Review pull requests".to_string(),
+                skill_path: PathBuf::from("/workspace/.nanoclaw/skills/review"),
+                enabled: true,
+                builtin: false,
+            }],
+        )
+        .unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.starts_with("Skills (1)\n=========="));
+        assert!(output.contains("1. review  [enabled]  managed"));
+        assert!(output.contains("   path       .nanoclaw/skills/review"));
+        assert!(output.contains("   about      Review pull requests"));
+        assert!(output.contains("   inspect    "));
+        assert!(output.contains("skill show review"));
+    }
+
+    #[test]
+    fn plugin_list_empty_output_includes_next_steps() {
+        let mut buffer = Vec::new();
+        write_managed_plugin_summaries(&mut buffer, Path::new("/workspace"), &[]).unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.starts_with("Plugins (0)\n==========="));
+        assert!(output.contains("No managed plugins found."));
         assert!(output.contains("\nNext\n----\n"));
+        assert!(output.contains("plugin add ./my-plugin"));
     }
 
     #[test]
