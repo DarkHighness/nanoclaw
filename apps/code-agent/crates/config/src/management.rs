@@ -687,6 +687,15 @@ enum BuiltinMcpLauncher {
     PnpmDlx,
     Npx,
     Bunx,
+    // Keep these launchers available in the shared built-in preflight path so
+    // future built-in MCP definitions can target Python modules or containers
+    // without another schema change in management/config plumbing.
+    #[allow(dead_code)]
+    Python3,
+    #[allow(dead_code)]
+    Podman,
+    #[allow(dead_code)]
+    Docker,
 }
 
 impl BuiltinMcpLauncher {
@@ -695,6 +704,9 @@ impl BuiltinMcpLauncher {
             Self::PnpmDlx => "`pnpm dlx`",
             Self::Npx => "`npx`",
             Self::Bunx => "`bunx`",
+            Self::Python3 => "`python3`",
+            Self::Podman => "`podman`",
+            Self::Docker => "`docker`",
         }
     }
 
@@ -703,6 +715,9 @@ impl BuiltinMcpLauncher {
             Self::PnpmDlx => "pnpm",
             Self::Npx => "npx",
             Self::Bunx => "bunx",
+            Self::Python3 => "python3",
+            Self::Podman => "podman",
+            Self::Docker => "docker",
         }
     }
 
@@ -717,6 +732,18 @@ impl BuiltinMcpLauncher {
                 vec!["-y".to_string(), package.to_string()],
             ),
             Self::Bunx => ("bunx".to_string(), vec![package.to_string()]),
+            Self::Python3 => (
+                "python3".to_string(),
+                vec!["-m".to_string(), package.to_string()],
+            ),
+            Self::Podman => (
+                "podman".to_string(),
+                vec!["run".to_string(), "--rm".to_string(), package.to_string()],
+            ),
+            Self::Docker => (
+                "docker".to_string(),
+                vec!["run".to_string(), "--rm".to_string(), package.to_string()],
+            ),
         }
     }
 }
@@ -1259,8 +1286,8 @@ fn plugin_contribution_summary(plugin: &PluginState) -> String {
 mod tests {
     use super::{
         BUILTIN_CONTEXT7_SERVER, BUILTIN_GH_GREP_SERVER, BUILTIN_GH_GREP_URL,
-        BUILTIN_PLAYWRIGHT_SERVER, add_core_mcp_server, add_managed_plugin, add_managed_skill,
-        delete_core_mcp_server, delete_managed_plugin, delete_managed_skill,
+        BUILTIN_PLAYWRIGHT_SERVER, BuiltinMcpLauncher, add_core_mcp_server, add_managed_plugin,
+        add_managed_skill, delete_core_mcp_server, delete_managed_plugin, delete_managed_skill,
         disabled_builtin_skill_names, disabled_tool_names, filter_unavailable_builtin_mcp_servers,
         list_core_mcp_servers, list_managed_plugin_details, list_managed_skill_details,
         materialize_builtin_skills, set_core_mcp_server_enabled, set_managed_plugin_enabled,
@@ -1414,6 +1441,39 @@ mod tests {
             warnings
                 .iter()
                 .any(|warning| warning.contains("`pnpm dlx`, `npx`, `bunx`"))
+        );
+    }
+
+    #[test]
+    fn builtin_launcher_render_supports_python_and_container_runtimes() {
+        assert_eq!(
+            BuiltinMcpLauncher::Python3.render("demo.module"),
+            (
+                "python3".to_string(),
+                vec!["-m".to_string(), "demo.module".to_string()],
+            )
+        );
+        assert_eq!(
+            BuiltinMcpLauncher::Podman.render("ghcr.io/demo/mcp:latest"),
+            (
+                "podman".to_string(),
+                vec![
+                    "run".to_string(),
+                    "--rm".to_string(),
+                    "ghcr.io/demo/mcp:latest".to_string(),
+                ],
+            )
+        );
+        assert_eq!(
+            BuiltinMcpLauncher::Docker.render("ghcr.io/demo/mcp:latest"),
+            (
+                "docker".to_string(),
+                vec![
+                    "run".to_string(),
+                    "--rm".to_string(),
+                    "ghcr.io/demo/mcp:latest".to_string(),
+                ],
+            )
         );
     }
 

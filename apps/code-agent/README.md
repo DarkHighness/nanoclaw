@@ -275,7 +275,10 @@ Code-agent also materializes three built-in managed MCP entries by default:
 workspace MCP servers. `gh_grep` is the built-in Grep by Vercel remote MCP
 server and points at `https://mcp.grep.app`. When no supported launcher is
 available in `PATH`, startup warns and skips the built-in stdio servers instead
-of failing the whole session.
+of failing the whole session. The built-in launcher preflight understands
+`pnpm dlx`, `npx`, `bunx`, `python3 -m`, `podman run --rm`, and
+`docker run --rm`, so future built-in stdio MCP definitions can target Python
+modules or container images without changing the detection path again.
 
 Code-agent also bundles a built-in skill pack by default. It includes an
 official upstream subset sourced from `openai/skills` commit
