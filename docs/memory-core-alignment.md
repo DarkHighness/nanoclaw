@@ -223,6 +223,13 @@ The current answer is prompt-driven note maintenance:
 - good triggers are material continuity changes such as plan pivots, user
   corrections or preferences, blockers, failed approaches with rationale, and
   resume-critical next-step handoffs
+- even after a material continuity change, the model should write only when
+  the existing session note has become stale enough that resuming from it
+  would mislead the next agent about the current plan, blocker, ownership, or
+  immediate next step
+- if the existing note remains directionally correct for resume, the model
+  should leave it unchanged instead of logging every meaningful but
+  non-misleading increment
 - non-triggers include routine tool output, small incremental progress, and
   code edits that are already obvious from the repository state plus the recent
   transcript
@@ -259,18 +266,17 @@ capture surface that can support a future extraction or consolidation pipeline.
 
 ## Session-Memory Compaction
 
-Claude Code does not only refresh session memory in the background. When
-compaction chooses the session-memory continuity path, it first gives any
-in-flight extraction a bounded chance to finish and then uses the maintained
-session note as the continuity summary itself.
+When compaction chooses the session-memory continuity path, it should read the
+latest durable session note directly instead of depending on a separate
+ordinary-turn refresh worker.
 
-`nanoclaw` now mirrors that shape in the compactor layer:
+`nanoclaw` now keeps that boundary narrow in the compactor layer:
 
-- the root runtime compactor is now a wrapper around the existing model
-  compactor instead of a single hard-coded model-summary path
-- before compacting, the wrapper gives the current session-note refresh up to
-  15 seconds to finish, but stops waiting if the refresh is already older than
-  60 seconds
+- the root runtime compactor is a wrapper around the existing model compactor
+  instead of a single hard-coded model-summary path
+- normal turns do not schedule a host-owned background session-note refresh;
+  outside compaction, note updates are prompt-driven through
+  `memory_update_session_note`
 - if the structured session note exists and its
   `last_summarized_message_id` covers the source window being compacted, the
   note body itself becomes the new compaction summary
@@ -282,10 +288,9 @@ session note as the continuity summary itself.
   uses, and the summary points back to the full note path when truncation
   happened
 
-This keeps compaction continuity aligned with Claude's "session memory as the
-summary source" path without forcing every compaction to depend on a perfect
-background refresh, and it lets both auto-compaction and manual compaction
-reuse the same bounded-wait decision point.
+This keeps compaction continuity aligned with the "session memory as summary
+source" path while making ordinary write frequency a prompt/tool contract
+instead of a host scheduler policy.
 
 The runtime-side retained tail now also keeps a more Claude-like continuity
 window around the summary boundary:

@@ -56,6 +56,8 @@ pub fn build_system_preamble(
             .to_string(),
         "Only update the session note after a material continuity change such as a plan pivot, a user correction or preference, a blocker or failed approach with reason, or a resume-critical next-step handoff."
             .to_string(),
+        "Even after a material continuity change, write only when the existing session note is stale enough that resuming from it would mislead the next agent about the current plan, blocker, owner, or next step."
+            .to_string(),
         "Do not update the session note for routine tool output, small incremental progress, or code edits that are already obvious from the current repository state and recent transcript."
             .to_string(),
     ];
@@ -378,6 +380,9 @@ mod tests {
         assert!(
             preamble.contains("Only update the session note after a material continuity change")
         );
+        assert!(preamble.contains(
+            "write only when the existing session note is stale enough that resuming from it would mislead"
+        ));
         assert!(preamble.contains("Do not update the session note for routine tool output"));
     }
 

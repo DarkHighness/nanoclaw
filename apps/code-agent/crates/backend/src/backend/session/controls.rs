@@ -82,12 +82,11 @@ impl CodeAgentSession {
             .await
             .map_err(anyhow::Error::from)?;
         let snapshot = self.latest_compaction_working_snapshot(&runtime, &observer);
-        let refresh_context = self.session_memory_refresh_context(&runtime, &observer);
         let side_question_context = Self::side_question_context_from_runtime(&runtime, None);
         self.sync_runtime_session_refs(&runtime);
         drop(runtime);
         self.store_side_question_context(side_question_context);
-        self.sync_session_memory_after_runtime_activity(refresh_context, snapshot)
+        self.sync_session_memory_after_runtime_activity(snapshot)
             .await;
         Ok(drained)
     }

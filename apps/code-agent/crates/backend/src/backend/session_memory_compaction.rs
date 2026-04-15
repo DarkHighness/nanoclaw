@@ -7,22 +7,13 @@ use agent::types::{MessageId, SessionId};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use tokio::fs;
-use tokio::time::sleep;
 use tracing::{info, warn};
-
-pub const SESSION_MEMORY_WAIT_TIMEOUT_MS: u64 = 15_000;
-pub const SESSION_MEMORY_STALE_THRESHOLD_MS: u64 = 60_000;
-const SESSION_MEMORY_WAIT_POLL_MS: u64 = 250;
 
 #[derive(Clone, Debug, Default)]
 pub struct SessionMemoryRefreshState {
     pub active_session_id: Option<SessionId>,
     pub initialized: bool,
-    pub refresh_in_flight: bool,
-    pub refresh_started_at: Option<Instant>,
-    pub refresh_epoch: u64,
     pub last_summarized_message_id: Option<MessageId>,
 }
 
@@ -69,9 +60,6 @@ impl SessionMemoryConversationCompactor {
             .messages
             .last()
             .map(|message| message.message_id.clone())?;
-        self.wait_for_session_memory_refresh(&request.session_id)
-            .await;
-
         let state = self.refresh_state.lock().unwrap().clone();
         if state.active_session_id.as_ref() != Some(&request.session_id) || !state.initialized {
             return None;
@@ -99,27 +87,6 @@ impl SessionMemoryConversationCompactor {
         Some(CompactionResult {
             summary: self.render_compaction_summary(&request.session_id, &note.body),
         })
-    }
-
-    async fn wait_for_session_memory_refresh(&self, session_id: &SessionId) {
-        let wait_started_at = Instant::now();
-        loop {
-            let should_wait = {
-                let state = self.refresh_state.lock().unwrap();
-                state.active_session_id.as_ref() == Some(session_id)
-                    && state.refresh_in_flight
-                    && state.refresh_started_at.is_none_or(|started_at| {
-                        started_at.elapsed()
-                            < Duration::from_millis(SESSION_MEMORY_STALE_THRESHOLD_MS)
-                    })
-                    && wait_started_at.elapsed()
-                        < Duration::from_millis(SESSION_MEMORY_WAIT_TIMEOUT_MS)
-            };
-            if !should_wait {
-                return;
-            }
-            sleep(Duration::from_millis(SESSION_MEMORY_WAIT_POLL_MS)).await;
-        }
     }
 
     async fn load_session_memory_note(
@@ -180,7 +147,6 @@ fn find_message_index(messages: &[agent::types::Message], message_id: &MessageId
 #[cfg(test)]
 mod tests {
     use super::{
-        SESSION_MEMORY_STALE_THRESHOLD_MS, SESSION_MEMORY_WAIT_TIMEOUT_MS,
         SessionMemoryConversationCompactor, SessionMemoryRefreshState,
         SharedSessionMemoryRefreshState, session_memory_note_absolute_path,
     };
@@ -188,7 +154,6 @@ mod tests {
     use agent::types::{AgentSessionId, Message, SessionId, TurnId};
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
 
     #[derive(Clone, Default)]
     struct RecordingFallbackCompactor {
@@ -221,9 +186,6 @@ mod tests {
         Arc::new(Mutex::new(SessionMemoryRefreshState {
             active_session_id: Some(session_id.clone()),
             initialized: true,
-            refresh_in_flight: false,
-            refresh_started_at: None,
-            refresh_epoch: 0,
             last_summarized_message_id: Some(last_summarized.clone()),
         }))
     }
@@ -321,9 +283,6 @@ mod tests {
         let refresh_state = Arc::new(Mutex::new(SessionMemoryRefreshState {
             active_session_id: Some(session_id.clone()),
             initialized: true,
-            refresh_in_flight: false,
-            refresh_started_at: None,
-            refresh_epoch: 0,
             last_summarized_message_id: None,
         }));
         let fallback = Arc::new(RecordingFallbackCompactor::default());
@@ -346,62 +305,6 @@ mod tests {
             .unwrap();
 
         assert!(result.summary.contains("Use the persisted boundary."));
-        assert!(fallback.calls().is_empty());
-    }
-
-    #[tokio::test]
-    async fn waits_briefly_for_in_flight_refresh_before_using_session_note() {
-        let dir = tempfile::tempdir().unwrap();
-        let session_id = SessionId::from("session-1");
-        let agent_session_id = AgentSessionId::from("agent-session-1");
-        let first = Message::user("first");
-        let second = Message::assistant("second");
-        std::fs::create_dir_all(dir.path().join(".nanoclaw/memory/working/sessions")).unwrap();
-        std::fs::write(
-            session_memory_note_absolute_path(dir.path(), &session_id),
-            "---\nscope: working\n---\n\n# Current State\n\nFreshened session note.",
-        )
-        .unwrap();
-        let refresh_state = Arc::new(Mutex::new(SessionMemoryRefreshState {
-            active_session_id: Some(session_id.clone()),
-            initialized: true,
-            refresh_in_flight: true,
-            refresh_started_at: Some(
-                Instant::now()
-                    - Duration::from_millis(
-                        SESSION_MEMORY_STALE_THRESHOLD_MS
-                            .min(SESSION_MEMORY_WAIT_TIMEOUT_MS)
-                            .saturating_sub(500),
-                    ),
-            ),
-            refresh_epoch: 0,
-            last_summarized_message_id: Some(second.message_id.clone()),
-        }));
-        let refresh_state_writer = refresh_state.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            refresh_state_writer.lock().unwrap().refresh_in_flight = false;
-        });
-        let fallback = Arc::new(RecordingFallbackCompactor::default());
-        let compactor = SessionMemoryConversationCompactor::new(
-            dir.path().to_path_buf(),
-            refresh_state,
-            fallback.clone(),
-        );
-
-        let result = compactor
-            .compact(CompactionRequest {
-                session_id,
-                agent_session_id,
-                turn_id: TurnId::new(),
-                messages: vec![first.clone(), second.clone()],
-                visible_messages: vec![first, second],
-                instructions: None,
-            })
-            .await
-            .unwrap();
-
-        assert!(result.summary.contains("Freshened session note."));
         assert!(fallback.calls().is_empty());
     }
 

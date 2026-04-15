@@ -5,11 +5,9 @@ use crate::backend::boot_runtime::{
 use crate::backend::session_catalog;
 use crate::backend::session_history::{self, preview_id};
 use crate::backend::session_memory_compaction::{
-    SESSION_MEMORY_STALE_THRESHOLD_MS, SharedSessionMemoryRefreshState,
-    session_memory_note_absolute_path,
+    SharedSessionMemoryRefreshState, session_memory_note_absolute_path,
 };
 use crate::backend::session_memory_note::{
-    build_session_memory_update_prompt, default_session_memory_note,
     load_session_memory_note_snapshot, persist_session_memory_note, render_session_memory_note,
     session_memory_note_title,
 };
@@ -72,16 +70,15 @@ use agent::{AgentRuntime, RuntimeCommand, ToolExecutionContext};
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{StreamExt, stream};
-use memory::SideQuestionContextSnapshot;
 #[cfg(test)]
-use memory::{CompactionWorkingSnapshot, SessionMemoryRefreshContext};
+use memory::CompactionWorkingSnapshot;
+use memory::SideQuestionContextSnapshot;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
 use store::{SessionStore, SessionSummary};
 use tokio::fs;
 use tokio::sync::Mutex as AsyncMutex;

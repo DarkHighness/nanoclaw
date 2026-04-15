@@ -92,7 +92,7 @@ impl Tool for MemoryUpdateSessionNoteTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_update_session_note",
-            "Update the current session's structured working-memory note after a material continuity change such as a plan pivot, blocker, user correction, or resume-critical next step. Do not use it for routine tool output or repo-obvious edits. Omitted sections stay unchanged.",
+            "Update the current session's structured working-memory note only when a material continuity change has made the existing note stale enough that resume would be misleading. Use it for plan pivots, blockers, user corrections, or resume-critical next steps. Do not use it for routine tool output, repo-obvious edits, or minor progress that leaves the existing note directionally correct. Omitted sections stay unchanged.",
             memory_update_session_note_input_schema(),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -296,5 +296,17 @@ mod tests {
             schema["properties"]["current_state"]["description"],
             "Replace the Current State section."
         );
+    }
+
+    #[test]
+    fn tool_description_requires_resume_misleading_staleness() {
+        let tool = MemoryUpdateSessionNoteTool::new(Arc::new(RwLock::new(None)));
+        let spec = tool.spec();
+
+        assert!(
+            spec.description
+                .contains("stale enough that resume would be misleading")
+        );
+        assert!(spec.description.contains("directionally correct"));
     }
 }

@@ -9,7 +9,6 @@ use std::path::Path;
 use tokio::fs;
 
 const SESSION_MEMORY_SECTION_TOKEN_BUDGET: usize = 2_000;
-const SESSION_MEMORY_TOTAL_TOKEN_BUDGET: usize = 12_000;
 const SESSION_MEMORY_APPROX_CHARS_PER_TOKEN: usize = 4;
 const SESSION_MEMORY_SECTION_TRUNCATION_MARKER: &str = "[... section truncated for length ...]";
 
@@ -236,39 +235,6 @@ pub fn upsert_session_memory_note_frontmatter(
     rendered
 }
 
-pub fn build_session_memory_update_prompt(current_note: &str, transcript_delta: &str) -> String {
-    let budget_reminders = build_session_memory_budget_reminders(current_note);
-    format!(
-        concat!(
-            "IMPORTANT: This request is internal session-note maintenance, not part of the user conversation.\n",
-            "Return only the full updated session note in Markdown.\n\n",
-            "CRITICAL RULES:\n",
-            "- Preserve every section header exactly as written in the current note.\n",
-            "- Preserve every italic description line exactly as written in the current note.\n",
-            "- Only update the content that appears below each italic description line.\n",
-            "- Do not add new sections, summaries, or meta commentary.\n",
-            "- Do not mention note-taking instructions or this internal request.\n",
-            "- Always refresh Current State.\n",
-            "- Leave sections blank instead of adding filler.\n",
-            "- Keep each section under roughly {section_budget} tokens by condensing older or lower-value details before the note sprawls.\n",
-            "- Keep the full note under roughly {total_budget} tokens so it remains usable as post-compaction continuity.\n",
-            "- Use only information grounded in the transcript delta.\n\n",
-            "<current_session_note>\n",
-            "{current_note}\n",
-            "</current_session_note>\n\n",
-            "<new_transcript_entries>\n",
-            "{transcript_delta}\n",
-            "</new_transcript_entries>\n",
-            "{budget_reminders}"
-        ),
-        current_note = current_note.trim(),
-        transcript_delta = transcript_delta.trim(),
-        section_budget = SESSION_MEMORY_SECTION_TOKEN_BUDGET,
-        total_budget = SESSION_MEMORY_TOTAL_TOKEN_BUDGET,
-        budget_reminders = budget_reminders,
-    )
-}
-
 #[must_use]
 pub fn patch_session_memory_note(current_note: &str, patch: &SessionMemoryNotePatch) -> String {
     let note_body = strip_memory_frontmatter(current_note).trim();
@@ -473,76 +439,6 @@ fn parse_session_memory_sections(summary: &str) -> ParsedSessionMemorySections {
     parsed
 }
 
-fn build_session_memory_budget_reminders(current_note: &str) -> String {
-    let section_sizes = analyze_session_memory_section_sizes(current_note);
-    let total_tokens = estimate_session_memory_tokens(current_note);
-    let oversized_sections = section_sizes
-        .into_iter()
-        .filter(|(_, tokens)| *tokens > SESSION_MEMORY_SECTION_TOKEN_BUDGET)
-        .collect::<Vec<_>>();
-    if oversized_sections.is_empty() && total_tokens <= SESSION_MEMORY_TOTAL_TOKEN_BUDGET {
-        return String::new();
-    }
-
-    let mut parts = Vec::new();
-    if total_tokens > SESSION_MEMORY_TOTAL_TOKEN_BUDGET {
-        parts.push(format!(
-            "\n\nCRITICAL: The session note is currently ~{total_tokens} tokens, which exceeds the target budget of {total_budget} tokens. Condense it while preserving the most important continuity details. Prioritize keeping `Current State` and `Errors & Corrections` accurate.\n",
-            total_budget = SESSION_MEMORY_TOTAL_TOKEN_BUDGET,
-        ));
-    }
-    if !oversized_sections.is_empty() {
-        let oversized_lines = oversized_sections
-            .into_iter()
-            .map(|(section, tokens)| {
-                format!(
-                    "- \"{section}\" is ~{tokens} tokens (limit: {limit})",
-                    limit = SESSION_MEMORY_SECTION_TOKEN_BUDGET,
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        parts.push(format!(
-            "\n\nIMPORTANT: Condense these oversized sections before adding more detail:\n{oversized_lines}\n"
-        ));
-    }
-
-    parts.join("")
-}
-
-fn analyze_session_memory_section_sizes(content: &str) -> Vec<(String, usize)> {
-    let mut sections = Vec::new();
-    let mut current_section = None;
-    let mut current_lines = Vec::new();
-
-    for line in content.lines() {
-        if line.starts_with("# ") {
-            if let Some(current_section) = current_section.take() {
-                sections.push((
-                    current_section,
-                    estimate_session_memory_tokens(&current_lines.join("\n")),
-                ));
-                current_lines.clear();
-            }
-            current_section = Some(line.trim().to_string());
-        } else {
-            current_lines.push(line.to_string());
-        }
-    }
-
-    if let Some(current_section) = current_section {
-        sections.push((
-            current_section,
-            estimate_session_memory_tokens(&current_lines.join("\n")),
-        ));
-    }
-    sections
-}
-
-fn estimate_session_memory_tokens(text: &str) -> usize {
-    text.len().div_ceil(SESSION_MEMORY_APPROX_CHARS_PER_TOKEN)
-}
-
 fn flush_session_memory_section(
     section_header: &str,
     section_lines: &[String],
@@ -677,9 +573,7 @@ fn section_body(sections: &[(&'static str, String)], heading: &'static str) -> S
 #[cfg(test)]
 mod tests {
     use super::{
-        SESSION_MEMORY_APPROX_CHARS_PER_TOKEN, SESSION_MEMORY_SECTION_TOKEN_BUDGET,
-        SESSION_MEMORY_TOTAL_TOKEN_BUDGET, SessionMemoryNotePatch,
-        build_session_memory_update_prompt, default_session_memory_note,
+        SESSION_MEMORY_SECTION_TOKEN_BUDGET, SessionMemoryNotePatch, default_session_memory_note,
         parse_session_memory_note_snapshot, patch_session_memory_note, render_session_memory_note,
         session_memory_note_title, strip_memory_frontmatter,
         truncate_session_memory_for_compaction, upsert_session_memory_note_frontmatter,
@@ -753,33 +647,6 @@ mod tests {
             strip_memory_frontmatter("---\nscope: working\n---\n\n# Current State\n\nKeep going.");
 
         assert_eq!(stripped.trim(), "# Current State\n\nKeep going.");
-    }
-
-    #[test]
-    fn update_prompt_embeds_current_note_and_transcript_delta() {
-        let prompt = build_session_memory_update_prompt(
-            "# Current State\n\nFix it.",
-            "user> what changed?\n\nassistant> refreshed note",
-        );
-
-        assert!(prompt.contains("<current_session_note>"));
-        assert!(prompt.contains("<new_transcript_entries>"));
-        assert!(prompt.contains("Always refresh Current State"));
-    }
-
-    #[test]
-    fn update_prompt_warns_about_section_and_total_budget_pressure() {
-        let oversized = "x".repeat(
-            (SESSION_MEMORY_TOTAL_TOKEN_BUDGET + 200) * SESSION_MEMORY_APPROX_CHARS_PER_TOKEN,
-        );
-        let prompt = build_session_memory_update_prompt(
-            format!("# Current State\n\n{oversized}").as_str(),
-            "assistant> keep only the critical details",
-        );
-
-        assert!(prompt.contains("exceeds the target budget"));
-        assert!(prompt.contains("\"# Current State\" is ~"));
-        assert!(prompt.contains("Condense these oversized sections"));
     }
 
     #[test]
