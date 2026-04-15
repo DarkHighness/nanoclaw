@@ -618,7 +618,15 @@ pub fn tool_arguments_preview_lines(tool_name: &str, arguments: &Value) -> Vec<S
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or("latest_turn");
-            return vec![format!("Review recent tool activity ({scope})")];
+            let mut lines = vec![format!("Review recent tool activity ({scope})")];
+            if arguments
+                .get("include_diagnostics")
+                .and_then(Value::as_bool)
+                .is_some_and(|enabled| !enabled)
+            {
+                lines.push("Skip current diagnostics snapshot".to_string());
+            }
+            return lines;
         }
         ToolRenderKind::BrowserOpen => {
             let url = arguments
@@ -3326,6 +3334,24 @@ fn review_start_output_details(structured: Option<&Value>) -> Option<Vec<ToolDet
             value: inline_preview_text(summary, 96),
         });
     }
+    if let Some(diagnostics_included) = structured
+        .get("diagnostics_included")
+        .and_then(Value::as_bool)
+    {
+        let diagnostic_result_count = structured
+            .get("diagnostic_result_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let value = if diagnostics_included {
+            format!("diagnostics included ({diagnostic_result_count})")
+        } else {
+            "diagnostics disabled".to_string()
+        };
+        detail_lines.push(ToolDetail::LabeledValue {
+            label: ToolDetailLabel::State,
+            value,
+        });
+    }
     if let Some(review) = review_start_review(structured) {
         detail_lines.push(ToolDetail::LabeledValue {
             label: ToolDetailLabel::Output,
@@ -3894,6 +3920,16 @@ mod tests {
         assert_eq!(
             tool_arguments_preview_lines("review_start", &json!({"scope": "since_checkpoint"})),
             vec!["Review recent tool activity (since_checkpoint)"]
+        );
+        assert_eq!(
+            tool_arguments_preview_lines(
+                "review_start",
+                &json!({"scope": "since_checkpoint", "include_diagnostics": false})
+            ),
+            vec![
+                "Review recent tool activity (since_checkpoint)",
+                "Skip current diagnostics snapshot"
+            ]
         );
         assert_eq!(
             tool_arguments_preview_lines(
@@ -4787,6 +4823,8 @@ mod tests {
                 "summary": "Reviewed 2 completed tool call(s) and surfaced 2 section(s) since checkpoint_1 (before write).",
                 "boundary": "checkpoint_1 (before write)",
                 "tool_call_count": 2,
+                "diagnostics_included": true,
+                "diagnostic_result_count": 3,
                 "items": [
                     {
                         "title": "write · src/lib.rs",
@@ -4811,6 +4849,11 @@ mod tests {
             rendered
                 .iter()
                 .any(|line| line == "  └ Snapshot checkpoint_1 (before write)")
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line == "  └ State diagnostics included (3)")
         );
         assert!(
             rendered

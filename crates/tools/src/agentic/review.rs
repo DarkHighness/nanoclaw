@@ -1,19 +1,14 @@
 use crate::annotations::{builtin_tool_spec, tool_approval_profile};
 use crate::registry::Tool;
-use crate::{Result, SessionReviewResult, SessionReviewScope, ToolError, ToolExecutionContext};
+use crate::{Result, SessionReviewRequest, SessionReviewResult, ToolError, ToolExecutionContext};
 use async_trait::async_trait;
-use schemars::{JsonSchema, schema_for};
-use serde::{Deserialize, Serialize};
+use schemars::schema_for;
 use serde_json::{Value, json};
 use types::{CallId, ToolCallId, ToolOutputMode, ToolResult, ToolSpec};
 
 const REVIEW_START_TOOL_NAME: &str = "review_start";
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
-pub struct ReviewStartToolInput {
-    #[serde(default)]
-    pub scope: SessionReviewScope,
-}
+pub type ReviewStartToolInput = SessionReviewRequest;
 
 #[derive(Clone, Debug, Default)]
 pub struct ReviewStartTool;
@@ -30,7 +25,7 @@ impl Tool for ReviewStartTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             REVIEW_START_TOOL_NAME,
-            "Start a structured review of recently completed tool activity in the current session. Use latest_turn to inspect the current turn or since_checkpoint to review work after the most recent checkpoint boundary.",
+            "Start a structured review of recently completed tool activity in the current session. By default this also folds in a current code_diagnostics snapshot. Use latest_turn to inspect the current turn or since_checkpoint to review work after the most recent checkpoint boundary.",
             serde_json::to_value(schema_for!(ReviewStartToolInput))
                 .expect("review_start schema"),
             ToolOutputMode::Text,
@@ -55,7 +50,7 @@ impl Tool for ReviewStartTool {
                 "review_start is unavailable without a host session-control handler",
             )
         })?;
-        let result = handler.start_review(ctx, input.scope).await?;
+        let result = handler.start_review(ctx, input).await?;
         Ok(ToolResult::text(
             call_id,
             REVIEW_START_TOOL_NAME,
@@ -77,6 +72,9 @@ fn render_review_start_text(result: &SessionReviewResult) -> String {
     }
     lines.push(format!("scope {}", result.scope.as_str()));
     lines.push(format!("items {}", result.items.len()));
+    if result.diagnostics_included {
+        lines.push(format!("diagnostics {}", result.diagnostic_result_count));
+    }
     lines.join("\n")
 }
 
@@ -85,7 +83,8 @@ mod tests {
     use super::{ReviewStartTool, ReviewStartToolInput};
     use crate::{
         Result, SessionCompactionResult, SessionControlHandler, SessionReviewItem,
-        SessionReviewItemKind, SessionReviewResult, SessionReviewScope, Tool, ToolExecutionContext,
+        SessionReviewItemKind, SessionReviewRequest, SessionReviewResult, SessionReviewScope, Tool,
+        ToolExecutionContext,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -108,12 +107,14 @@ mod tests {
         async fn start_review(
             &self,
             _ctx: &ToolExecutionContext,
-            scope: SessionReviewScope,
+            request: SessionReviewRequest,
         ) -> Result<SessionReviewResult> {
             Ok(SessionReviewResult {
-                scope,
+                scope: request.scope,
                 summary: "reviewed 1 tool call".to_string(),
                 tool_call_count: 1,
+                diagnostics_included: request.include_diagnostics,
+                diagnostic_result_count: 0,
                 boundary: Some("latest prompt".to_string()),
                 items: vec![SessionReviewItem {
                     title: "exec_command · Command".to_string(),
@@ -136,6 +137,7 @@ mod tests {
                 ToolCallId::from("call_review"),
                 json!(ReviewStartToolInput {
                     scope: SessionReviewScope::SinceCheckpoint,
+                    ..ReviewStartToolInput::default()
                 }),
                 &ctx,
             )
@@ -147,6 +149,7 @@ mod tests {
             .expect("review_start should return structured output");
         assert_eq!(structured["scope"], "since_checkpoint");
         assert_eq!(structured["tool_call_count"], 1);
+        assert_eq!(structured["diagnostics_included"], true);
         assert_eq!(structured["items"][0]["kind"], "command");
     }
 }

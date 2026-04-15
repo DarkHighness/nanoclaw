@@ -31,6 +31,27 @@ impl SessionReviewScope {
     }
 }
 
+fn default_include_review_diagnostics() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct SessionReviewRequest {
+    #[serde(default)]
+    pub scope: SessionReviewScope,
+    #[serde(default = "default_include_review_diagnostics")]
+    pub include_diagnostics: bool,
+}
+
+impl Default for SessionReviewRequest {
+    fn default() -> Self {
+        Self {
+            scope: SessionReviewScope::LatestTurn,
+            include_diagnostics: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionReviewItemKind {
@@ -54,6 +75,8 @@ pub struct SessionReviewResult {
     pub scope: SessionReviewScope,
     pub summary: String,
     pub tool_call_count: usize,
+    pub diagnostics_included: bool,
+    pub diagnostic_result_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary: Option<String>,
     #[serde(default)]
@@ -71,6 +94,6 @@ pub trait SessionControlHandler: Send + Sync {
     async fn start_review(
         &self,
         ctx: &ToolExecutionContext,
-        scope: SessionReviewScope,
+        request: SessionReviewRequest,
     ) -> Result<SessionReviewResult>;
 }

@@ -66,7 +66,7 @@ use agent::runtime::{
 };
 use agent::tools::{
     McpToolAdapter, MonitorManager, MonitorRuntimeContext, SandboxPolicy, SessionCompactionResult,
-    SessionControlHandler, SessionReviewResult, SessionReviewScope, SubagentExecutor,
+    SessionControlHandler, SessionReviewRequest, SessionReviewResult, SubagentExecutor,
     SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
 };
 use agent::types::{
@@ -307,10 +307,10 @@ impl SessionControlHandler for CodeAgentSession {
 
     async fn start_review(
         &self,
-        _ctx: &ToolExecutionContext,
-        scope: SessionReviewScope,
+        ctx: &ToolExecutionContext,
+        request: SessionReviewRequest,
     ) -> agent::tools::Result<SessionReviewResult> {
-        self.session_review(scope).await
+        self.session_review(ctx, request).await
     }
 }
 

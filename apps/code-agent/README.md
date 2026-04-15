@@ -20,7 +20,7 @@ It intentionally keeps the host layer thin:
   - `checkpoint_list` enumerates durable pre-mutation restore points captured from `write`, `edit`, and `patch_files`
   - `checkpoint_summarize` compacts earlier visible history without changing workspace files, so models can free context window budget through the tool surface instead of relying on an operator-only slash command
   - `checkpoint_restore` restores workspace code, visible conversation state, or both to a selected checkpoint boundary without relying on git; the operator rollback overlay and model tool surface now share the same restore-mode semantics
-  - `review_start` replays persisted tool lifecycle events from the latest turn or most recent checkpoint boundary and projects them back through the shared `ToolReview` overlay instead of requiring operators to manually inspect each tool transcript cell
+  - `review_start` replays persisted tool lifecycle events from the latest turn or most recent checkpoint boundary, folds in a current `code_diagnostics` snapshot by default, and projects the combined review back through the shared `ToolReview` overlay instead of requiring operators to manually inspect each tool transcript cell
   - `spawn_agent` accepts Codex-style launch overrides such as `fork_context`, `model`, and `reasoning_effort`
   - `spawn_agent` and `send_input` now forward `message + items` as structured user messages instead of flattening them into steering prose
   - `send_input interrupt=true` now performs a real child restart instead of queuing behind the active turn, and the TUI/history surfaces distinguish queued follow-ups from interrupt-driven restarts

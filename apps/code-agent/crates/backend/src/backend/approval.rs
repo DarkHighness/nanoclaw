@@ -342,9 +342,17 @@ fn approval_content_preview(tool_name: &str, arguments: &Value) -> ApprovalConte
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or("latest_turn");
+            let mut preview = vec![format!("review recent tool activity ({scope})")];
+            if arguments
+                .get("include_diagnostics")
+                .and_then(Value::as_bool)
+                .is_some_and(|enabled| !enabled)
+            {
+                preview.push("skip current diagnostics snapshot".to_string());
+            }
             return ApprovalContent {
                 kind: ApprovalContentKind::Arguments,
-                preview: vec![format!("review recent tool activity ({scope})")],
+                preview,
             };
         }
         ToolRenderKind::BrowserOpen => {
