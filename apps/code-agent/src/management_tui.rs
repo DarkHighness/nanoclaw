@@ -1,9 +1,10 @@
 use agent::mcp::{McpServerConfig, McpTransportConfig};
+use agent::types::{ToolOrigin, ToolSource, ToolSpec};
 use anyhow::Result;
 use code_agent_config::{
-    ManagedPluginDetail, ManagedSkillDetail, list_core_mcp_servers, list_managed_plugin_details,
-    list_managed_skill_details, set_core_mcp_server_enabled, set_managed_plugin_enabled,
-    set_managed_skill_enabled,
+    ManagedPluginDetail, ManagedSkillDetail, disabled_tool_names, list_core_mcp_servers,
+    list_managed_plugin_details, list_managed_skill_details, set_core_mcp_server_enabled,
+    set_managed_plugin_enabled, set_managed_skill_enabled, set_tool_enabled,
 };
 use code_agent_tui::theme::{ThemePalette, active_palette};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -23,36 +24,29 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ManagementSurfaceKind {
     Mcp,
+    Tool,
     Skill,
     Plugin,
 }
 
 impl ManagementSurfaceKind {
-    const ALL: [Self; 3] = [Self::Mcp, Self::Skill, Self::Plugin];
+    const CONFIG_ONLY: [Self; 3] = [Self::Mcp, Self::Skill, Self::Plugin];
+    const WITH_TOOL: [Self; 4] = [Self::Mcp, Self::Tool, Self::Skill, Self::Plugin];
 
     fn title(self) -> &'static str {
         match self {
             Self::Mcp => "MCP",
+            Self::Tool => "Tools",
             Self::Skill => "Skills",
             Self::Plugin => "Plugins",
         }
     }
+}
 
-    fn next(self) -> Self {
-        match self {
-            Self::Mcp => Self::Skill,
-            Self::Skill => Self::Plugin,
-            Self::Plugin => Self::Mcp,
-        }
-    }
-
-    fn previous(self) -> Self {
-        match self {
-            Self::Mcp => Self::Plugin,
-            Self::Skill => Self::Mcp,
-            Self::Plugin => Self::Skill,
-        }
-    }
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ToolCatalogSnapshot {
+    pub tool_specs: Vec<ToolSpec>,
+    pub startup_disabled_tool_names: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -139,35 +133,82 @@ struct ManagementTuiState {
     workspace_name: String,
     active: ManagementSurfaceKind,
     mcp: SurfaceState,
+    tool: SurfaceState,
     skill: SurfaceState,
     plugin: SurfaceState,
+    tool_catalog: Option<ToolCatalogSnapshot>,
     status_message: String,
     status_tone: StatusTone,
 }
 
 impl ManagementTuiState {
-    async fn load(workspace_root: PathBuf, initial_surface: ManagementSurfaceKind) -> Result<Self> {
+    async fn load(
+        workspace_root: PathBuf,
+        initial_surface: ManagementSurfaceKind,
+        tool_catalog: Option<ToolCatalogSnapshot>,
+    ) -> Result<Self> {
         let workspace_name = workspace_root
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("workspace")
             .to_string();
+        let initial_surface =
+            if initial_surface == ManagementSurfaceKind::Tool && tool_catalog.is_none() {
+                ManagementSurfaceKind::Mcp
+            } else {
+                initial_surface
+            };
         Ok(Self {
             workspace_root: workspace_root.clone(),
             workspace_name,
             active: initial_surface,
-            mcp: load_surface_state(&workspace_root, ManagementSurfaceKind::Mcp).await?,
-            skill: load_surface_state(&workspace_root, ManagementSurfaceKind::Skill).await?,
-            plugin: load_surface_state(&workspace_root, ManagementSurfaceKind::Plugin).await?,
+            mcp: load_surface_state(&workspace_root, ManagementSurfaceKind::Mcp, None).await?,
+            tool: load_surface_state(
+                &workspace_root,
+                ManagementSurfaceKind::Tool,
+                tool_catalog.as_ref(),
+            )
+            .await?,
+            skill: load_surface_state(&workspace_root, ManagementSurfaceKind::Skill, None).await?,
+            plugin: load_surface_state(&workspace_root, ManagementSurfaceKind::Plugin, None)
+                .await?,
+            tool_catalog,
             status_message: "Use Tab to switch surfaces and Space to toggle the selected entry."
                 .to_string(),
             status_tone: StatusTone::Info,
         })
     }
 
+    fn available_kinds(&self) -> &'static [ManagementSurfaceKind] {
+        if self.tool_catalog.is_some() {
+            &ManagementSurfaceKind::WITH_TOOL
+        } else {
+            &ManagementSurfaceKind::CONFIG_ONLY
+        }
+    }
+
+    fn next_surface(&self, current: ManagementSurfaceKind) -> ManagementSurfaceKind {
+        let kinds = self.available_kinds();
+        let index = kinds.iter().position(|kind| *kind == current).unwrap_or(0);
+        kinds[(index + 1) % kinds.len()]
+    }
+
+    fn previous_surface(&self, current: ManagementSurfaceKind) -> ManagementSurfaceKind {
+        let kinds = self.available_kinds();
+        let index = kinds.iter().position(|kind| *kind == current).unwrap_or(0);
+        kinds[(index + kinds.len() - 1) % kinds.len()]
+    }
+
+    fn jump_to_surface_index(&mut self, index: usize) {
+        if let Some(kind) = self.available_kinds().get(index).copied() {
+            self.active = kind;
+        }
+    }
+
     fn surface(&self, kind: ManagementSurfaceKind) -> &SurfaceState {
         match kind {
             ManagementSurfaceKind::Mcp => &self.mcp,
+            ManagementSurfaceKind::Tool => &self.tool,
             ManagementSurfaceKind::Skill => &self.skill,
             ManagementSurfaceKind::Plugin => &self.plugin,
         }
@@ -176,6 +217,7 @@ impl ManagementTuiState {
     fn surface_mut(&mut self, kind: ManagementSurfaceKind) -> &mut SurfaceState {
         match kind {
             ManagementSurfaceKind::Mcp => &mut self.mcp,
+            ManagementSurfaceKind::Tool => &mut self.tool,
             ManagementSurfaceKind::Skill => &mut self.skill,
             ManagementSurfaceKind::Plugin => &mut self.plugin,
         }
@@ -199,15 +241,16 @@ impl ManagementTuiState {
             .surface(kind)
             .selected_item()
             .map(|item| item.id.as_str().to_string());
-        let mut refreshed = load_surface_state(&self.workspace_root, kind).await?;
+        let mut refreshed =
+            load_surface_state(&self.workspace_root, kind, self.tool_catalog.as_ref()).await?;
         refreshed.set_selected_by_id(selected_id.as_deref());
         *self.surface_mut(kind) = refreshed;
         Ok(())
     }
 
     async fn refresh_all(&mut self) -> Result<()> {
-        for kind in ManagementSurfaceKind::ALL {
-            self.refresh_surface(kind).await?;
+        for kind in self.available_kinds() {
+            self.refresh_surface(*kind).await?;
         }
         Ok(())
     }
@@ -230,6 +273,9 @@ impl ManagementTuiState {
             ManagementSurfaceKind::Mcp => {
                 set_core_mcp_server_enabled(&self.workspace_root, &id, target_enabled).map(|_| ())
             }
+            ManagementSurfaceKind::Tool => {
+                set_tool_enabled(&self.workspace_root, &id, target_enabled).map(|_| ())
+            }
             ManagementSurfaceKind::Skill => {
                 set_managed_skill_enabled(&self.workspace_root, &id, target_enabled)
                     .await
@@ -243,15 +289,26 @@ impl ManagementTuiState {
             Ok(()) => match self.refresh_surface(kind).await {
                 Ok(()) => self.set_status(
                     StatusTone::Success,
-                    format!(
-                        "{} {}.",
-                        if target_enabled {
-                            "Enabled"
-                        } else {
-                            "Disabled"
-                        },
-                        title
-                    ),
+                    match kind {
+                        ManagementSurfaceKind::Tool => format!(
+                            "{} {} in workspace config.",
+                            if target_enabled {
+                                "Enabled"
+                            } else {
+                                "Disabled"
+                            },
+                            title
+                        ),
+                        _ => format!(
+                            "{} {}.",
+                            if target_enabled {
+                                "Enabled"
+                            } else {
+                                "Disabled"
+                            },
+                            title
+                        ),
+                    },
                 ),
                 Err(error) => self.set_status(
                     StatusTone::Error,
@@ -270,22 +327,23 @@ impl ManagementTuiState {
             }
             KeyCode::Char('q') => return Ok(false),
             KeyCode::Tab | KeyCode::Right => {
-                self.active = self.active.next();
+                self.active = self.next_surface(self.active);
                 self.set_status(
                     StatusTone::Info,
                     format!("Switched to {}.", self.active.title()),
                 );
             }
             KeyCode::BackTab | KeyCode::Left => {
-                self.active = self.active.previous();
+                self.active = self.previous_surface(self.active);
                 self.set_status(
                     StatusTone::Info,
                     format!("Switched to {}.", self.active.title()),
                 );
             }
-            KeyCode::Char('1') => self.active = ManagementSurfaceKind::Mcp,
-            KeyCode::Char('2') => self.active = ManagementSurfaceKind::Skill,
-            KeyCode::Char('3') => self.active = ManagementSurfaceKind::Plugin,
+            KeyCode::Char('1') => self.jump_to_surface_index(0),
+            KeyCode::Char('2') => self.jump_to_surface_index(1),
+            KeyCode::Char('3') => self.jump_to_surface_index(2),
+            KeyCode::Char('4') => self.jump_to_surface_index(3),
             KeyCode::Up | KeyCode::Char('k') => self.active_surface_mut().move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.active_surface_mut().move_down(),
             KeyCode::Home => self.active_surface_mut().move_home(),
@@ -337,8 +395,9 @@ impl Drop for ManagementTuiScreen {
 pub(crate) async fn run_management_tui(
     workspace_root: PathBuf,
     initial_surface: ManagementSurfaceKind,
+    tool_catalog: Option<ToolCatalogSnapshot>,
 ) -> Result<()> {
-    let mut state = ManagementTuiState::load(workspace_root, initial_surface).await?;
+    let mut state = ManagementTuiState::load(workspace_root, initial_surface, tool_catalog).await?;
     let mut screen = ManagementTuiScreen::enter()?;
     let result = run_management_loop(screen.terminal_mut(), &mut state).await;
     let cleanup = screen.leave();
@@ -490,7 +549,7 @@ fn build_header_text(state: &ManagementTuiState, theme: ThemePalette) -> Text<'s
 
 fn build_tabs_text(state: &ManagementTuiState, theme: ThemePalette) -> Text<'static> {
     let mut spans = Vec::new();
-    for (index, kind) in ManagementSurfaceKind::ALL.iter().enumerate() {
+    for (index, kind) in state.available_kinds().iter().enumerate() {
         if index > 0 {
             spans.push(Span::styled("   ", Style::default().fg(theme.subtle)));
         }
@@ -676,11 +735,16 @@ fn build_footer_text(state: &ManagementTuiState, theme: ThemePalette) -> Text<'s
         StatusTone::Success => theme.assistant,
         StatusTone::Error => theme.error,
     };
+    let jump_hint = if state.tool_catalog.is_some() {
+        "1-4"
+    } else {
+        "1-3"
+    };
     Text::from(vec![Line::from(vec![
         Span::styled("tab", Style::default().fg(theme.accent)),
         Span::styled(" switch", Style::default().fg(theme.subtle)),
         Span::styled(" · ", Style::default().fg(theme.subtle)),
-        Span::styled("1-3", Style::default().fg(theme.accent)),
+        Span::styled(jump_hint, Style::default().fg(theme.accent)),
         Span::styled(" jump", Style::default().fg(theme.subtle)),
         Span::styled(" · ", Style::default().fg(theme.subtle)),
         Span::styled("up/down", Style::default().fg(theme.accent)),
@@ -714,12 +778,17 @@ fn visible_window(selected: usize, total: usize, capacity: usize) -> (usize, usi
 async fn load_surface_state(
     workspace_root: &Path,
     kind: ManagementSurfaceKind,
+    tool_catalog: Option<&ToolCatalogSnapshot>,
 ) -> Result<SurfaceState> {
     let items = match kind {
         ManagementSurfaceKind::Mcp => list_core_mcp_servers(workspace_root)?
             .into_iter()
             .map(|server| build_mcp_item(workspace_root, server))
             .collect(),
+        ManagementSurfaceKind::Tool => tool_catalog
+            .map(|catalog| build_tool_items(workspace_root, catalog))
+            .transpose()?
+            .unwrap_or_default(),
         ManagementSurfaceKind::Skill => list_managed_skill_details(workspace_root)
             .await?
             .into_iter()
@@ -913,6 +982,154 @@ fn build_plugin_item(workspace_root: &Path, plugin: ManagedPluginDetail) -> Mana
     }
 }
 
+#[derive(Clone)]
+struct ToolCatalogEntry {
+    name: String,
+    startup_enabled: bool,
+    config_enabled: bool,
+    spec: Option<ToolSpec>,
+}
+
+fn build_tool_items(
+    workspace_root: &Path,
+    catalog: &ToolCatalogSnapshot,
+) -> Result<Vec<ManagementItem>> {
+    // Tool management toggles the persisted workspace disabled list, but the
+    // live startup state can still diverge when environment variables or
+    // startup policy remove a tool from the active registry for this process.
+    let configured_disabled = disabled_tool_names(workspace_root)?;
+    let startup_disabled = catalog
+        .startup_disabled_tool_names
+        .iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut entries = std::collections::BTreeMap::new();
+    for spec in &catalog.tool_specs {
+        let name = spec.name.to_string();
+        entries.insert(
+            name.clone(),
+            ToolCatalogEntry {
+                name: name.clone(),
+                startup_enabled: !startup_disabled.contains(&name),
+                config_enabled: !configured_disabled.contains(&name),
+                spec: Some(spec.clone()),
+            },
+        );
+    }
+    for name in startup_disabled.union(&configured_disabled) {
+        entries.entry(name.clone()).or_insert(ToolCatalogEntry {
+            name: name.clone(),
+            startup_enabled: !startup_disabled.contains(name),
+            config_enabled: !configured_disabled.contains(name),
+            spec: None,
+        });
+    }
+    Ok(entries
+        .into_values()
+        .map(build_tool_item)
+        .collect::<Vec<_>>())
+}
+
+fn build_tool_item(entry: ToolCatalogEntry) -> ManagementItem {
+    let summary = entry
+        .spec
+        .as_ref()
+        .map(|spec| spec.description.clone())
+        .unwrap_or_else(|| {
+            "Configured in workspace state but not present in the current startup catalog."
+                .to_string()
+        });
+    let mut sections = vec![DetailSection {
+        title: "State".to_string(),
+        rows: vec![
+            (
+                "config".to_string(),
+                enabled_label(entry.config_enabled).to_string(),
+            ),
+            (
+                "startup".to_string(),
+                enabled_label(entry.startup_enabled).to_string(),
+            ),
+        ],
+    }];
+    if entry.startup_enabled != entry.config_enabled {
+        sections.push(DetailSection {
+            title: "Notes".to_string(),
+            rows: vec![(
+                "startup".to_string(),
+                if entry.startup_enabled {
+                    "Current startup resolved this tool as enabled even though the workspace config disables it."
+                } else {
+                    "Current startup resolved this tool as disabled by environment or startup policy."
+                }
+                .to_string(),
+            )],
+        });
+    }
+    match entry.spec {
+        Some(spec) => {
+            sections.insert(
+                0,
+                DetailSection {
+                    title: "Identity".to_string(),
+                    rows: vec![
+                        ("kind".to_string(), tool_kind_label(&spec).to_string()),
+                        ("source".to_string(), tool_source_label(&spec)),
+                        ("origin".to_string(), tool_origin_label(&spec)),
+                    ],
+                },
+            );
+            if !spec.aliases.is_empty() {
+                sections.push(DetailSection {
+                    title: "Aliases".to_string(),
+                    rows: vec![(
+                        "names".to_string(),
+                        spec.aliases
+                            .iter()
+                            .map(|alias| alias.as_str().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    )],
+                });
+            }
+            sections.push(DetailSection {
+                title: "Approval".to_string(),
+                rows: vec![
+                    (
+                        "read only".to_string(),
+                        yes_no_label(spec.approval.read_only).to_string(),
+                    ),
+                    (
+                        "mutates".to_string(),
+                        yes_no_label(spec.approval.mutates_state).to_string(),
+                    ),
+                    (
+                        "network".to_string(),
+                        yes_no_label(spec.approval.needs_network).to_string(),
+                    ),
+                ],
+            });
+            ManagementItem {
+                id: spec.name.to_string(),
+                title: spec.name.to_string(),
+                badge: tool_source_badge(&spec),
+                summary,
+                enabled: entry.config_enabled,
+                sections,
+            }
+        }
+        None => ManagementItem {
+            id: entry.name.clone(),
+            title: entry.name,
+            badge: "config".to_string(),
+            summary,
+            enabled: entry.config_enabled,
+            sections,
+        },
+    }
+}
+
 fn join_keys(keys: impl IntoIterator<Item = String>) -> String {
     let mut collected = keys.into_iter().collect::<Vec<_>>();
     collected.sort();
@@ -921,6 +1138,10 @@ fn join_keys(keys: impl IntoIterator<Item = String>) -> String {
 
 fn enabled_label(enabled: bool) -> &'static str {
     if enabled { "enabled" } else { "disabled" }
+}
+
+fn yes_no_label(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 fn mcp_transport_label(transport: &McpTransportConfig) -> &'static str {
@@ -934,4 +1155,118 @@ fn display_workspace_path(workspace_root: &Path, path: &Path) -> String {
     path.strip_prefix(workspace_root)
         .map(|relative| relative.display().to_string())
         .unwrap_or_else(|_| path.display().to_string())
+}
+
+fn tool_kind_label(spec: &ToolSpec) -> &'static str {
+    match spec.kind {
+        agent::types::ToolKind::Function => "function",
+        agent::types::ToolKind::Freeform => "freeform",
+        agent::types::ToolKind::Native => "native",
+    }
+}
+
+fn tool_source_badge(spec: &ToolSpec) -> String {
+    match &spec.source {
+        ToolSource::Builtin => "builtin".to_string(),
+        ToolSource::Dynamic => "dynamic".to_string(),
+        ToolSource::Plugin { plugin } => format!("plugin:{plugin}"),
+        ToolSource::McpTool { server_name } => format!("mcp:{server_name}"),
+        ToolSource::McpResource { server_name, .. } => format!("mcp:{server_name}"),
+        ToolSource::ProviderBuiltin { provider } => format!("provider:{provider}"),
+    }
+}
+
+fn tool_source_label(spec: &ToolSpec) -> String {
+    match &spec.source {
+        ToolSource::Builtin => "builtin".to_string(),
+        ToolSource::Dynamic => "dynamic".to_string(),
+        ToolSource::Plugin { plugin } => format!("plugin `{plugin}`"),
+        ToolSource::McpTool { server_name } => format!("MCP server `{server_name}`"),
+        ToolSource::McpResource { server_name } => {
+            format!("MCP resource surface from `{server_name}`")
+        }
+        ToolSource::ProviderBuiltin { provider } => format!("provider builtin `{provider}`"),
+    }
+}
+
+fn tool_origin_label(spec: &ToolSpec) -> String {
+    match &spec.origin {
+        ToolOrigin::Local => "local".to_string(),
+        ToolOrigin::Mcp { server_name } => format!("MCP server `{server_name}`"),
+        ToolOrigin::Provider { provider } => format!("provider `{provider}`"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent::types::{ToolName, ToolOutputMode};
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    fn sample_tool_spec(name: &str, description: &str) -> ToolSpec {
+        ToolSpec::function(
+            ToolName::from(name),
+            description.to_string(),
+            json!({"type":"object","properties":{}}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
+    }
+
+    #[tokio::test]
+    async fn tool_surface_reads_config_toggle_state_separately_from_startup_state() {
+        let workspace = tempdir().unwrap();
+        set_tool_enabled(workspace.path(), "web_search", false).unwrap();
+        let state = load_surface_state(
+            workspace.path(),
+            ManagementSurfaceKind::Tool,
+            Some(&ToolCatalogSnapshot {
+                tool_specs: vec![sample_tool_spec("web_search", "Search the web")],
+                startup_disabled_tool_names: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let item = state.selected_item().unwrap();
+        assert_eq!(item.title, "web_search");
+        assert!(!item.enabled);
+        assert!(item.sections.iter().any(|section| {
+            section.title == "State"
+                && section
+                    .rows
+                    .iter()
+                    .any(|(key, value)| key == "config" && value == "disabled")
+        }));
+        assert!(item.sections.iter().any(|section| {
+            section.title == "State"
+                && section
+                    .rows
+                    .iter()
+                    .any(|(key, value)| key == "startup" && value == "enabled")
+        }));
+    }
+
+    #[tokio::test]
+    async fn tool_surface_keeps_unresolved_disabled_entries_visible() {
+        let workspace = tempdir().unwrap();
+        set_tool_enabled(workspace.path(), "ghost_tool", false).unwrap();
+        let state = load_surface_state(
+            workspace.path(),
+            ManagementSurfaceKind::Tool,
+            Some(&ToolCatalogSnapshot {
+                tool_specs: Vec::new(),
+                startup_disabled_tool_names: vec!["ghost_tool".to_string()],
+            }),
+        )
+        .await
+        .unwrap();
+
+        let item = state.selected_item().unwrap();
+        assert_eq!(item.title, "ghost_tool");
+        assert_eq!(item.badge, "config");
+        assert!(!item.enabled);
+    }
 }

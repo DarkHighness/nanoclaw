@@ -213,6 +213,7 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- tool list --state dis
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- tool list --source plugin --query review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- tool show web_search
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- manage
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- manage tool
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- manage skill
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp add docs --type stdio --env TOKEN=secret -- npx -y remote-mcp
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp disable docs
@@ -255,15 +256,18 @@ The management `list` and `show` commands default to a table-oriented terminal
 layout for human inspection. Pass `--style plain` when you want the older
 linear form for piping, grep, or shell scripts.
 
-`manage [mcp|skill|plugin]` opens a dedicated full-screen terminal manager for
-toggling those surfaces interactively. It also operates directly on workspace
-configuration and does not boot the runtime or require a provider API key.
+`manage [mcp|tool|skill|plugin]` opens a dedicated full-screen terminal manager
+for toggling those surfaces interactively. `manage mcp`, `manage skill`, and
+`manage plugin` operate directly on workspace configuration and do not boot the
+runtime or require a provider API key.
 
 `tool list` and `tool show` are live startup inspection commands. They boot the
 current runtime shape and inspect the tool surface that is actually available
 after provider, MCP, and environment-driven filtering. `tool list` also
 supports `--state`, `--source`, `--origin`, and `--query` filters so you can
-narrow the catalog without scripting your own grep pipeline.
+narrow the catalog without scripting your own grep pipeline. `manage tool`
+shares that same live startup requirement so it can show the complete tool
+catalog while still toggling the persisted workspace disabled list.
 
 Code-agent also materializes two built-in managed MCP entries by default:
 `context7` and `playwright`. They start enabled, so `/mcp`, `mcp list`, and

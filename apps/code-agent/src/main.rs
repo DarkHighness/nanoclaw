@@ -19,7 +19,7 @@ use code_agent_backend::{
 use code_agent_config::{
     CodeAgentConfig, ManagedPluginArtifact, ManagedPluginDetail, ManagedSkillArtifact,
     ManagedSkillDetail, add_core_mcp_server, add_managed_plugin, add_managed_skill,
-    delete_core_mcp_server, delete_managed_plugin, delete_managed_skill,
+    delete_core_mcp_server, delete_managed_plugin, delete_managed_skill, disabled_tool_names,
     filter_unavailable_builtin_mcp_servers, list_core_mcp_servers, list_managed_plugin_details,
     list_managed_skill_details, load_managed_plugin_detail, load_managed_skill_detail,
     set_core_mcp_server_enabled, set_managed_plugin_enabled, set_managed_skill_enabled,
@@ -29,7 +29,7 @@ use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
     CodeAgentTui, SharedUiState, StartupLoadingScreen, confirm_unsandboxed_startup_screen,
 };
-use management_tui::{ManagementSurfaceKind, run_management_tui};
+use management_tui::{ManagementSurfaceKind, ToolCatalogSnapshot, run_management_tui};
 use nanoclaw_config::CoreConfig;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -92,7 +92,7 @@ enum CliCommand {
     Export(SessionExportArgs),
     /// Import a session archive into the local store.
     Import(SessionImportArgs),
-    /// Open the interactive manager for MCP, skills, and plugins.
+    /// Open the interactive manager for MCP, tools, skills, and plugins.
     Manage(ManageArgs),
     /// Export persisted session events as JSONL.
     #[command(name = "export-events")]
@@ -119,6 +119,7 @@ struct ManageArgs {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum ManageSurfaceArg {
     Mcp,
+    Tool,
     Skill,
     Plugin,
 }
@@ -886,6 +887,7 @@ impl ManageArgs {
     fn surface(&self) -> ManagementSurfaceKind {
         match self.surface.unwrap_or(ManageSurfaceArg::Mcp) {
             ManageSurfaceArg::Mcp => ManagementSurfaceKind::Mcp,
+            ManageSurfaceArg::Tool => ManagementSurfaceKind::Tool,
             ManageSurfaceArg::Skill => ManagementSurfaceKind::Skill,
             ManageSurfaceArg::Plugin => ManagementSurfaceKind::Plugin,
         }
@@ -1259,7 +1261,19 @@ fn try_main() -> Result<()> {
             max_blocking_threads: config.core.host.tokio_max_blocking_threads,
         })
         .context("failed to build tokio runtime")?;
-        return runtime.block_on(run_management_tui(workspace_root, surface));
+        let tool_catalog = if surface == ManagementSurfaceKind::Tool {
+            let mut options = AppOptions::from_env_and_args_iter(
+                &workspace_root,
+                &env_map,
+                cli.app_option_flag_args(),
+            )?;
+            confirm_unsandboxed_startup_if_needed(&workspace_root, &mut options, true)?;
+            print_builtin_mcp_preflight_warnings(&options)?;
+            Some(runtime.block_on(load_tool_management_snapshot(&workspace_root, &options))?)
+        } else {
+            None
+        };
+        return runtime.block_on(run_management_tui(workspace_root, surface, tool_catalog));
     }
     if let Some(command) = cli.management_command()? {
         let runtime = build_host_tokio_runtime(HostRuntimeLimits::default())
@@ -1587,6 +1601,25 @@ fn print_fatal_error(error: &anyhow::Error) {
             "\ninternal diagnostic report:\n{error:?}"
         );
     }
+}
+
+async fn load_tool_management_snapshot(
+    workspace_root: &Path,
+    options: &AppOptions,
+) -> Result<ToolCatalogSnapshot> {
+    let session =
+        build_session_with_approval_mode(options, workspace_root, SessionApprovalMode::Interactive)
+            .await?;
+    let startup = session.startup_snapshot();
+    let configured_disabled = disabled_tool_names(workspace_root)?;
+    Ok(ToolCatalogSnapshot {
+        tool_specs: startup.tool_specs,
+        startup_disabled_tool_names: startup
+            .disabled_tool_names
+            .into_iter()
+            .chain(configured_disabled.into_iter())
+            .collect(),
+    })
 }
 
 fn should_render_diagnostic_details(error: &anyhow::Error) -> bool {
@@ -4652,6 +4685,13 @@ mod tests {
         let cli = Cli::parse_from(["code-agent", "manage", "plugin"]);
 
         assert_eq!(cli.manage_surface(), Some(ManagementSurfaceKind::Plugin));
+    }
+
+    #[test]
+    fn clap_parses_manage_tool_surface() {
+        let cli = Cli::parse_from(["code-agent", "manage", "tool"]);
+
+        assert_eq!(cli.manage_surface(), Some(ManagementSurfaceKind::Tool));
     }
 
     #[test]
