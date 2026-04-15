@@ -8,8 +8,9 @@ use agent::plugins::discover_plugins;
 use agent::runtime::UserMessageAugmentor;
 use agent::{AgentWorkspaceLayout, ToolRegistry};
 use code_agent_config::{
-    list_core_mcp_servers, list_managed_skills as list_managed_skill_artifacts,
-    set_core_mcp_server_enabled, set_managed_plugin_enabled as persist_managed_plugin_enabled,
+    filter_unavailable_builtin_mcp_servers, list_core_mcp_servers,
+    list_managed_skills as list_managed_skill_artifacts, set_core_mcp_server_enabled,
+    set_managed_plugin_enabled as persist_managed_plugin_enabled,
     set_managed_skill_enabled as persist_managed_skill_enabled,
 };
 use nanoclaw_config::CoreConfig;
@@ -229,8 +230,13 @@ impl CodeAgentSession {
             &[managed_mcp, plugin_mcp_servers].concat(),
             self.workspace_root(),
         ));
-        let target_mcp = filter_mcp_servers_for_host_surfaces(
+        let available_mcp = filter_unavailable_builtin_mcp_servers(
+            &self.managed_surface_reload.env_map,
             resolved_mcp,
+            &mut startup_warnings,
+        );
+        let target_mcp = filter_mcp_servers_for_host_surfaces(
+            available_mcp,
             host_process_surfaces_allowed,
             &mut startup_warnings,
         );

@@ -46,6 +46,10 @@ pub mod vars {
         "TAVILY_API_KEY",
         "Tavily API key for Tavily-hosted search requests.",
     );
+    pub const CONTEXT7_API_KEY: EnvVar = EnvVar::new(
+        "CONTEXT7_API_KEY",
+        "Context7 API key for the bundled Context7 MCP server.",
+    );
     pub const FIRECRAWL_API_KEY: EnvVar = EnvVar::new(
         "FIRECRAWL_API_KEY",
         "Firecrawl API key for Firecrawl-hosted search requests.",
@@ -211,6 +215,7 @@ pub mod vars {
         OPENAI_BASE_URL,
         ANTHROPIC_API_KEY,
         TAVILY_API_KEY,
+        CONTEXT7_API_KEY,
         FIRECRAWL_API_KEY,
         ANTHROPIC_BASE_URL,
         RUST_LOG,

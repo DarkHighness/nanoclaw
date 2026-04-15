@@ -56,6 +56,7 @@ use agent::{
 };
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
+use code_agent_config::filter_unavailable_builtin_mcp_servers;
 use nanoclaw_config::{CoreConfig, ResolvedAgentProfile};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -746,8 +747,13 @@ where
             .collect(),
         note: Some("Connecting MCP servers".to_string()),
     });
-    let boot_mcp_servers = filter_boot_mcp_servers(
+    let available_mcp_servers = filter_unavailable_builtin_mcp_servers(
+        &options.env_map,
         resolved_mcp_servers.clone(),
+        &mut startup_warnings,
+    );
+    let boot_mcp_servers = filter_boot_mcp_servers(
+        available_mcp_servers,
         host_process_surfaces_allowed,
         &mut startup_warnings,
     );

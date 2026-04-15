@@ -1,16 +1,22 @@
-use agent::mcp::McpServerConfig;
+use agent::mcp::{McpServerConfig, McpTransportConfig};
 use agent::plugins::{
     PluginEntryConfig, PluginKind, PluginManifest, PluginState, discover_plugins,
 };
 use agent::skills::{SkillRoot, SkillRootKind, load_skill_from_dir};
 use agent::types::PluginId;
 use agent::{AgentWorkspaceLayout, PluginBootResolverConfig, build_plugin_activation_plan};
+use agent_env::{EnvMap, EnvVar, vars};
 use anyhow::{Context, Result, anyhow, bail};
 use nanoclaw_config::CoreConfig;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
 const DISABLED_SKILL_DIR: &str = ".disabled";
+const BUILTIN_CONTEXT7_SERVER: &str = "context7";
+const BUILTIN_PLAYWRIGHT_SERVER: &str = "playwright";
+const BUILTIN_CONTEXT7_PACKAGE: &str = "@upstash/context7-mcp@latest";
+const BUILTIN_PLAYWRIGHT_PACKAGE: &str = "@playwright/mcp@latest";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedSkillArtifact {
@@ -48,7 +54,9 @@ pub struct ManagedPluginDetail {
 }
 
 pub fn list_core_mcp_servers(workspace_root: &Path) -> Result<Vec<McpServerConfig>> {
-    Ok(load_raw_core_config(workspace_root)?.mcp_servers)
+    let env_map = EnvMap::from_workspace_dir(workspace_root)?;
+    let config = load_raw_core_config(workspace_root)?;
+    Ok(merged_core_mcp_servers(&env_map, &config.mcp_servers))
 }
 
 pub fn add_core_mcp_server(workspace_root: &Path, server: McpServerConfig) -> Result<PathBuf> {
@@ -70,10 +78,15 @@ pub fn delete_core_mcp_server(workspace_root: &Path, name: &str) -> Result<PathB
     config
         .mcp_servers
         .retain(|server| server.name.as_str() != name);
-    if config.mcp_servers.len() == original_len {
-        bail!("unknown MCP server `{name}`");
+    if config.mcp_servers.len() != original_len {
+        return write_raw_core_config(workspace_root, &config);
     }
-    write_raw_core_config(workspace_root, &config)
+    if builtin_mcp_definition(name).is_some() {
+        bail!(
+            "built-in MCP server `{name}` cannot be deleted; use `mcp disable {name}` or `/mcp` instead"
+        );
+    }
+    bail!("unknown MCP server `{name}`");
 }
 
 pub fn set_core_mcp_server_enabled(
@@ -82,13 +95,64 @@ pub fn set_core_mcp_server_enabled(
     enabled: bool,
 ) -> Result<PathBuf> {
     let mut config = load_raw_core_config(workspace_root)?;
-    let server = config
+    if let Some(server) = config
         .mcp_servers
         .iter_mut()
         .find(|server| server.name.as_str() == name)
+    {
+        if server.enabled == enabled {
+            let verb = if enabled { "enabled" } else { "disabled" };
+            bail!("MCP server `{name}` is already {verb}");
+        }
+        server.enabled = enabled;
+        return write_raw_core_config(workspace_root, &config);
+    }
+
+    let env_map = EnvMap::from_workspace_dir(workspace_root)?;
+    let mut server = builtin_core_mcp_server(&env_map, name)
         .ok_or_else(|| anyhow!("unknown MCP server `{name}`"))?;
+    if server.enabled == enabled {
+        let verb = if enabled { "enabled" } else { "disabled" };
+        bail!("MCP server `{name}` is already {verb}");
+    }
     server.enabled = enabled;
+    config.mcp_servers.push(server);
     write_raw_core_config(workspace_root, &config)
+}
+
+pub(crate) fn materialize_builtin_core_mcp_servers(env_map: &EnvMap, config: &mut CoreConfig) {
+    // Built-in MCP servers behave like default managed entries: they should be
+    // visible to CLI/TUI management even in a clean workspace, but they should
+    // only be persisted once the operator explicitly overrides their state.
+    config.mcp_servers = merged_core_mcp_servers(env_map, &config.mcp_servers);
+}
+
+pub fn filter_unavailable_builtin_mcp_servers(
+    env_map: &EnvMap,
+    servers: Vec<McpServerConfig>,
+    warnings: &mut Vec<String>,
+) -> Vec<McpServerConfig> {
+    servers
+        .into_iter()
+        .filter_map(|server| {
+            let Some(definition) = builtin_mcp_definition(server.name.as_str()) else {
+                return Some(server);
+            };
+            if !matches_builtin_core_mcp_server(&server, &definition) {
+                return Some(server);
+            }
+            if select_builtin_launcher(env_map, &definition.launchers).is_some() {
+                return Some(server);
+            }
+            warnings.push(format!(
+                "built-in MCP server `{}` is enabled but no supported launcher is available in PATH; install one of {} or disable it with `mcp disable {}` or `/mcp`",
+                definition.name,
+                render_launcher_list(&definition.launchers),
+                definition.name,
+            ));
+            None
+        })
+        .collect()
 }
 
 pub async fn add_managed_skill(
@@ -426,6 +490,186 @@ fn load_raw_core_config(workspace_root: &Path) -> Result<CoreConfig> {
         .with_context(|| format!("failed to parse {}", path.display()))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BuiltinMcpLauncher {
+    PnpmDlx,
+    Npx,
+    Bunx,
+}
+
+impl BuiltinMcpLauncher {
+    fn label(self) -> &'static str {
+        match self {
+            Self::PnpmDlx => "`pnpm dlx`",
+            Self::Npx => "`npx`",
+            Self::Bunx => "`bunx`",
+        }
+    }
+
+    fn executable(self) -> &'static str {
+        match self {
+            Self::PnpmDlx => "pnpm",
+            Self::Npx => "npx",
+            Self::Bunx => "bunx",
+        }
+    }
+
+    fn render(self, package: &str) -> (String, Vec<String>) {
+        match self {
+            Self::PnpmDlx => (
+                "pnpm".to_string(),
+                vec!["dlx".to_string(), package.to_string()],
+            ),
+            Self::Npx => (
+                "npx".to_string(),
+                vec!["-y".to_string(), package.to_string()],
+            ),
+            Self::Bunx => ("bunx".to_string(), vec![package.to_string()]),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BuiltinMcpDefinition {
+    name: &'static str,
+    package: &'static str,
+    launchers: &'static [BuiltinMcpLauncher],
+    passthrough_env: &'static [EnvVar],
+}
+
+const NODE_PACKAGE_LAUNCHERS: &[BuiltinMcpLauncher] = &[
+    BuiltinMcpLauncher::PnpmDlx,
+    BuiltinMcpLauncher::Npx,
+    BuiltinMcpLauncher::Bunx,
+];
+
+fn builtin_mcp_definition(name: &str) -> Option<BuiltinMcpDefinition> {
+    match name {
+        BUILTIN_CONTEXT7_SERVER => Some(BuiltinMcpDefinition {
+            name: BUILTIN_CONTEXT7_SERVER,
+            package: BUILTIN_CONTEXT7_PACKAGE,
+            launchers: NODE_PACKAGE_LAUNCHERS,
+            passthrough_env: &[vars::CONTEXT7_API_KEY],
+        }),
+        BUILTIN_PLAYWRIGHT_SERVER => Some(BuiltinMcpDefinition {
+            name: BUILTIN_PLAYWRIGHT_SERVER,
+            package: BUILTIN_PLAYWRIGHT_PACKAGE,
+            launchers: NODE_PACKAGE_LAUNCHERS,
+            passthrough_env: &[],
+        }),
+        _ => None,
+    }
+}
+
+fn builtin_core_mcp_servers(env_map: &EnvMap) -> Vec<McpServerConfig> {
+    [BUILTIN_CONTEXT7_SERVER, BUILTIN_PLAYWRIGHT_SERVER]
+        .into_iter()
+        .filter_map(|name| builtin_core_mcp_server(env_map, name))
+        .collect()
+}
+
+fn builtin_core_mcp_server(env_map: &EnvMap, name: &str) -> Option<McpServerConfig> {
+    let definition = builtin_mcp_definition(name)?;
+    let launcher = select_builtin_launcher(env_map, &definition.launchers)
+        .unwrap_or(*definition.launchers.first().expect("built-in launcher"));
+    let (command, args) = launcher.render(definition.package);
+    Some(McpServerConfig {
+        name: definition.name.into(),
+        enabled: true,
+        transport: McpTransportConfig::Stdio {
+            command,
+            args,
+            env: builtin_mcp_env(env_map, definition.passthrough_env),
+            cwd: None,
+        },
+    })
+}
+
+fn merged_core_mcp_servers(
+    env_map: &EnvMap,
+    configured: &[McpServerConfig],
+) -> Vec<McpServerConfig> {
+    let mut merged = configured.to_vec();
+    for builtin in builtin_core_mcp_servers(env_map) {
+        if configured.iter().any(|server| server.name == builtin.name) {
+            continue;
+        }
+        merged.push(builtin);
+    }
+    merged
+}
+
+fn builtin_mcp_env(env_map: &EnvMap, passthrough: &[EnvVar]) -> BTreeMap<String, String> {
+    passthrough
+        .iter()
+        .filter_map(|variable| {
+            env_map
+                .get_non_empty_var(*variable)
+                .map(|value| (variable.key.to_string(), value))
+        })
+        .collect()
+}
+
+fn select_builtin_launcher(
+    env_map: &EnvMap,
+    launchers: &[BuiltinMcpLauncher],
+) -> Option<BuiltinMcpLauncher> {
+    launchers
+        .iter()
+        .copied()
+        .find(|launcher| command_exists_in_path(env_map, launcher.executable()))
+}
+
+fn matches_builtin_core_mcp_server(
+    server: &McpServerConfig,
+    definition: &BuiltinMcpDefinition,
+) -> bool {
+    let McpTransportConfig::Stdio { command, args, .. } = &server.transport else {
+        return false;
+    };
+    // Built-in launcher preflight should not second-guess arbitrary user
+    // overrides that happen to reuse a reserved built-in name.
+    definition.launchers.iter().any(|launcher| {
+        let (expected_command, expected_args) = launcher.render(definition.package);
+        command == &expected_command && args == &expected_args
+    })
+}
+
+fn render_launcher_list(launchers: &[BuiltinMcpLauncher]) -> String {
+    launchers
+        .iter()
+        .map(|launcher| launcher.label())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn command_exists_in_path(env_map: &EnvMap, command: &str) -> bool {
+    let candidate = Path::new(command);
+    if candidate.components().count() > 1 {
+        return candidate.is_file();
+    }
+    let Some(path) = env_map.get_raw("PATH") else {
+        return false;
+    };
+    std::env::split_paths(path).any(|dir| executable_candidate_exists(&dir, command))
+}
+
+fn executable_candidate_exists(dir: &Path, command: &str) -> bool {
+    let direct = dir.join(command);
+    if direct.is_file() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        for extension in ["exe", "cmd", "bat"] {
+            if dir.join(format!("{command}.{extension}")).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn write_raw_core_config(workspace_root: &Path, config: &CoreConfig) -> Result<PathBuf> {
     let path = CoreConfig::config_path(workspace_root);
     if let Some(parent) = path.parent() {
@@ -722,13 +966,15 @@ fn plugin_contribution_summary(plugin: &PluginState) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_core_mcp_server, add_managed_plugin, add_managed_skill, delete_core_mcp_server,
-        delete_managed_plugin, delete_managed_skill, list_managed_plugin_details,
-        list_managed_skill_details, set_core_mcp_server_enabled, set_managed_plugin_enabled,
-        set_managed_skill_enabled,
+        BUILTIN_CONTEXT7_SERVER, BUILTIN_PLAYWRIGHT_SERVER, add_core_mcp_server,
+        add_managed_plugin, add_managed_skill, delete_core_mcp_server, delete_managed_plugin,
+        delete_managed_skill, filter_unavailable_builtin_mcp_servers, list_core_mcp_servers,
+        list_managed_plugin_details, list_managed_skill_details, set_core_mcp_server_enabled,
+        set_managed_plugin_enabled, set_managed_skill_enabled,
     };
     use agent::AgentWorkspaceLayout;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
+    use agent_env::EnvMap;
     use nanoclaw_config::CoreConfig;
     use std::path::Path;
     use tempfile::tempdir;
@@ -760,6 +1006,24 @@ mod tests {
     }
 
     #[test]
+    fn list_core_mcp_servers_includes_builtin_entries_by_default() {
+        let dir = tempdir().unwrap();
+
+        let servers = list_core_mcp_servers(dir.path()).unwrap();
+
+        assert!(
+            servers
+                .iter()
+                .any(|server| server.name.as_str() == BUILTIN_CONTEXT7_SERVER && server.enabled)
+        );
+        assert!(
+            servers
+                .iter()
+                .any(|server| server.name.as_str() == BUILTIN_PLAYWRIGHT_SERVER && server.enabled)
+        );
+    }
+
+    #[test]
     fn set_core_mcp_server_enabled_persists_false() {
         let dir = tempdir().unwrap();
         add_core_mcp_server(dir.path(), stdio_server("docs")).unwrap();
@@ -772,6 +1036,18 @@ mod tests {
     }
 
     #[test]
+    fn set_core_mcp_server_enabled_persists_builtin_override() {
+        let dir = tempdir().unwrap();
+
+        set_core_mcp_server_enabled(dir.path(), BUILTIN_CONTEXT7_SERVER, false).unwrap();
+        let config = CoreConfig::load_from_dir(dir.path()).unwrap();
+
+        assert_eq!(config.mcp_servers.len(), 1);
+        assert_eq!(config.mcp_servers[0].name.as_str(), BUILTIN_CONTEXT7_SERVER);
+        assert!(!config.mcp_servers[0].enabled);
+    }
+
+    #[test]
     fn delete_core_mcp_server_removes_entry() {
         let dir = tempdir().unwrap();
         add_core_mcp_server(dir.path(), stdio_server("docs")).unwrap();
@@ -780,6 +1056,41 @@ mod tests {
         let config = CoreConfig::load_from_dir(dir.path()).unwrap();
 
         assert!(config.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn delete_core_mcp_server_rejects_builtin_entries() {
+        let dir = tempdir().unwrap();
+
+        let error = delete_core_mcp_server(dir.path(), BUILTIN_PLAYWRIGHT_SERVER).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("built-in MCP server `playwright` cannot be deleted")
+        );
+    }
+
+    #[test]
+    fn filtering_unavailable_builtin_mcp_servers_reports_missing_launchers() {
+        let env_map = EnvMap::default();
+        let servers = list_core_mcp_servers(tempdir().unwrap().path()).unwrap();
+        let mut warnings = Vec::new();
+
+        let retained = filter_unavailable_builtin_mcp_servers(&env_map, servers, &mut warnings);
+
+        assert!(retained.is_empty());
+        assert_eq!(warnings.len(), 2);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("built-in MCP server `context7` is enabled"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("`pnpm dlx`, `npx`, `bunx`"))
+        );
     }
 
     fn write_skill_source(dir: &Path, name: &str) {

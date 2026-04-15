@@ -200,7 +200,12 @@ impl Default for CodeAgentLspConfig {
 
 impl CodeAgentConfig {
     pub fn load_from_dir(workspace_root: &Path, env_map: &EnvMap) -> Result<Self> {
-        let core = CoreConfig::load_from_dir(workspace_root)?;
+        let mut core = CoreConfig::load_from_dir(workspace_root)?;
+        // Code-agent owns a small built-in MCP bundle. Materialize those
+        // virtual entries at load time so the runtime, CLI, and TUI all see
+        // the same managed surface without forcing every workspace to persist
+        // boilerplate overrides up front.
+        management::materialize_builtin_core_mcp_servers(env_map, &mut core);
         let mut app =
             load_optional_app_config::<CodeAgentAppConfig>(workspace_root, CODE_AGENT_APP_NAME)?;
         if let Some(parsed) = env_map.get_bool_var(CODE_AGENT_LSP_ENABLED) {
@@ -628,6 +633,30 @@ mod tests {
         assert!(!config.lsp_enabled);
         assert!(config.lsp_auto_install);
         assert_eq!(config.lsp_install_root, Some(dir.path().join(".cache/lsp")));
+    }
+
+    #[tokio::test]
+    async fn load_from_dir_materializes_builtin_mcp_servers() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+
+        let config = CodeAgentConfig::load_from_dir(dir.path(), &env_map).unwrap();
+
+        assert!(
+            config
+                .core
+                .mcp_servers
+                .iter()
+                .any(|server| server.name.as_str() == "context7" && server.enabled)
+        );
+        assert!(
+            config
+                .core
+                .mcp_servers
+                .iter()
+                .any(|server| server.name.as_str() == "playwright" && server.enabled)
+        );
     }
 
     #[tokio::test]

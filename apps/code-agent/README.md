@@ -204,6 +204,7 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- import tmp/session-ar
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-events --last tmp/session.jsonl
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-transcript 019d8aae-c699-75c3-b9de-6890b6f4d21a tmp/session.txt
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp list
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show context7
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp add docs --type stdio --env TOKEN=secret -- npx -y remote-mcp
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp disable docs
@@ -238,6 +239,12 @@ The store-backed `sessions`, `session`, `agent-sessions`, `agent-session`,
 `plugin list|show|add|delete|enable|disable` commands operate directly on
 workspace state, so they do not require a provider API key just to browse,
 inspect, archive, restore, or update local configuration.
+
+Code-agent also materializes two built-in managed MCP entries by default:
+`context7` and `playwright`. They start enabled, so `/mcp`, `mcp list`, and
+`mcp enable|disable` manage them the same way as persisted workspace MCP
+servers. When no supported launcher is available in `PATH`, startup warns and
+skips connecting that built-in server instead of failing the whole session.
 
 `skill` management only targets the workspace-local managed root
 `.nanoclaw/skills`. Disabling a managed skill moves it under
@@ -275,6 +282,7 @@ setup as an interactive session.
 - `exa_api`, `tavily_api`, `firecrawl_api`, and `brave_api` are direct hosted `web_search` backends; they are separate from MCP servers configured via `mcp add`
 - `NANOCLAW_CORE_WEB_SEARCH_TAVILY_API_KEY` / `TAVILY_API_KEY`: enable the Tavily hosted `web_search` backend
 - `NANOCLAW_CORE_WEB_SEARCH_FIRECRAWL_API_KEY` / `FIRECRAWL_API_KEY`: enable the Firecrawl hosted `web_search` backend
+- `CONTEXT7_API_KEY`: optional API key passed through to the built-in `context7` MCP server
 
 Example app-local TUI settings:
 

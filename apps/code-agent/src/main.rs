@@ -16,10 +16,10 @@ use code_agent_backend::{
 use code_agent_config::{
     ManagedPluginArtifact, ManagedPluginDetail, ManagedSkillArtifact, ManagedSkillDetail,
     add_core_mcp_server, add_managed_plugin, add_managed_skill, delete_core_mcp_server,
-    delete_managed_plugin, delete_managed_skill, list_core_mcp_servers,
-    list_managed_plugin_details, list_managed_skill_details, load_managed_plugin_detail,
-    load_managed_skill_detail, set_core_mcp_server_enabled, set_managed_plugin_enabled,
-    set_managed_skill_enabled,
+    delete_managed_plugin, delete_managed_skill, filter_unavailable_builtin_mcp_servers,
+    list_core_mcp_servers, list_managed_plugin_details, list_managed_skill_details,
+    load_managed_plugin_detail, load_managed_skill_detail, set_core_mcp_server_enabled,
+    set_managed_plugin_enabled, set_managed_skill_enabled,
 };
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
@@ -965,6 +965,7 @@ fn try_main() -> Result<()> {
         // Explicit `exec` is a scripting surface, so keep sandbox fallback
         // non-interactive even when the caller happens to be attached to a TTY.
         confirm_unsandboxed_startup_if_needed(&workspace_root, &mut options, false)?;
+        print_builtin_mcp_preflight_warnings(&options)?;
         let runtime = build_host_tokio_runtime(HostRuntimeLimits {
             worker_threads: options.tokio_worker_threads,
             max_blocking_threads: options.tokio_max_blocking_threads,
@@ -987,6 +988,7 @@ fn try_main() -> Result<()> {
             &mut options,
             stdin_is_terminal && stdout_is_terminal,
         )?;
+        print_builtin_mcp_preflight_warnings(&options)?;
         let runtime = build_host_tokio_runtime(HostRuntimeLimits {
             worker_threads: options.tokio_worker_threads,
             max_blocking_threads: options.tokio_max_blocking_threads,
@@ -1004,6 +1006,7 @@ fn try_main() -> Result<()> {
     // soon as config parsing succeeds instead of letting those early surfaces
     // fall back to the builtin default theme.
     install_theme_catalog(options.theme_catalog.clone());
+    print_builtin_mcp_preflight_warnings(&options)?;
 
     let runtime = build_host_tokio_runtime(HostRuntimeLimits {
         worker_threads: options.tokio_worker_threads,
@@ -2444,6 +2447,25 @@ fn print_sandbox_fallback_notice(notice: &SandboxFallbackNotice, trailer: &str) 
         writeln!(stderr, "    {}. {}", index + 1, step)?;
     }
     write!(stderr, "{trailer}")?;
+    stderr.flush()?;
+    Ok(())
+}
+
+fn print_builtin_mcp_preflight_warnings(options: &AppOptions) -> Result<()> {
+    let mut warnings = Vec::new();
+    let _ = filter_unavailable_builtin_mcp_servers(
+        &options.env_map,
+        options.core.mcp_servers.clone(),
+        &mut warnings,
+    );
+    if warnings.is_empty() {
+        return Ok(());
+    }
+
+    let mut stderr = io::stderr().lock();
+    for warning in warnings {
+        writeln!(stderr, "warning: {warning}")?;
+    }
     stderr.flush()?;
     Ok(())
 }

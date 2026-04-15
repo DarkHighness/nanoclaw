@@ -1,4 +1,5 @@
 use super::*;
+use code_agent_config::filter_unavailable_builtin_mcp_servers;
 
 impl CodeAgentSession {
     fn configured_stdio_mcp_server_names(&self) -> Vec<String> {
@@ -109,7 +110,20 @@ impl CodeAgentSession {
         &self,
         sandbox_policy: &SandboxPolicy,
     ) -> Result<Vec<(ConnectedMcpServer, Vec<McpToolAdapter>)>> {
-        let pending_configs = self.pending_stdio_mcp_server_configs();
+        let mut warnings = Vec::new();
+        let pending_configs = filter_unavailable_builtin_mcp_servers(
+            &self.managed_surface_reload.env_map,
+            self.pending_stdio_mcp_server_configs(),
+            &mut warnings,
+        );
+        if !warnings.is_empty() {
+            let mut startup = self.startup.write().unwrap();
+            for warning in warnings {
+                if !startup.startup_diagnostics.warnings.contains(&warning) {
+                    startup.startup_diagnostics.warnings.push(warning);
+                }
+            }
+        }
         if pending_configs.is_empty() {
             return Ok(Vec::new());
         }
