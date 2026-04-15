@@ -128,9 +128,9 @@ struct McpCommandArgs {
 #[derive(Debug, Subcommand)]
 enum McpSubcommand {
     /// List configured MCP servers.
-    List,
+    List(ManagementOutputArgs),
     /// Inspect one configured MCP server.
-    Show(McpNamedArgs),
+    Show(McpShowArgs),
     /// Print the current startup diagnostics snapshot for MCP startup.
     Diagnostics,
     /// List MCP prompts exposed by connected servers.
@@ -185,6 +185,26 @@ struct McpNamedArgs {
     name: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ManagementOutputStyle {
+    Table,
+    Plain,
+}
+
+#[derive(Clone, Copy, Debug, Args)]
+struct ManagementOutputArgs {
+    #[arg(long, value_enum, default_value_t = ManagementOutputStyle::Table)]
+    style: ManagementOutputStyle,
+}
+
+#[derive(Debug, Args)]
+struct McpShowArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[command(flatten)]
+    output: ManagementOutputArgs,
+}
+
 #[derive(Debug, Args)]
 struct SkillCommandArgs {
     #[command(subcommand)]
@@ -194,9 +214,9 @@ struct SkillCommandArgs {
 #[derive(Debug, Subcommand)]
 enum SkillSubcommand {
     /// List managed and built-in skills.
-    List,
+    List(ManagementOutputArgs),
     /// Inspect one managed or built-in skill.
-    Show(SkillNamedArgs),
+    Show(SkillShowArgs),
     /// Copy a skill directory into the managed workspace root.
     Add(SkillAddArgs),
     /// Delete a managed skill copy.
@@ -220,6 +240,14 @@ struct SkillNamedArgs {
 }
 
 #[derive(Debug, Args)]
+struct SkillShowArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[command(flatten)]
+    output: ManagementOutputArgs,
+}
+
+#[derive(Debug, Args)]
 struct PluginCommandArgs {
     #[command(subcommand)]
     command: PluginSubcommand,
@@ -228,9 +256,9 @@ struct PluginCommandArgs {
 #[derive(Debug, Subcommand)]
 enum PluginSubcommand {
     /// List managed plugin copies.
-    List,
+    List(ManagementOutputArgs),
     /// Inspect one managed plugin copy.
-    Show(PluginNamedArgs),
+    Show(PluginShowArgs),
     /// Copy a plugin directory into the managed workspace root.
     Add(PluginAddArgs),
     /// Delete a managed plugin copy.
@@ -251,6 +279,14 @@ struct PluginAddArgs {
 struct PluginNamedArgs {
     #[arg(value_name = "ID")]
     id: String,
+}
+
+#[derive(Debug, Args)]
+struct PluginShowArgs {
+    #[arg(value_name = "ID")]
+    id: String,
+    #[command(flatten)]
+    output: ManagementOutputArgs,
 }
 
 #[derive(Debug, Args, Default)]
@@ -363,29 +399,65 @@ enum ManagementCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum McpManagementCommand {
-    List,
-    Show { name: String },
-    Add { server: agent::mcp::McpServerConfig },
-    Delete { name: String },
-    SetEnabled { name: String, enabled: bool },
+    List {
+        style: ManagementOutputStyle,
+    },
+    Show {
+        name: String,
+        style: ManagementOutputStyle,
+    },
+    Add {
+        server: agent::mcp::McpServerConfig,
+    },
+    Delete {
+        name: String,
+    },
+    SetEnabled {
+        name: String,
+        enabled: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SkillManagementCommand {
-    List,
-    Show { name: String },
-    Add { path: String },
-    Delete { name: String },
-    SetEnabled { name: String, enabled: bool },
+    List {
+        style: ManagementOutputStyle,
+    },
+    Show {
+        name: String,
+        style: ManagementOutputStyle,
+    },
+    Add {
+        path: String,
+    },
+    Delete {
+        name: String,
+    },
+    SetEnabled {
+        name: String,
+        enabled: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PluginManagementCommand {
-    List,
-    Show { id: String },
-    Add { path: String },
-    Delete { id: String },
-    SetEnabled { id: String, enabled: bool },
+    List {
+        style: ManagementOutputStyle,
+    },
+    Show {
+        id: String,
+        style: ManagementOutputStyle,
+    },
+    Add {
+        path: String,
+    },
+    Delete {
+        id: String,
+    },
+    SetEnabled {
+        id: String,
+        enabled: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -718,9 +790,12 @@ impl SessionLookupArgs {
 impl McpCommandArgs {
     fn management_command(&self) -> Result<Option<McpManagementCommand>> {
         match &self.command {
-            McpSubcommand::List => Ok(Some(McpManagementCommand::List)),
+            McpSubcommand::List(output) => Ok(Some(McpManagementCommand::List {
+                style: output.style,
+            })),
             McpSubcommand::Show(command) => Ok(Some(McpManagementCommand::Show {
                 name: command.name.clone(),
+                style: command.output.style,
             })),
             McpSubcommand::Diagnostics | McpSubcommand::Prompts | McpSubcommand::Resources => {
                 Ok(None)
@@ -747,7 +822,7 @@ impl McpCommandArgs {
             McpSubcommand::Diagnostics => Some(LiveInspectCommand::Diagnostics),
             McpSubcommand::Prompts => Some(LiveInspectCommand::Prompts),
             McpSubcommand::Resources => Some(LiveInspectCommand::Resources),
-            McpSubcommand::List
+            McpSubcommand::List(_)
             | McpSubcommand::Show(_)
             | McpSubcommand::Add(_)
             | McpSubcommand::Delete(_)
@@ -760,9 +835,12 @@ impl McpCommandArgs {
 impl SkillCommandArgs {
     fn management_command(&self) -> SkillManagementCommand {
         match &self.command {
-            SkillSubcommand::List => SkillManagementCommand::List,
+            SkillSubcommand::List(output) => SkillManagementCommand::List {
+                style: output.style,
+            },
             SkillSubcommand::Show(command) => SkillManagementCommand::Show {
                 name: command.name.clone(),
+                style: command.output.style,
             },
             SkillSubcommand::Add(command) => SkillManagementCommand::Add {
                 path: command.path.clone(),
@@ -785,9 +863,12 @@ impl SkillCommandArgs {
 impl PluginCommandArgs {
     fn management_command(&self) -> PluginManagementCommand {
         match &self.command {
-            PluginSubcommand::List => PluginManagementCommand::List,
+            PluginSubcommand::List(output) => PluginManagementCommand::List {
+                style: output.style,
+            },
             PluginSubcommand::Show(command) => PluginManagementCommand::Show {
                 id: command.id.clone(),
+                style: command.output.style,
             },
             PluginSubcommand::Add(command) => PluginManagementCommand::Add {
                 path: command.path.clone(),
@@ -1093,16 +1174,16 @@ async fn run_management_command(workspace_root: PathBuf, command: ManagementComm
     let mut stdout = io::stdout().lock();
     match command {
         ManagementCommand::Mcp(command) => match command {
-            McpManagementCommand::List => {
+            McpManagementCommand::List { style } => {
                 let servers = list_core_mcp_servers(&workspace_root)?;
-                write_mcp_server_summaries(&mut stdout, &servers)?;
+                write_mcp_server_summaries(&mut stdout, &servers, style)?;
             }
-            McpManagementCommand::Show { name } => {
+            McpManagementCommand::Show { name, style } => {
                 let server = list_core_mcp_servers(&workspace_root)?
                     .into_iter()
                     .find(|server| server.name.as_str() == name)
                     .ok_or_else(|| anyhow!("unknown MCP server `{name}`"))?;
-                write_mcp_server_details(&mut stdout, &server)?;
+                write_mcp_server_details(&mut stdout, &server, style)?;
             }
             McpManagementCommand::Add { server } => {
                 let path = add_core_mcp_server(&workspace_root, server.clone())?;
@@ -1130,13 +1211,13 @@ async fn run_management_command(workspace_root: PathBuf, command: ManagementComm
             }
         },
         ManagementCommand::Skill(command) => match command {
-            SkillManagementCommand::List => {
+            SkillManagementCommand::List { style } => {
                 let skills = list_managed_skill_details(&workspace_root).await?;
-                write_managed_skill_summaries(&mut stdout, &workspace_root, &skills)?;
+                write_managed_skill_summaries(&mut stdout, &workspace_root, &skills, style)?;
             }
-            SkillManagementCommand::Show { name } => {
+            SkillManagementCommand::Show { name, style } => {
                 let detail = load_managed_skill_detail(&workspace_root, &name).await?;
-                write_managed_skill_details(&mut stdout, &workspace_root, &detail)?;
+                write_managed_skill_details(&mut stdout, &workspace_root, &detail, style)?;
             }
             SkillManagementCommand::Add { path } => {
                 let artifact = add_managed_skill(&workspace_root, Path::new(&path)).await?;
@@ -1156,13 +1237,13 @@ async fn run_management_command(workspace_root: PathBuf, command: ManagementComm
             }
         },
         ManagementCommand::Plugin(command) => match command {
-            PluginManagementCommand::List => {
+            PluginManagementCommand::List { style } => {
                 let plugins = list_managed_plugin_details(&workspace_root)?;
-                write_managed_plugin_summaries(&mut stdout, &workspace_root, &plugins)?;
+                write_managed_plugin_summaries(&mut stdout, &workspace_root, &plugins, style)?;
             }
-            PluginManagementCommand::Show { id } => {
+            PluginManagementCommand::Show { id, style } => {
                 let detail = load_managed_plugin_detail(&workspace_root, &id)?;
-                write_managed_plugin_details(&mut stdout, &workspace_root, &detail)?;
+                write_managed_plugin_details(&mut stdout, &workspace_root, &detail, style)?;
             }
             PluginManagementCommand::Add { path } => {
                 let artifact = add_managed_plugin(&workspace_root, Path::new(&path)).await?;
@@ -1859,327 +1940,1005 @@ fn write_loaded_task_details(writer: &mut impl Write, loaded: &LoadedTask) -> io
 fn write_mcp_server_summaries(
     writer: &mut impl Write,
     servers: &[agent::mcp::McpServerConfig],
+    style: ManagementOutputStyle,
 ) -> io::Result<()> {
-    if servers.is_empty() {
-        write_collection_header(writer, "MCP Servers", 0)?;
-        writeln!(writer, "No configured MCP servers found.")?;
-        write_detail_section(writer, "Next")?;
-        write_detail_field(
-            writer,
-            "manage",
-            format!("{} manage mcp", current_program_name()),
-        )?;
-        return Ok(());
-    }
+    match style {
+        ManagementOutputStyle::Table => {
+            write_collection_title(writer, "MCP Servers", servers.len())?;
+            if servers.is_empty() {
+                writeln!(writer, "No configured MCP servers found.")?;
+                writeln!(writer)?;
+                write_titled_key_value_table(
+                    writer,
+                    "Next",
+                    &[
+                        (
+                            "Manage".to_string(),
+                            format!("{} manage mcp", current_program_name()),
+                        ),
+                        (
+                            "Add".to_string(),
+                            format!(
+                                "{} mcp add docs --type stdio -- npx -y remote-mcp",
+                                current_program_name()
+                            ),
+                        ),
+                    ],
+                    [14, 72],
+                )?;
+                return Ok(());
+            }
 
-    write_collection_header(writer, "MCP Servers", servers.len())?;
-    for (index, server) in servers.iter().enumerate() {
-        if index > 0 {
+            let rows = servers
+                .iter()
+                .enumerate()
+                .map(|(index, server)| {
+                    let endpoint = match &server.transport {
+                        agent::mcp::McpTransportConfig::Stdio { command, args, .. } => {
+                            if args.is_empty() {
+                                command.clone()
+                            } else {
+                                format!("{command} {}", args.join(" "))
+                            }
+                        }
+                        agent::mcp::McpTransportConfig::StreamableHttp { url, .. } => url.clone(),
+                    };
+                    vec![
+                        (index + 1).to_string(),
+                        server.name.to_string(),
+                        status_label(server.enabled).to_string(),
+                        mcp_transport_label(&server.transport).to_string(),
+                        endpoint,
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_grid_table(
+                writer,
+                &["#", "Name", "State", "Transport", "Launch / Endpoint"],
+                &rows,
+                &[3, 20, 10, 12, 72],
+            )?;
             writeln!(writer)?;
+            write_titled_key_value_table(
+                writer,
+                "Next",
+                &[
+                    (
+                        "Inspect".to_string(),
+                        format!("{} mcp show <name>", current_program_name()),
+                    ),
+                    (
+                        "Manage".to_string(),
+                        format!("{} manage mcp", current_program_name()),
+                    ),
+                ],
+                [14, 72],
+            )
         }
-        write_summary_item_header(
-            writer,
-            index + 1,
-            server.name.as_str(),
-            status_label(server.enabled),
-            mcp_transport_label(&server.transport),
-        )?;
-        match &server.transport {
-            agent::mcp::McpTransportConfig::Stdio { command, args, .. } => {
-                let launch = if args.is_empty() {
-                    command.clone()
-                } else {
-                    format!("{command} {}", args.join(" "))
-                };
-                write_summary_field(writer, "launch", launch)?;
+        ManagementOutputStyle::Plain => {
+            if servers.is_empty() {
+                write_plain_collection_header(writer, "MCP Servers", 0)?;
+                writeln!(writer, "No configured MCP servers found.")?;
+                write_plain_detail_section(writer, "Next")?;
+                write_plain_detail_field(
+                    writer,
+                    "manage",
+                    format!("{} manage mcp", current_program_name()),
+                )?;
+                return Ok(());
             }
-            agent::mcp::McpTransportConfig::StreamableHttp { url, .. } => {
-                write_summary_field(writer, "endpoint", url)?;
+
+            write_plain_collection_header(writer, "MCP Servers", servers.len())?;
+            for (index, server) in servers.iter().enumerate() {
+                if index > 0 {
+                    writeln!(writer)?;
+                }
+                write_plain_summary_item_header(
+                    writer,
+                    index + 1,
+                    server.name.as_str(),
+                    status_label(server.enabled),
+                    mcp_transport_label(&server.transport),
+                )?;
+                match &server.transport {
+                    agent::mcp::McpTransportConfig::Stdio { command, args, .. } => {
+                        let launch = if args.is_empty() {
+                            command.clone()
+                        } else {
+                            format!("{command} {}", args.join(" "))
+                        };
+                        write_plain_summary_field(writer, "launch", launch)?;
+                    }
+                    agent::mcp::McpTransportConfig::StreamableHttp { url, .. } => {
+                        write_plain_summary_field(writer, "endpoint", url)?;
+                    }
+                }
+                write_plain_summary_field(
+                    writer,
+                    "inspect",
+                    format!("{} mcp show {}", current_program_name(), server.name),
+                )?;
             }
+            Ok(())
         }
-        write_summary_field(
-            writer,
-            "inspect",
-            format!("{} mcp show {}", current_program_name(), server.name),
-        )?;
     }
-    Ok(())
 }
 
 fn write_mcp_server_details(
     writer: &mut impl Write,
     server: &agent::mcp::McpServerConfig,
+    style: ManagementOutputStyle,
 ) -> io::Result<()> {
-    write_show_header(writer, "MCP Server")?;
-    write_detail_section(writer, "Overview")?;
-    write_detail_field(writer, "name", server.name.as_str())?;
-    write_detail_field(writer, "state", status_label(server.enabled))?;
-    write_detail_field(writer, "transport", mcp_transport_label(&server.transport))?;
-    match &server.transport {
-        agent::mcp::McpTransportConfig::Stdio {
-            command,
-            args,
-            env,
-            cwd,
-        } => {
-            write_detail_section(writer, "Launch")?;
-            write_detail_field(writer, "command", command)?;
-            if !args.is_empty() {
-                write_detail_field(writer, "args", args.join(" "))?;
+    match style {
+        ManagementOutputStyle::Table => {
+            let mut sections = vec![(
+                "Overview".to_string(),
+                vec![
+                    ("Name".to_string(), server.name.to_string()),
+                    (
+                        "State".to_string(),
+                        status_label(server.enabled).to_string(),
+                    ),
+                    (
+                        "Transport".to_string(),
+                        mcp_transport_label(&server.transport).to_string(),
+                    ),
+                ],
+            )];
+            match &server.transport {
+                agent::mcp::McpTransportConfig::Stdio {
+                    command,
+                    args,
+                    env,
+                    cwd,
+                } => {
+                    let mut rows = vec![("Command".to_string(), command.clone())];
+                    if !args.is_empty() {
+                        rows.push(("Args".to_string(), args.join(" ")));
+                    }
+                    if let Some(cwd) = cwd.as_deref() {
+                        rows.push(("Cwd".to_string(), cwd.to_string()));
+                    }
+                    if !env.is_empty() {
+                        rows.push((
+                            "Env Keys".to_string(),
+                            join_sorted_keys(env.keys().cloned().collect()),
+                        ));
+                    }
+                    sections.push(("Launch".to_string(), rows));
+                }
+                agent::mcp::McpTransportConfig::StreamableHttp { url, headers } => {
+                    let mut rows = vec![("URL".to_string(), url.clone())];
+                    if !headers.is_empty() {
+                        rows.push((
+                            "Header Keys".to_string(),
+                            join_sorted_keys(headers.keys().cloned().collect()),
+                        ));
+                    }
+                    sections.push(("Endpoint".to_string(), rows));
+                }
             }
-            if let Some(cwd) = cwd.as_deref() {
-                write_detail_field(writer, "cwd", cwd)?;
-            }
-            if !env.is_empty() {
-                write_detail_field(
-                    writer,
-                    "env keys",
-                    join_sorted_keys(env.keys().cloned().collect()),
-                )?;
-            }
+            sections.push((
+                "Actions".to_string(),
+                vec![
+                    (
+                        "Manage".to_string(),
+                        format!("{} manage mcp", current_program_name()),
+                    ),
+                    (
+                        if server.enabled { "Disable" } else { "Enable" }.to_string(),
+                        format!(
+                            "{} mcp {} {}",
+                            current_program_name(),
+                            if server.enabled { "disable" } else { "enable" },
+                            server.name
+                        ),
+                    ),
+                ],
+            ));
+            write_sectioned_key_value_table(
+                writer,
+                format!("MCP Server · {}", server.name).as_str(),
+                &sections,
+                [16, 72],
+            )
         }
-        agent::mcp::McpTransportConfig::StreamableHttp { url, headers } => {
-            write_detail_section(writer, "Endpoint")?;
-            write_detail_field(writer, "url", url)?;
-            if !headers.is_empty() {
-                write_detail_field(
-                    writer,
-                    "header keys",
-                    join_sorted_keys(headers.keys().cloned().collect()),
-                )?;
+        ManagementOutputStyle::Plain => {
+            write_plain_show_header(writer, "MCP Server")?;
+            write_plain_detail_section(writer, "Overview")?;
+            write_plain_detail_field(writer, "name", server.name.as_str())?;
+            write_plain_detail_field(writer, "state", status_label(server.enabled))?;
+            write_plain_detail_field(writer, "transport", mcp_transport_label(&server.transport))?;
+            match &server.transport {
+                agent::mcp::McpTransportConfig::Stdio {
+                    command,
+                    args,
+                    env,
+                    cwd,
+                } => {
+                    write_plain_detail_section(writer, "Launch")?;
+                    write_plain_detail_field(writer, "command", command)?;
+                    if !args.is_empty() {
+                        write_plain_detail_field(writer, "args", args.join(" "))?;
+                    }
+                    if let Some(cwd) = cwd.as_deref() {
+                        write_plain_detail_field(writer, "cwd", cwd)?;
+                    }
+                    if !env.is_empty() {
+                        write_plain_detail_field(
+                            writer,
+                            "env keys",
+                            join_sorted_keys(env.keys().cloned().collect()),
+                        )?;
+                    }
+                }
+                agent::mcp::McpTransportConfig::StreamableHttp { url, headers } => {
+                    write_plain_detail_section(writer, "Endpoint")?;
+                    write_plain_detail_field(writer, "url", url)?;
+                    if !headers.is_empty() {
+                        write_plain_detail_field(
+                            writer,
+                            "header keys",
+                            join_sorted_keys(headers.keys().cloned().collect()),
+                        )?;
+                    }
+                }
             }
+            write_plain_detail_section(writer, "Actions")?;
+            write_plain_detail_field(
+                writer,
+                "manage",
+                format!("{} manage mcp", current_program_name()),
+            )?;
+            write_plain_detail_field(
+                writer,
+                if server.enabled { "disable" } else { "enable" },
+                format!(
+                    "{} mcp {} {}",
+                    current_program_name(),
+                    if server.enabled { "disable" } else { "enable" },
+                    server.name
+                ),
+            )?;
+            Ok(())
         }
     }
-    write_detail_section(writer, "Actions")?;
-    write_detail_field(
-        writer,
-        "manage",
-        format!("{} manage mcp", current_program_name()),
-    )?;
-    write_detail_field(
-        writer,
-        if server.enabled { "disable" } else { "enable" },
-        format!(
-            "{} mcp {} {}",
-            current_program_name(),
-            if server.enabled { "disable" } else { "enable" },
-            server.name
-        ),
-    )?;
-    Ok(())
 }
 
 fn write_managed_skill_summaries(
     writer: &mut impl Write,
     workspace_root: &Path,
     skills: &[ManagedSkillDetail],
+    style: ManagementOutputStyle,
 ) -> io::Result<()> {
-    if skills.is_empty() {
-        write_collection_header(writer, "Skills", 0)?;
-        writeln!(writer, "No managed or built-in skills found.")?;
-        write_detail_section(writer, "Next")?;
-        write_detail_field(
-            writer,
-            "manage",
-            format!("{} manage skill", current_program_name()),
-        )?;
-        return Ok(());
-    }
+    match style {
+        ManagementOutputStyle::Table => {
+            write_collection_title(writer, "Skills", skills.len())?;
+            if skills.is_empty() {
+                writeln!(writer, "No managed or built-in skills found.")?;
+                writeln!(writer)?;
+                write_titled_key_value_table(
+                    writer,
+                    "Next",
+                    &[(
+                        "Manage".to_string(),
+                        format!("{} manage skill", current_program_name()),
+                    )],
+                    [14, 72],
+                )?;
+                return Ok(());
+            }
 
-    write_collection_header(writer, "Skills", skills.len())?;
-    for (index, skill) in skills.iter().enumerate() {
-        if index > 0 {
+            let rows = skills
+                .iter()
+                .enumerate()
+                .map(|(index, skill)| {
+                    vec![
+                        (index + 1).to_string(),
+                        skill.skill_name.clone(),
+                        status_label(skill.enabled).to_string(),
+                        if skill.builtin { "built-in" } else { "managed" }.to_string(),
+                        display_workspace_path(workspace_root, &skill.skill_path),
+                        if skill.description.is_empty() {
+                            "-".to_string()
+                        } else {
+                            skill.description.clone()
+                        },
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_grid_table(
+                writer,
+                &["#", "Name", "State", "Source", "Path", "About"],
+                &rows,
+                &[3, 22, 10, 10, 40, 56],
+            )?;
             writeln!(writer)?;
+            write_titled_key_value_table(
+                writer,
+                "Next",
+                &[
+                    (
+                        "Inspect".to_string(),
+                        format!("{} skill show <name>", current_program_name()),
+                    ),
+                    (
+                        "Manage".to_string(),
+                        format!("{} manage skill", current_program_name()),
+                    ),
+                ],
+                [14, 72],
+            )
         }
-        write_summary_item_header(
-            writer,
-            index + 1,
-            skill.skill_name.as_str(),
-            status_label(skill.enabled),
-            if skill.builtin { "built-in" } else { "managed" },
-        )?;
-        write_summary_field(
-            writer,
-            "path",
-            display_workspace_path(workspace_root, &skill.skill_path),
-        )?;
-        if !skill.description.is_empty() {
-            write_summary_field(writer, "about", skill.description.as_str())?;
+        ManagementOutputStyle::Plain => {
+            if skills.is_empty() {
+                write_plain_collection_header(writer, "Skills", 0)?;
+                writeln!(writer, "No managed or built-in skills found.")?;
+                write_plain_detail_section(writer, "Next")?;
+                write_plain_detail_field(
+                    writer,
+                    "manage",
+                    format!("{} manage skill", current_program_name()),
+                )?;
+                return Ok(());
+            }
+
+            write_plain_collection_header(writer, "Skills", skills.len())?;
+            for (index, skill) in skills.iter().enumerate() {
+                if index > 0 {
+                    writeln!(writer)?;
+                }
+                write_plain_summary_item_header(
+                    writer,
+                    index + 1,
+                    skill.skill_name.as_str(),
+                    status_label(skill.enabled),
+                    if skill.builtin { "built-in" } else { "managed" },
+                )?;
+                write_plain_summary_field(
+                    writer,
+                    "path",
+                    display_workspace_path(workspace_root, &skill.skill_path),
+                )?;
+                if !skill.description.is_empty() {
+                    write_plain_summary_field(writer, "about", skill.description.as_str())?;
+                }
+                write_plain_summary_field(
+                    writer,
+                    "inspect",
+                    format!("{} skill show {}", current_program_name(), skill.skill_name),
+                )?;
+            }
+            Ok(())
         }
-        write_summary_field(
-            writer,
-            "inspect",
-            format!("{} skill show {}", current_program_name(), skill.skill_name),
-        )?;
     }
-    Ok(())
 }
 
 fn write_managed_skill_details(
     writer: &mut impl Write,
     workspace_root: &Path,
     skill: &ManagedSkillDetail,
+    style: ManagementOutputStyle,
 ) -> io::Result<()> {
-    write_show_header(writer, "Skill")?;
-    write_detail_section(writer, "Overview")?;
-    write_detail_field(writer, "name", skill.skill_name.as_str())?;
-    write_detail_field(writer, "state", status_label(skill.enabled))?;
-    write_detail_field(
-        writer,
-        "source",
-        if skill.builtin { "builtin" } else { "managed" },
-    )?;
-    write_detail_section(writer, "Files")?;
-    write_detail_field(
-        writer,
-        "path",
-        display_workspace_path(workspace_root, &skill.skill_path),
-    )?;
-    if !skill.description.is_empty() {
-        write_detail_section(writer, "Trigger")?;
-        write_detail_field(writer, "description", skill.description.as_str())?;
+    match style {
+        ManagementOutputStyle::Table => {
+            let mut sections = vec![
+                (
+                    "Overview".to_string(),
+                    vec![
+                        ("Name".to_string(), skill.skill_name.clone()),
+                        ("State".to_string(), status_label(skill.enabled).to_string()),
+                        (
+                            "Source".to_string(),
+                            if skill.builtin { "built-in" } else { "managed" }.to_string(),
+                        ),
+                    ],
+                ),
+                (
+                    "Files".to_string(),
+                    vec![(
+                        "Path".to_string(),
+                        display_workspace_path(workspace_root, &skill.skill_path),
+                    )],
+                ),
+            ];
+            if !skill.description.is_empty() {
+                sections.push((
+                    "Trigger".to_string(),
+                    vec![("Description".to_string(), skill.description.clone())],
+                ));
+            }
+            sections.push((
+                "Actions".to_string(),
+                vec![
+                    (
+                        "Manage".to_string(),
+                        format!("{} manage skill", current_program_name()),
+                    ),
+                    (
+                        if skill.enabled { "Disable" } else { "Enable" }.to_string(),
+                        format!(
+                            "{} skill {} {}",
+                            current_program_name(),
+                            if skill.enabled { "disable" } else { "enable" },
+                            skill.skill_name
+                        ),
+                    ),
+                ],
+            ));
+            write_sectioned_key_value_table(
+                writer,
+                format!("Skill · {}", skill.skill_name).as_str(),
+                &sections,
+                [16, 72],
+            )
+        }
+        ManagementOutputStyle::Plain => {
+            write_plain_show_header(writer, "Skill")?;
+            write_plain_detail_section(writer, "Overview")?;
+            write_plain_detail_field(writer, "name", skill.skill_name.as_str())?;
+            write_plain_detail_field(writer, "state", status_label(skill.enabled))?;
+            write_plain_detail_field(
+                writer,
+                "source",
+                if skill.builtin { "builtin" } else { "managed" },
+            )?;
+            write_plain_detail_section(writer, "Files")?;
+            write_plain_detail_field(
+                writer,
+                "path",
+                display_workspace_path(workspace_root, &skill.skill_path),
+            )?;
+            if !skill.description.is_empty() {
+                write_plain_detail_section(writer, "Trigger")?;
+                write_plain_detail_field(writer, "description", skill.description.as_str())?;
+            }
+            write_plain_detail_section(writer, "Actions")?;
+            write_plain_detail_field(
+                writer,
+                "manage",
+                format!("{} manage skill", current_program_name()),
+            )?;
+            write_plain_detail_field(
+                writer,
+                if skill.enabled { "disable" } else { "enable" },
+                format!(
+                    "{} skill {} {}",
+                    current_program_name(),
+                    if skill.enabled { "disable" } else { "enable" },
+                    skill.skill_name
+                ),
+            )?;
+            Ok(())
+        }
     }
-    write_detail_section(writer, "Actions")?;
-    write_detail_field(
-        writer,
-        "manage",
-        format!("{} manage skill", current_program_name()),
-    )?;
-    write_detail_field(
-        writer,
-        if skill.enabled { "disable" } else { "enable" },
-        format!(
-            "{} skill {} {}",
-            current_program_name(),
-            if skill.enabled { "disable" } else { "enable" },
-            skill.skill_name
-        ),
-    )?;
-    Ok(())
 }
 
 fn write_managed_plugin_summaries(
     writer: &mut impl Write,
     workspace_root: &Path,
     plugins: &[ManagedPluginDetail],
+    style: ManagementOutputStyle,
 ) -> io::Result<()> {
-    if plugins.is_empty() {
-        write_collection_header(writer, "Plugins", 0)?;
-        writeln!(writer, "No managed plugins found.")?;
-        write_detail_section(writer, "Next")?;
-        write_detail_field(
-            writer,
-            "add",
-            format!("{} plugin add ./my-plugin", current_program_name()),
-        )?;
-        write_detail_field(
-            writer,
-            "manage",
-            format!("{} manage plugin", current_program_name()),
-        )?;
-        return Ok(());
-    }
+    match style {
+        ManagementOutputStyle::Table => {
+            write_collection_title(writer, "Plugins", plugins.len())?;
+            if plugins.is_empty() {
+                writeln!(writer, "No managed plugins found.")?;
+                writeln!(writer)?;
+                write_titled_key_value_table(
+                    writer,
+                    "Next",
+                    &[
+                        (
+                            "Add".to_string(),
+                            format!("{} plugin add ./my-plugin", current_program_name()),
+                        ),
+                        (
+                            "Manage".to_string(),
+                            format!("{} manage plugin", current_program_name()),
+                        ),
+                    ],
+                    [14, 72],
+                )?;
+                return Ok(());
+            }
 
-    write_collection_header(writer, "Plugins", plugins.len())?;
-    for (index, plugin) in plugins.iter().enumerate() {
-        if index > 0 {
+            let rows = plugins
+                .iter()
+                .enumerate()
+                .map(|(index, plugin)| {
+                    let title = plugin
+                        .name
+                        .as_deref()
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| plugin.plugin_id.to_string());
+                    let kind = plugin.version.as_deref().map_or_else(
+                        || plugin.kind.clone(),
+                        |version| format!("{} v{}", plugin.kind, version),
+                    );
+                    let summary = plugin
+                        .description
+                        .clone()
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| {
+                            if !plugin.contribution_summary.is_empty() {
+                                plugin.contribution_summary.clone()
+                            } else {
+                                plugin.reason.clone()
+                            }
+                        });
+                    vec![
+                        (index + 1).to_string(),
+                        title,
+                        status_label(plugin.enabled).to_string(),
+                        kind,
+                        display_workspace_path(workspace_root, &plugin.plugin_path),
+                        summary,
+                    ]
+                })
+                .collect::<Vec<_>>();
+            write_grid_table(
+                writer,
+                &["#", "Name", "State", "Kind", "Path", "Summary"],
+                &rows,
+                &[3, 24, 10, 18, 40, 52],
+            )?;
             writeln!(writer)?;
+            write_titled_key_value_table(
+                writer,
+                "Next",
+                &[
+                    (
+                        "Inspect".to_string(),
+                        format!("{} plugin show <id>", current_program_name()),
+                    ),
+                    (
+                        "Manage".to_string(),
+                        format!("{} manage plugin", current_program_name()),
+                    ),
+                ],
+                [14, 72],
+            )
         }
-        let title = plugin
-            .name
-            .as_deref()
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| plugin.plugin_id.to_string());
-        let badge = plugin.version.as_deref().map_or_else(
-            || plugin.kind.clone(),
-            |version| format!("{} v{}", plugin.kind, version),
-        );
-        write_summary_item_header(
-            writer,
-            index + 1,
-            title.as_str(),
-            status_label(plugin.enabled),
-            badge,
-        )?;
-        write_summary_field(writer, "id", plugin.plugin_id.to_string())?;
-        write_summary_field(
-            writer,
-            "path",
-            display_workspace_path(workspace_root, &plugin.plugin_path),
-        )?;
-        write_summary_field(writer, "reason", plugin.reason.as_str())?;
-        if let Some(description) = plugin.description.as_deref() {
-            write_summary_field(writer, "about", description)?;
-        } else if !plugin.contribution_summary.is_empty() {
-            write_summary_field(writer, "about", plugin.contribution_summary.as_str())?;
+        ManagementOutputStyle::Plain => {
+            if plugins.is_empty() {
+                write_plain_collection_header(writer, "Plugins", 0)?;
+                writeln!(writer, "No managed plugins found.")?;
+                write_plain_detail_section(writer, "Next")?;
+                write_plain_detail_field(
+                    writer,
+                    "add",
+                    format!("{} plugin add ./my-plugin", current_program_name()),
+                )?;
+                write_plain_detail_field(
+                    writer,
+                    "manage",
+                    format!("{} manage plugin", current_program_name()),
+                )?;
+                return Ok(());
+            }
+
+            write_plain_collection_header(writer, "Plugins", plugins.len())?;
+            for (index, plugin) in plugins.iter().enumerate() {
+                if index > 0 {
+                    writeln!(writer)?;
+                }
+                let title = plugin
+                    .name
+                    .as_deref()
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| plugin.plugin_id.to_string());
+                let badge = plugin.version.as_deref().map_or_else(
+                    || plugin.kind.clone(),
+                    |version| format!("{} v{}", plugin.kind, version),
+                );
+                write_plain_summary_item_header(
+                    writer,
+                    index + 1,
+                    title.as_str(),
+                    status_label(plugin.enabled),
+                    badge,
+                )?;
+                write_plain_summary_field(writer, "id", plugin.plugin_id.to_string())?;
+                write_plain_summary_field(
+                    writer,
+                    "path",
+                    display_workspace_path(workspace_root, &plugin.plugin_path),
+                )?;
+                write_plain_summary_field(writer, "reason", plugin.reason.as_str())?;
+                if let Some(description) = plugin.description.as_deref() {
+                    write_plain_summary_field(writer, "about", description)?;
+                } else if !plugin.contribution_summary.is_empty() {
+                    write_plain_summary_field(
+                        writer,
+                        "about",
+                        plugin.contribution_summary.as_str(),
+                    )?;
+                }
+                write_plain_summary_field(
+                    writer,
+                    "inspect",
+                    format!(
+                        "{} plugin show {}",
+                        current_program_name(),
+                        plugin.plugin_id
+                    ),
+                )?;
+            }
+            Ok(())
         }
-        write_summary_field(
-            writer,
-            "inspect",
-            format!(
-                "{} plugin show {}",
-                current_program_name(),
-                plugin.plugin_id
-            ),
-        )?;
     }
-    Ok(())
 }
 
 fn write_managed_plugin_details(
     writer: &mut impl Write,
     workspace_root: &Path,
     plugin: &ManagedPluginDetail,
+    style: ManagementOutputStyle,
 ) -> io::Result<()> {
     let plugin_subject = plugin
         .name
         .clone()
         .unwrap_or_else(|| plugin.plugin_id.to_string());
-    write_show_header(writer, "Plugin")?;
-    write_detail_section(writer, "Overview")?;
-    write_detail_field(writer, "name", plugin_subject.as_str())?;
-    write_detail_field(writer, "state", status_label(plugin.enabled))?;
-    write_detail_field(writer, "id", plugin.plugin_id.to_string())?;
-    if let Some(version) = plugin.version.as_deref() {
-        write_detail_field(writer, "version", version)?;
+    match style {
+        ManagementOutputStyle::Table => {
+            let mut overview = vec![
+                ("Name".to_string(), plugin_subject),
+                (
+                    "State".to_string(),
+                    status_label(plugin.enabled).to_string(),
+                ),
+                ("ID".to_string(), plugin.plugin_id.to_string()),
+                ("Kind".to_string(), plugin.kind.clone()),
+            ];
+            if let Some(version) = plugin.version.as_deref() {
+                overview.push(("Version".to_string(), version.to_string()));
+            }
+            let mut sections = vec![
+                ("Overview".to_string(), overview),
+                (
+                    "State".to_string(),
+                    vec![("Reason".to_string(), plugin.reason.clone())],
+                ),
+                (
+                    "Files".to_string(),
+                    vec![(
+                        "Path".to_string(),
+                        display_workspace_path(workspace_root, &plugin.plugin_path),
+                    )],
+                ),
+            ];
+            if let Some(description) = plugin.description.as_deref() {
+                sections.push((
+                    "Description".to_string(),
+                    vec![("Text".to_string(), description.to_string())],
+                ));
+            }
+            if !plugin.contribution_summary.is_empty() {
+                sections.push((
+                    "Contribution".to_string(),
+                    vec![("Summary".to_string(), plugin.contribution_summary.clone())],
+                ));
+            }
+            sections.push((
+                "Actions".to_string(),
+                vec![
+                    (
+                        "Manage".to_string(),
+                        format!("{} manage plugin", current_program_name()),
+                    ),
+                    (
+                        if plugin.enabled { "Disable" } else { "Enable" }.to_string(),
+                        format!(
+                            "{} plugin {} {}",
+                            current_program_name(),
+                            if plugin.enabled { "disable" } else { "enable" },
+                            plugin.plugin_id
+                        ),
+                    ),
+                ],
+            ));
+            write_sectioned_key_value_table(
+                writer,
+                format!(
+                    "Plugin · {}",
+                    plugin
+                        .name
+                        .as_deref()
+                        .unwrap_or_else(|| plugin.plugin_id.as_str())
+                )
+                .as_str(),
+                &sections,
+                [16, 72],
+            )
+        }
+        ManagementOutputStyle::Plain => {
+            let plugin_subject = plugin
+                .name
+                .clone()
+                .unwrap_or_else(|| plugin.plugin_id.to_string());
+            write_plain_show_header(writer, "Plugin")?;
+            write_plain_detail_section(writer, "Overview")?;
+            write_plain_detail_field(writer, "name", plugin_subject.as_str())?;
+            write_plain_detail_field(writer, "state", status_label(plugin.enabled))?;
+            write_plain_detail_field(writer, "id", plugin.plugin_id.to_string())?;
+            if let Some(version) = plugin.version.as_deref() {
+                write_plain_detail_field(writer, "version", version)?;
+            }
+            write_plain_detail_field(writer, "kind", plugin.kind.as_str())?;
+            write_plain_detail_section(writer, "State")?;
+            write_plain_detail_field(writer, "reason", plugin.reason.as_str())?;
+            write_plain_detail_section(writer, "Files")?;
+            write_plain_detail_field(
+                writer,
+                "path",
+                display_workspace_path(workspace_root, &plugin.plugin_path),
+            )?;
+            if let Some(description) = plugin.description.as_deref() {
+                write_plain_detail_section(writer, "Description")?;
+                write_plain_detail_field(writer, "text", description)?;
+            }
+            if !plugin.contribution_summary.is_empty() {
+                write_plain_detail_section(writer, "Contribution")?;
+                write_plain_detail_field(writer, "summary", plugin.contribution_summary.as_str())?;
+            }
+            write_plain_detail_section(writer, "Actions")?;
+            write_plain_detail_field(
+                writer,
+                "manage",
+                format!("{} manage plugin", current_program_name()),
+            )?;
+            write_plain_detail_field(
+                writer,
+                if plugin.enabled { "disable" } else { "enable" },
+                format!(
+                    "{} plugin {} {}",
+                    current_program_name(),
+                    if plugin.enabled { "disable" } else { "enable" },
+                    plugin.plugin_id
+                ),
+            )?;
+            Ok(())
+        }
     }
-    write_detail_field(writer, "kind", plugin.kind.as_str())?;
-    write_detail_section(writer, "State")?;
-    write_detail_field(writer, "reason", plugin.reason.as_str())?;
-    write_detail_section(writer, "Files")?;
-    write_detail_field(
-        writer,
-        "path",
-        display_workspace_path(workspace_root, &plugin.plugin_path),
-    )?;
-    if let Some(description) = plugin.description.as_deref() {
-        write_detail_section(writer, "Description")?;
-        write_detail_field(writer, "text", description)?;
+}
+
+fn write_collection_title(writer: &mut impl Write, title: &str, count: usize) -> io::Result<()> {
+    writeln!(writer, "{title} · {count}")
+}
+
+fn write_grid_table(
+    writer: &mut impl Write,
+    headers: &[&str],
+    rows: &[Vec<String>],
+    max_widths: &[usize],
+) -> io::Result<()> {
+    if headers.len() != max_widths.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "table headers and width caps must have the same length",
+        ));
     }
-    if !plugin.contribution_summary.is_empty() {
-        write_detail_section(writer, "Contribution")?;
-        write_detail_field(writer, "summary", plugin.contribution_summary.as_str())?;
+    if rows.iter().any(|row| row.len() != headers.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "table rows must match header width",
+        ));
     }
-    write_detail_section(writer, "Actions")?;
-    write_detail_field(
+
+    let widths = headers
+        .iter()
+        .enumerate()
+        .map(|(index, header)| {
+            let cap = max_widths[index].max(display_width(header));
+            rows.iter()
+                .map(|row| display_width(&truncate_cell(&sanitize_cell(&row[index]), cap)))
+                .fold(display_width(header), usize::max)
+        })
+        .collect::<Vec<_>>();
+    write_table_border(writer, '┌', '┬', '┐', &widths)?;
+    write_table_row(
         writer,
-        "manage",
-        format!("{} manage plugin", current_program_name()),
+        &widths,
+        &headers
+            .iter()
+            .map(|header| header.to_string())
+            .collect::<Vec<_>>(),
     )?;
-    write_detail_field(
+    write_table_border(writer, '├', '┼', '┤', &widths)?;
+    for row in rows {
+        let cells = row
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                truncate_cell(&sanitize_cell(cell), max_widths[index].max(widths[index]))
+            })
+            .collect::<Vec<_>>();
+        write_table_row(writer, &widths, &cells)?;
+    }
+    write_table_border(writer, '└', '┴', '┘', &widths)
+}
+
+fn write_titled_key_value_table(
+    writer: &mut impl Write,
+    title: &str,
+    rows: &[(String, String)],
+    max_widths: [usize; 2],
+) -> io::Result<()> {
+    let cells = rows
+        .iter()
+        .map(|(label, value)| {
+            vec![
+                truncate_cell(&sanitize_cell(label), max_widths[0]),
+                truncate_cell(&sanitize_cell(value), max_widths[1]),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let widths = cells.iter().fold(
+        vec![max_widths[0].min(1), max_widths[1].min(1)],
+        |mut widths, row| {
+            widths[0] = widths[0].max(display_width(&row[0]));
+            widths[1] = widths[1].max(display_width(&row[1]));
+            widths
+        },
+    );
+    // The title row merges both columns into one span, so its content width must
+    // match the rendered row width with the middle separator removed.
+    let title_width = widths.iter().sum::<usize>() + widths.len().saturating_sub(1) * 3;
+    writeln!(writer, "┌{}┐", "─".repeat(title_width + 2))?;
+    writeln!(
         writer,
-        if plugin.enabled { "disable" } else { "enable" },
-        format!(
-            "{} plugin {} {}",
-            current_program_name(),
-            if plugin.enabled { "disable" } else { "enable" },
-            plugin.plugin_id
-        ),
+        "│ {}{} │",
+        title,
+        " ".repeat(title_width.saturating_sub(display_width(title)))
     )?;
+    write_table_border(writer, '├', '┬', '┤', &widths)?;
+    for row in &cells {
+        write_table_row(writer, &widths, row)?;
+    }
+    write_table_border(writer, '└', '┴', '┘', &widths)
+}
+
+fn write_sectioned_key_value_table(
+    writer: &mut impl Write,
+    title: &str,
+    sections: &[(String, Vec<(String, String)>)],
+    max_widths: [usize; 2],
+) -> io::Result<()> {
+    let cells = sections
+        .iter()
+        .map(|(title, rows)| {
+            let rows = rows
+                .iter()
+                .map(|(label, value)| {
+                    vec![
+                        truncate_cell(&sanitize_cell(label), max_widths[0]),
+                        truncate_cell(&sanitize_cell(value), max_widths[1]),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            (sanitize_cell(title), rows)
+        })
+        .collect::<Vec<_>>();
+    let widths = cells.iter().fold(
+        vec![max_widths[0].min(1), max_widths[1].min(1)],
+        |mut widths, (_, rows)| {
+            for row in rows {
+                widths[0] = widths[0].max(display_width(&row[0]));
+                widths[1] = widths[1].max(display_width(&row[1]));
+            }
+            widths
+        },
+    );
+    let title_width = widths.iter().sum::<usize>() + widths.len().saturating_sub(1) * 3;
+    write_span_border(writer, '┌', '┐', title_width)?;
+    write_span_row(writer, title, title_width)?;
+    if sections.is_empty() {
+        return write_span_border(writer, '└', '┘', title_width);
+    }
+    write_span_border(writer, '├', '┤', title_width)?;
+    for (section_index, (title, rows)) in cells.iter().enumerate() {
+        write_span_row(writer, title, title_width)?;
+        write_table_border(writer, '├', '┬', '┤', &widths)?;
+        for row in rows {
+            write_table_row(writer, &widths, row)?;
+        }
+        if section_index + 1 == cells.len() {
+            write_table_border(writer, '└', '┴', '┘', &widths)?;
+        } else {
+            write_span_border(writer, '├', '┤', title_width)?;
+        }
+    }
     Ok(())
 }
 
-fn write_collection_header(writer: &mut impl Write, title: &str, count: usize) -> io::Result<()> {
+fn write_table_border(
+    writer: &mut impl Write,
+    left: char,
+    middle: char,
+    right: char,
+    widths: &[usize],
+) -> io::Result<()> {
+    write!(writer, "{left}")?;
+    for (index, width) in widths.iter().enumerate() {
+        write!(writer, "{}", "─".repeat(*width + 2))?;
+        if index + 1 == widths.len() {
+            writeln!(writer, "{right}")?;
+        } else {
+            write!(writer, "{middle}")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_span_border(
+    writer: &mut impl Write,
+    left: char,
+    right: char,
+    width: usize,
+) -> io::Result<()> {
+    writeln!(writer, "{left}{}{right}", "─".repeat(width + 2))
+}
+
+fn write_span_row(writer: &mut impl Write, value: &str, width: usize) -> io::Result<()> {
+    writeln!(
+        writer,
+        "│ {}{} │",
+        value,
+        " ".repeat(width.saturating_sub(display_width(value)))
+    )
+}
+
+fn write_table_row(writer: &mut impl Write, widths: &[usize], cells: &[String]) -> io::Result<()> {
+    write!(writer, "│")?;
+    for (index, (cell, width)) in cells.iter().zip(widths.iter()).enumerate() {
+        write!(
+            writer,
+            " {}{} │",
+            cell,
+            " ".repeat(width.saturating_sub(display_width(cell)))
+        )?;
+        if index + 1 == cells.len() {
+            writeln!(writer)?;
+        }
+    }
+    Ok(())
+}
+
+fn sanitize_cell(value: &str) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        "-".to_string()
+    } else {
+        compact
+    }
+}
+
+fn truncate_cell(value: &str, max_width: usize) -> String {
+    if display_width(value) <= max_width {
+        return value.to_string();
+    }
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+    let mut truncated = String::new();
+    for character in value.chars().take(max_width - 1) {
+        truncated.push(character);
+    }
+    truncated.push('…');
+    truncated
+}
+
+fn display_width(value: &str) -> usize {
+    value.chars().count()
+}
+
+fn write_plain_collection_header(
+    writer: &mut impl Write,
+    title: &str,
+    count: usize,
+) -> io::Result<()> {
     writeln!(writer, "{title} ({count})")?;
     writeln!(
         writer,
@@ -2189,13 +2948,13 @@ fn write_collection_header(writer: &mut impl Write, title: &str, count: usize) -
     Ok(())
 }
 
-fn write_show_header(writer: &mut impl Write, title: &str) -> io::Result<()> {
+fn write_plain_show_header(writer: &mut impl Write, title: &str) -> io::Result<()> {
     writeln!(writer, "{title}")?;
     writeln!(writer, "{}", "=".repeat(title.len()))?;
     Ok(())
 }
 
-fn write_summary_item_header(
+fn write_plain_summary_item_header(
     writer: &mut impl Write,
     ordinal: usize,
     title: &str,
@@ -2205,7 +2964,7 @@ fn write_summary_item_header(
     writeln!(writer, "{ordinal}. {title}  [{state}]  {}", badge.as_ref())
 }
 
-fn write_summary_field(
+fn write_plain_summary_field(
     writer: &mut impl Write,
     label: &str,
     value: impl AsRef<str>,
@@ -2213,14 +2972,14 @@ fn write_summary_field(
     writeln!(writer, "   {label:10} {}", value.as_ref())
 }
 
-fn write_detail_section(writer: &mut impl Write, title: &str) -> io::Result<()> {
+fn write_plain_detail_section(writer: &mut impl Write, title: &str) -> io::Result<()> {
     writeln!(writer)?;
     writeln!(writer, "{title}")?;
     writeln!(writer, "{}", "-".repeat(title.len()))?;
     Ok(())
 }
 
-fn write_detail_field(
+fn write_plain_detail_field(
     writer: &mut impl Write,
     label: &str,
     value: impl AsRef<str>,
@@ -2799,14 +3558,15 @@ mod diagnostic_tests {
 mod tests {
     use super::{
         Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ManagementCommand,
-        ManagementSurfaceKind, McpManagementCommand, PluginManagementCommand, ReadOnlyCommand,
-        SandboxFallbackAction, SessionSelector, SkillManagementCommand,
-        active_session_is_persisted, choose_sandbox_fallback_action, format_sandbox_abort_message,
-        format_session_counts, format_token_count, launch_headless_one_shot, write_exit_summary,
-        write_managed_plugin_details, write_managed_plugin_summaries, write_managed_skill_details,
-        write_managed_skill_summaries, write_mcp_prompt_summaries, write_mcp_resource_summaries,
-        write_mcp_server_details, write_mcp_server_summaries, write_session_search_results,
-        write_session_summaries, write_startup_diagnostics,
+        ManagementOutputStyle, ManagementSurfaceKind, McpManagementCommand,
+        PluginManagementCommand, ReadOnlyCommand, SandboxFallbackAction, SessionSelector,
+        SkillManagementCommand, active_session_is_persisted, choose_sandbox_fallback_action,
+        format_sandbox_abort_message, format_session_counts, format_token_count,
+        launch_headless_one_shot, write_exit_summary, write_managed_plugin_details,
+        write_managed_plugin_summaries, write_managed_skill_details, write_managed_skill_summaries,
+        write_mcp_prompt_summaries, write_mcp_resource_summaries, write_mcp_server_details,
+        write_mcp_server_summaries, write_session_search_results, write_session_summaries,
+        write_startup_diagnostics,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
@@ -2957,6 +3717,7 @@ mod tests {
             cli.management_command().unwrap(),
             Some(ManagementCommand::Mcp(McpManagementCommand::Show {
                 name: "docs".to_string(),
+                style: ManagementOutputStyle::Table,
             }))
         );
     }
@@ -3001,7 +3762,9 @@ mod tests {
 
         assert_eq!(
             cli.management_command().unwrap(),
-            Some(ManagementCommand::Skill(SkillManagementCommand::List))
+            Some(ManagementCommand::Skill(SkillManagementCommand::List {
+                style: ManagementOutputStyle::Table,
+            }))
         );
     }
 
@@ -3040,12 +3803,33 @@ mod tests {
             cli.management_command().unwrap(),
             Some(ManagementCommand::Plugin(PluginManagementCommand::Show {
                 id: "review-policy".to_string(),
+                style: ManagementOutputStyle::Table,
             }))
         );
     }
 
     #[test]
-    fn skill_show_output_uses_sectioned_layout() {
+    fn clap_parses_plugin_show_plain_style() {
+        let cli = Cli::parse_from([
+            "code-agent",
+            "plugin",
+            "show",
+            "review-policy",
+            "--style",
+            "plain",
+        ]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Plugin(PluginManagementCommand::Show {
+                id: "review-policy".to_string(),
+                style: ManagementOutputStyle::Plain,
+            }))
+        );
+    }
+
+    #[test]
+    fn skill_show_output_defaults_to_table_layout() {
         let mut buffer = Vec::new();
         write_managed_skill_details(
             &mut buffer,
@@ -3057,20 +3841,21 @@ mod tests {
                 enabled: true,
                 builtin: false,
             },
+            ManagementOutputStyle::Table,
         )
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.starts_with("Skill\n====="));
-        assert!(output.contains("\nOverview\n--------\n"));
-        assert!(output.contains("  state        enabled"));
-        assert!(output.contains("\nFiles\n-----\n"));
-        assert!(output.contains("\nTrigger\n-------\n"));
-        assert!(output.contains("\nActions\n-------\n"));
+        assert!(output.starts_with("┌"));
+        assert!(output.contains("│ Skill · review"));
+        assert!(output.contains("│ Overview"));
+        assert!(output.contains("│ Name"));
+        assert!(output.contains("│ State"));
+        assert!(output.contains("│ Actions"));
     }
 
     #[test]
-    fn mcp_show_output_groups_transport_details() {
+    fn mcp_show_output_groups_transport_details_in_tables() {
         let mut buffer = Vec::new();
         write_mcp_server_details(
             &mut buffer,
@@ -3084,20 +3869,22 @@ mod tests {
                     cwd: Some("/tmp".to_string()),
                 },
             },
+            ManagementOutputStyle::Table,
         )
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.starts_with("MCP Server\n=========="));
-        assert!(output.contains("\nOverview\n--------\n"));
-        assert!(output.contains("  state        disabled"));
-        assert!(output.contains("\nLaunch\n------\n"));
-        assert!(output.contains("env keys"));
-        assert!(output.contains("\nActions\n-------\n"));
+        assert!(output.starts_with("┌"));
+        assert!(output.contains("│ MCP Server · docs"));
+        assert!(output.contains("│ Overview"));
+        assert!(output.contains("│ State"));
+        assert!(output.contains("│ Launch"));
+        assert!(output.contains("Env Keys"));
+        assert!(output.contains("│ Actions"));
     }
 
     #[test]
-    fn mcp_list_output_uses_summary_cards() {
+    fn mcp_list_output_defaults_to_table_layout() {
         let mut buffer = Vec::new();
         write_mcp_server_summaries(
             &mut buffer,
@@ -3111,19 +3898,21 @@ mod tests {
                     cwd: None,
                 },
             }],
+            ManagementOutputStyle::Table,
         )
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.starts_with("MCP Servers (1)\n==============="));
-        assert!(output.contains("1. docs  [enabled]  stdio"));
-        assert!(output.contains("   launch     npx -y remote-mcp"));
-        assert!(output.contains("   inspect    "));
-        assert!(output.contains("mcp show docs"));
+        assert!(output.starts_with("MCP Servers · 1"));
+        assert!(output.contains("│ #"));
+        assert!(output.contains("│ Name"));
+        assert!(output.contains("docs"));
+        assert!(output.contains("npx -y remote-mcp"));
+        assert!(output.contains("mcp show <name>"));
     }
 
     #[test]
-    fn plugin_show_output_includes_identity_and_next_sections() {
+    fn plugin_show_output_defaults_to_table_layout() {
         let mut buffer = Vec::new();
         write_managed_plugin_details(
             &mut buffer,
@@ -3139,21 +3928,22 @@ mod tests {
                 reason: "explicit entry override".to_string(),
                 contribution_summary: "custom_tools=2".to_string(),
             },
+            ManagementOutputStyle::Table,
         )
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.starts_with("Plugin\n======"));
-        assert!(output.contains("\nOverview\n--------\n"));
-        assert!(output.contains("  name         Review Policy"));
-        assert!(output.contains("  state        enabled"));
-        assert!(output.contains("\nState\n-----\n"));
-        assert!(output.contains("\nFiles\n-----\n"));
-        assert!(output.contains("\nActions\n-------\n"));
+        assert!(output.starts_with("┌"));
+        assert!(output.contains("│ Plugin · Review Policy"));
+        assert!(output.contains("│ Overview"));
+        assert!(output.contains("│ Name"));
+        assert!(output.contains("│ State"));
+        assert!(output.contains("│ Files"));
+        assert!(output.contains("│ Actions"));
     }
 
     #[test]
-    fn skill_list_output_uses_summary_cards() {
+    fn skill_list_output_defaults_to_table_layout() {
         let mut buffer = Vec::new();
         write_managed_skill_summaries(
             &mut buffer,
@@ -3165,28 +3955,60 @@ mod tests {
                 enabled: true,
                 builtin: false,
             }],
+            ManagementOutputStyle::Table,
         )
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.starts_with("Skills (1)\n=========="));
-        assert!(output.contains("1. review  [enabled]  managed"));
-        assert!(output.contains("   path       .nanoclaw/skills/review"));
-        assert!(output.contains("   about      Review pull requests"));
-        assert!(output.contains("   inspect    "));
-        assert!(output.contains("skill show review"));
+        assert!(output.starts_with("Skills · 1"));
+        assert!(output.contains("│ #"));
+        assert!(output.contains("│ Name"));
+        assert!(output.contains("review"));
+        assert!(output.contains(".nanoclaw/skills/review"));
+        assert!(output.contains("skill show <name>"));
     }
 
     #[test]
     fn plugin_list_empty_output_includes_next_steps() {
         let mut buffer = Vec::new();
-        write_managed_plugin_summaries(&mut buffer, Path::new("/workspace"), &[]).unwrap();
+        write_managed_plugin_summaries(
+            &mut buffer,
+            Path::new("/workspace"),
+            &[],
+            ManagementOutputStyle::Table,
+        )
+        .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.starts_with("Plugins (0)\n==========="));
+        assert!(output.starts_with("Plugins · 0"));
         assert!(output.contains("No managed plugins found."));
-        assert!(output.contains("\nNext\n----\n"));
+        assert!(output.contains("│ Next"));
         assert!(output.contains("plugin add ./my-plugin"));
+    }
+
+    #[test]
+    fn plain_style_output_keeps_linear_layout() {
+        let mut buffer = Vec::new();
+        write_mcp_server_details(
+            &mut buffer,
+            &McpServerConfig {
+                name: "docs".into(),
+                enabled: true,
+                transport: McpTransportConfig::Stdio {
+                    command: "npx".to_string(),
+                    args: vec!["-y".to_string(), "remote-mcp".to_string()],
+                    env: BTreeMap::new(),
+                    cwd: None,
+                },
+            },
+            ManagementOutputStyle::Plain,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.starts_with("MCP Server\n=========="));
+        assert!(output.contains("\nOverview\n--------\n"));
+        assert!(output.contains("  state        enabled"));
     }
 
     #[test]

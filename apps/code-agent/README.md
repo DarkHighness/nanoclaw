@@ -205,6 +205,7 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-events --last 
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-transcript 019d8aae-c699-75c3-b9de-6890b6f4d21a tmp/session.txt
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp list
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show context7
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show context7 --style plain
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- manage
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- manage skill
@@ -213,6 +214,7 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp disable docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp enable docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp delete docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill list
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill list --style plain
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill show review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill show frontend-skill
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill add ./my-skill
@@ -221,6 +223,7 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill enable review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill delete review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin list
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin show review-policy
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin show review-policy --style plain
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin add ./my-plugin
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin disable review-policy
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin enable review-policy
@@ -242,6 +245,10 @@ The store-backed `sessions`, `session`, `agent-sessions`, `agent-session`,
 `plugin list|show|add|delete|enable|disable` commands operate directly on
 workspace state, so they do not require a provider API key just to browse,
 inspect, archive, restore, or update local configuration.
+
+The management `list` and `show` commands default to a table-oriented terminal
+layout for human inspection. Pass `--style plain` when you want the older
+linear form for piping, grep, or shell scripts.
 
 `manage [mcp|skill|plugin]` opens a dedicated full-screen terminal manager for
 toggling those surfaces interactively. It also operates directly on workspace
