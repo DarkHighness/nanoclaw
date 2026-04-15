@@ -218,13 +218,72 @@ struct ToolCommandArgs {
 #[derive(Debug, Subcommand)]
 enum ToolSubcommand {
     /// List tools available for the current runtime startup.
-    List(ManagementOutputArgs),
+    List(ToolListArgs),
     /// Inspect one tool from the current startup catalog.
     Show(ToolShowArgs),
     /// Re-enable a previously disabled tool name.
     Enable(ToolNamedArgs),
     /// Disable a tool name for future startups.
     Disable(ToolNamedArgs),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ToolStateFilter {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ToolSourceFilter {
+    Builtin,
+    Dynamic,
+    Plugin,
+    #[value(name = "mcp-tool")]
+    McpTool,
+    #[value(name = "mcp-resource")]
+    McpResource,
+    #[value(name = "provider-builtin")]
+    ProviderBuiltin,
+    Config,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ToolOriginFilter {
+    Local,
+    Mcp,
+    Provider,
+    Unresolved,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ToolListFilters {
+    state: Option<ToolStateFilter>,
+    source: Option<ToolSourceFilter>,
+    origin: Option<ToolOriginFilter>,
+    query: Option<String>,
+}
+
+impl ToolListFilters {
+    fn is_active(&self) -> bool {
+        self.state.is_some()
+            || self.source.is_some()
+            || self.origin.is_some()
+            || self.query.is_some()
+    }
+}
+
+#[derive(Debug, Args)]
+struct ToolListArgs {
+    #[command(flatten)]
+    output: ManagementOutputArgs,
+    #[arg(long, value_enum)]
+    state: Option<ToolStateFilter>,
+    #[arg(long, value_enum)]
+    source: Option<ToolSourceFilter>,
+    #[arg(long, value_enum)]
+    origin: Option<ToolOriginFilter>,
+    #[arg(long, value_name = "TEXT")]
+    query: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -546,6 +605,7 @@ enum LiveInspectCommand {
     Resources,
     ToolList {
         style: ManagementOutputStyle,
+        filters: ToolListFilters,
     },
     ToolShow {
         name: String,
@@ -907,14 +967,31 @@ impl ToolCommandArgs {
 
     fn live_inspect_command(&self) -> Option<LiveInspectCommand> {
         match &self.command {
-            ToolSubcommand::List(output) => Some(LiveInspectCommand::ToolList {
-                style: output.style,
+            ToolSubcommand::List(command) => Some(LiveInspectCommand::ToolList {
+                style: command.output.style,
+                filters: command.filters(),
             }),
             ToolSubcommand::Show(command) => Some(LiveInspectCommand::ToolShow {
                 name: command.name.clone(),
                 style: command.output.style,
             }),
             ToolSubcommand::Enable(_) | ToolSubcommand::Disable(_) => None,
+        }
+    }
+}
+
+impl ToolListArgs {
+    fn filters(&self) -> ToolListFilters {
+        ToolListFilters {
+            state: self.state,
+            source: self.source,
+            origin: self.origin,
+            query: self
+                .query
+                .as_deref()
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+                .map(ToOwned::to_owned),
         }
     }
 }
@@ -1477,13 +1554,14 @@ async fn run_live_inspection_command(
             let resources = session.list_mcp_resources().await;
             write_mcp_resource_summaries(&mut stdout, &resources)?;
         }
-        LiveInspectCommand::ToolList { style } => {
+        LiveInspectCommand::ToolList { style, filters } => {
             let startup = session.startup_snapshot();
             write_tool_summaries(
                 &mut stdout,
                 &startup.tool_specs,
                 &startup.disabled_tool_names,
                 style,
+                &filters,
             )?;
         }
         LiveInspectCommand::ToolShow { name, style } => {
@@ -2938,6 +3016,113 @@ fn collect_tool_catalog_entries(
     entries.into_values().collect()
 }
 
+fn filter_tool_catalog_entries(
+    entries: Vec<ToolCatalogEntry>,
+    filters: &ToolListFilters,
+) -> Vec<ToolCatalogEntry> {
+    entries
+        .into_iter()
+        .filter(|entry| tool_entry_matches_filters(entry, filters))
+        .collect()
+}
+
+fn tool_entry_matches_filters(entry: &ToolCatalogEntry, filters: &ToolListFilters) -> bool {
+    if let Some(state) = filters.state {
+        let matches_state = match state {
+            ToolStateFilter::Enabled => entry.enabled,
+            ToolStateFilter::Disabled => !entry.enabled,
+        };
+        if !matches_state {
+            return false;
+        }
+    }
+    if let Some(source) = filters.source
+        && tool_entry_source(entry) != source
+    {
+        return false;
+    }
+    if let Some(origin) = filters.origin
+        && tool_entry_origin(entry) != origin
+    {
+        return false;
+    }
+    if let Some(query) = filters.query.as_deref()
+        && !tool_entry_matches_query(entry, query)
+    {
+        return false;
+    }
+    true
+}
+
+fn tool_entry_source(entry: &ToolCatalogEntry) -> ToolSourceFilter {
+    match entry.spec.as_ref().map(|spec| &spec.source) {
+        Some(ToolSource::Builtin) => ToolSourceFilter::Builtin,
+        Some(ToolSource::Dynamic) => ToolSourceFilter::Dynamic,
+        Some(ToolSource::Plugin { .. }) => ToolSourceFilter::Plugin,
+        Some(ToolSource::McpTool { .. }) => ToolSourceFilter::McpTool,
+        Some(ToolSource::McpResource { .. }) => ToolSourceFilter::McpResource,
+        Some(ToolSource::ProviderBuiltin { .. }) => ToolSourceFilter::ProviderBuiltin,
+        None => ToolSourceFilter::Config,
+    }
+}
+
+fn tool_entry_origin(entry: &ToolCatalogEntry) -> ToolOriginFilter {
+    match entry.spec.as_ref().map(|spec| &spec.origin) {
+        Some(ToolOrigin::Local) => ToolOriginFilter::Local,
+        Some(ToolOrigin::Mcp { .. }) => ToolOriginFilter::Mcp,
+        Some(ToolOrigin::Provider { .. }) => ToolOriginFilter::Provider,
+        None => ToolOriginFilter::Unresolved,
+    }
+}
+
+fn tool_entry_matches_query(entry: &ToolCatalogEntry, query: &str) -> bool {
+    let query = query.to_ascii_lowercase();
+    if entry.name.to_ascii_lowercase().contains(&query) {
+        return true;
+    }
+    entry.spec.as_ref().is_some_and(|spec| {
+        spec.description.to_ascii_lowercase().contains(&query)
+            || spec
+                .aliases
+                .iter()
+                .any(|alias| alias.as_str().to_ascii_lowercase().contains(&query))
+    })
+}
+
+fn describe_tool_filters(filters: &ToolListFilters) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(state) = filters.state {
+        parts.push(format!("state={}", tool_state_filter_label(state)));
+    }
+    if let Some(source) = filters.source {
+        parts.push(format!("source={}", tool_source_filter_label(source)));
+    }
+    if let Some(origin) = filters.origin {
+        parts.push(format!("origin={}", tool_origin_filter_label(origin)));
+    }
+    if let Some(query) = filters.query.as_deref() {
+        parts.push(format!("query={query}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+fn tool_list_footer_lines(filter_summary: Option<&str>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = filter_summary {
+        lines.push(format!("Filter: {summary}"));
+        lines.push(format!("Reset: {} tool list", current_program_name()));
+    }
+    lines.push(format!(
+        "Inspect: {} tool show <name>",
+        current_program_name()
+    ));
+    lines.push(format!(
+        "Disable: {} tool disable <name>",
+        current_program_name()
+    ));
+    lines
+}
+
 fn resolve_tool_catalog_entry<'a>(
     entries: &'a [ToolCatalogEntry],
     name: &str,
@@ -2956,20 +3141,41 @@ fn write_tool_summaries(
     tool_specs: &[ToolSpec],
     disabled_tool_names: &[String],
     style: ManagementOutputStyle,
+    filters: &ToolListFilters,
 ) -> io::Result<()> {
-    let entries = collect_tool_catalog_entries(tool_specs, disabled_tool_names);
+    let entries = filter_tool_catalog_entries(
+        collect_tool_catalog_entries(tool_specs, disabled_tool_names),
+        filters,
+    );
+    let filter_summary = describe_tool_filters(filters);
+    let title = if filters.is_active() {
+        format!("Tools · {} matched", entries.len())
+    } else {
+        format!("Tools · {}", entries.len())
+    };
     match style {
         ManagementOutputStyle::Table => {
             if entries.is_empty() {
+                let message = if filters.is_active() {
+                    "No tools matched the current filters."
+                } else {
+                    "No tools available for the current startup."
+                };
+                let mut next_lines = Vec::new();
+                if let Some(summary) = &filter_summary {
+                    next_lines.push(format!("Filter: {summary}"));
+                    next_lines.push(format!("Reset: {} tool list", current_program_name()));
+                }
+                next_lines.push(format!(
+                    "Inspect: {} tool show <name>",
+                    current_program_name()
+                ));
                 return write_titled_note_box(
                     writer,
-                    "Tools · 0",
-                    "No tools available for the current startup.",
+                    title.as_str(),
+                    message,
                     Some("Next"),
-                    &[format!(
-                        "Inspect: {} tool show <name>",
-                        current_program_name()
-                    )],
+                    &next_lines,
                 );
             }
 
@@ -3005,7 +3211,7 @@ fn write_tool_summaries(
                 .collect::<Vec<_>>();
             write_titled_grid_table(
                 writer,
-                format!("Tools · {}", rows.len()).as_str(),
+                title.as_str(),
                 &[
                     "#",
                     "Name",
@@ -3018,17 +3224,36 @@ fn write_tool_summaries(
                 &rows,
                 &[4, 26, 10, 10, 14, 14, 64],
                 Some("Next"),
-                &[
-                    format!("Inspect: {} tool show <name>", current_program_name()),
-                    format!("Disable: {} tool disable <name>", current_program_name()),
-                ],
+                &tool_list_footer_lines(filter_summary.as_deref()),
             )
         }
         ManagementOutputStyle::Plain => {
-            write_plain_collection_header(writer, "Tools", entries.len())?;
+            write_plain_collection_header(
+                writer,
+                if filters.is_active() {
+                    "Tools (filtered)"
+                } else {
+                    "Tools"
+                },
+                entries.len(),
+            )?;
             if entries.is_empty() {
-                writeln!(writer, "No tools available for the current startup.")?;
+                writeln!(
+                    writer,
+                    "{}",
+                    if filters.is_active() {
+                        "No tools matched the current filters."
+                    } else {
+                        "No tools available for the current startup."
+                    }
+                )?;
+                if let Some(summary) = filter_summary {
+                    writeln!(writer, "filter     {summary}")?;
+                }
                 return Ok(());
+            }
+            if let Some(summary) = &filter_summary {
+                writeln!(writer, "filter     {summary}\n")?;
             }
             for (index, entry) in entries.iter().enumerate() {
                 if index > 0 {
@@ -3564,6 +3789,34 @@ fn write_plain_detail_field(
 
 fn status_label(enabled: bool) -> &'static str {
     if enabled { "enabled" } else { "disabled" }
+}
+
+fn tool_state_filter_label(filter: ToolStateFilter) -> &'static str {
+    match filter {
+        ToolStateFilter::Enabled => "enabled",
+        ToolStateFilter::Disabled => "disabled",
+    }
+}
+
+fn tool_source_filter_label(filter: ToolSourceFilter) -> &'static str {
+    match filter {
+        ToolSourceFilter::Builtin => "builtin",
+        ToolSourceFilter::Dynamic => "dynamic",
+        ToolSourceFilter::Plugin => "plugin",
+        ToolSourceFilter::McpTool => "mcp-tool",
+        ToolSourceFilter::McpResource => "mcp-resource",
+        ToolSourceFilter::ProviderBuiltin => "provider-builtin",
+        ToolSourceFilter::Config => "config",
+    }
+}
+
+fn tool_origin_filter_label(filter: ToolOriginFilter) -> &'static str {
+    match filter {
+        ToolOriginFilter::Local => "local",
+        ToolOriginFilter::Mcp => "mcp",
+        ToolOriginFilter::Provider => "provider",
+        ToolOriginFilter::Unresolved => "unresolved",
+    }
 }
 
 fn bool_label(value: bool) -> &'static str {
@@ -4203,7 +4456,8 @@ mod tests {
         Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ManagementCommand,
         ManagementOutputStyle, ManagementSurfaceKind, McpManagementCommand,
         PluginManagementCommand, ReadOnlyCommand, SandboxFallbackAction, SessionSelector,
-        SkillManagementCommand, ToolManagementCommand, active_session_is_persisted,
+        SkillManagementCommand, ToolListFilters, ToolManagementCommand, ToolOriginFilter,
+        ToolSourceFilter, ToolStateFilter, active_session_is_persisted,
         choose_sandbox_fallback_action, format_sandbox_abort_message, format_session_counts,
         format_token_count, launch_headless_one_shot, write_exit_summary,
         write_managed_plugin_details, write_managed_plugin_summaries, write_managed_skill_details,
@@ -4287,6 +4541,19 @@ mod tests {
             ToolOutputMode::Text,
             ToolOrigin::Local,
             ToolSource::Builtin,
+        )
+    }
+
+    fn sample_plugin_tool_spec(name: &str, description: &str) -> ToolSpec {
+        ToolSpec::function(
+            ToolName::from(name),
+            description.to_string(),
+            json!({"type":"object","properties":{}}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Plugin {
+                plugin: "review-plugin".into(),
+            },
         )
     }
 
@@ -4660,6 +4927,12 @@ mod tests {
             ],
             &[],
             ManagementOutputStyle::Table,
+            &ToolListFilters {
+                state: None,
+                source: None,
+                origin: None,
+                query: None,
+            },
         )
         .unwrap();
 
@@ -4681,12 +4954,49 @@ mod tests {
             &[sample_tool_spec("web_search", "Search the web")],
             &[],
             ManagementOutputStyle::Plain,
+            &ToolListFilters {
+                state: None,
+                source: None,
+                origin: None,
+                query: None,
+            },
         )
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
         assert!(output.starts_with("Tools (1)\n========="));
         assert!(output.contains("1. web_search  [enabled]  builtin"));
+    }
+
+    #[test]
+    fn tool_list_filters_results_by_state_source_and_query() {
+        let mut buffer = Vec::new();
+        write_tool_summaries(
+            &mut buffer,
+            &[
+                sample_tool_spec("web_search", "Search the web"),
+                sample_plugin_tool_spec("review_diff", "Review a diff"),
+            ],
+            &["web_search".to_string(), "ghost_tool".to_string()],
+            ManagementOutputStyle::Table,
+            &ToolListFilters {
+                state: Some(ToolStateFilter::Disabled),
+                source: Some(ToolSourceFilter::Config),
+                origin: Some(ToolOriginFilter::Unresolved),
+                query: Some("ghost".to_string()),
+            },
+        )
+        .unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.contains("│ Tools · 1 matched"));
+        assert!(output.contains("ghost_tool"));
+        assert!(!output.contains("review_diff"));
+        assert!(
+            output.contains(
+                "Filter: state=disabled · source=config · origin=unresolved · query=ghost"
+            )
+        );
     }
 
     #[test]
@@ -4958,6 +5268,12 @@ mod tests {
             cli.live_inspect_command(),
             Some(LiveInspectCommand::ToolList {
                 style: ManagementOutputStyle::Table,
+                filters: ToolListFilters {
+                    state: None,
+                    source: None,
+                    origin: None,
+                    query: None,
+                },
             })
         );
     }
@@ -4970,6 +5286,42 @@ mod tests {
             cli.live_inspect_command(),
             Some(LiveInspectCommand::ToolList {
                 style: ManagementOutputStyle::Plain,
+                filters: ToolListFilters {
+                    state: None,
+                    source: None,
+                    origin: None,
+                    query: None,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_tool_list_filters() {
+        let cli = Cli::parse_from([
+            "code-agent",
+            "tool",
+            "list",
+            "--state",
+            "disabled",
+            "--source",
+            "config",
+            "--origin",
+            "unresolved",
+            "--query",
+            "ghost",
+        ]);
+
+        assert_eq!(
+            cli.live_inspect_command(),
+            Some(LiveInspectCommand::ToolList {
+                style: ManagementOutputStyle::Table,
+                filters: ToolListFilters {
+                    state: Some(ToolStateFilter::Disabled),
+                    source: Some(ToolSourceFilter::Config),
+                    origin: Some(ToolOriginFilter::Unresolved),
+                    query: Some("ghost".to_string()),
+                },
             })
         );
     }
