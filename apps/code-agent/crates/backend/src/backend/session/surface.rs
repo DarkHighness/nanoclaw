@@ -13,8 +13,8 @@ impl CodeAgentSession {
         self.mcp_servers.read().unwrap().clone()
     }
 
-    pub(super) fn mcp_connection_failures_snapshot(&self) -> BTreeMap<String, String> {
-        self.mcp_connection_failures.read().unwrap().clone()
+    pub(super) fn mcp_connection_details_snapshot(&self) -> BTreeMap<String, String> {
+        self.mcp_connection_details.read().unwrap().clone()
     }
 
     pub(super) fn configured_mcp_server_summaries(
@@ -32,7 +32,7 @@ impl CodeAgentSession {
         summarize_mcp_servers(
             &configured,
             &self.connected_mcp_servers_snapshot(),
-            &self.mcp_connection_failures_snapshot(),
+            &self.mcp_connection_details_snapshot(),
         )
     }
 

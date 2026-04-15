@@ -1532,7 +1532,7 @@ async fn managed_mcp_listing_includes_configured_servers_before_connection() {
     assert_eq!(servers[0].name, "fixture");
     assert!(servers[0].enabled);
     assert!(!servers[0].connected);
-    assert_eq!(servers[0].last_error, None);
+    assert_eq!(servers[0].status_detail, None);
 }
 
 #[tokio::test]
@@ -1601,7 +1601,7 @@ async fn detaching_stdio_mcp_servers_removes_tools_and_restores_warning() {
             tool_count: 0,
             prompt_count: 0,
             resource_count: 0,
-            last_error: None,
+            status_detail: None,
         }]
     );
     assert!(diagnostics.warnings.iter().any(|warning| {

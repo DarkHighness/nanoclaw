@@ -20,9 +20,8 @@ use crate::backend::session_resume;
 use crate::backend::task_history::{self};
 use crate::backend::{
     ApprovalCoordinator, PermissionRequestCoordinator, SessionEventObserver, SessionEventStream,
-    UserInputCoordinator, connect_and_prepare_mcp_servers, filter_mcp_tool_conflicts,
-    list_mcp_prompts, list_mcp_resources, load_mcp_prompt, load_mcp_resource,
-    summarize_mcp_servers,
+    UserInputCoordinator, connect_and_prepare_mcp_servers, list_mcp_prompts, list_mcp_resources,
+    load_mcp_prompt, load_mcp_resource, resolve_mcp_tool_conflicts, summarize_mcp_servers,
 };
 use agent_env::EnvMap;
 use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile, ResolvedInternalProfile};
@@ -159,7 +158,7 @@ pub struct CodeAgentSession {
     store: Arc<dyn SessionStore>,
     mcp_servers: Arc<RwLock<Vec<ConnectedMcpServer>>>,
     configured_mcp_servers: Arc<RwLock<Vec<McpServerConfig>>>,
-    mcp_connection_failures: Arc<RwLock<BTreeMap<String, String>>>,
+    mcp_connection_details: Arc<RwLock<BTreeMap<String, String>>>,
     runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
     configured_runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
     mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
@@ -197,7 +196,7 @@ impl CodeAgentSession {
         store: Arc<dyn SessionStore>,
         mcp_servers: Vec<ConnectedMcpServer>,
         configured_mcp_servers: Vec<McpServerConfig>,
-        mcp_connection_failures: BTreeMap<String, String>,
+        mcp_connection_details: BTreeMap<String, String>,
         runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
         configured_runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
         mcp_process_executor: Arc<dyn agent::tools::ProcessExecutor>,
@@ -254,7 +253,7 @@ impl CodeAgentSession {
             store,
             mcp_servers: Arc::new(RwLock::new(mcp_servers)),
             configured_mcp_servers: Arc::new(RwLock::new(configured_mcp_servers)),
-            mcp_connection_failures: Arc::new(RwLock::new(mcp_connection_failures)),
+            mcp_connection_details: Arc::new(RwLock::new(mcp_connection_details)),
             runtime_hooks,
             configured_runtime_hooks,
             mcp_process_executor,

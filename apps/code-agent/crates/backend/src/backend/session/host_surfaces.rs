@@ -62,27 +62,27 @@ impl CodeAgentSession {
             .collect()
     }
 
-    pub(super) fn clear_mcp_connection_failures_for_names(
+    pub(super) fn clear_mcp_connection_details_for_names(
         &self,
         names: impl IntoIterator<Item = String>,
     ) {
-        let mut failures = self.mcp_connection_failures.write().unwrap();
+        let mut details = self.mcp_connection_details.write().unwrap();
         for name in names {
-            failures.remove(name.as_str());
+            details.remove(name.as_str());
         }
     }
 
-    pub(super) fn record_mcp_connection_failures(
+    pub(super) fn record_mcp_connection_details(
         &self,
         attempted: &[McpServerConfig],
-        failures: &BTreeMap<String, String>,
+        details: &BTreeMap<String, String>,
     ) {
-        let mut current = self.mcp_connection_failures.write().unwrap();
+        let mut current = self.mcp_connection_details.write().unwrap();
         for server in attempted {
             current.remove(server.name.as_str());
         }
-        for (name, error) in failures {
-            current.insert(name.clone(), error.clone());
+        for (name, detail) in details {
+            current.insert(name.clone(), detail.clone());
         }
     }
 
@@ -171,7 +171,7 @@ impl CodeAgentSession {
                 .collect(),
         )
         .await;
-        self.record_mcp_connection_failures(&pending_configs, &outcome.failures);
+        self.record_mcp_connection_details(&pending_configs, &outcome.details);
         Ok(outcome.connected)
     }
 
@@ -215,11 +215,11 @@ impl CodeAgentSession {
         }
 
         let registry = runtime.tool_registry_handle();
-        let outcome = filter_mcp_tool_conflicts(&registry, connected_servers);
-        if !outcome.failures.is_empty() {
-            let mut failures = self.mcp_connection_failures.write().unwrap();
-            for (name, error) in outcome.failures {
-                failures.insert(name, error);
+        let outcome = resolve_mcp_tool_conflicts(&registry, connected_servers);
+        if !outcome.details.is_empty() {
+            let mut details = self.mcp_connection_details.write().unwrap();
+            for (name, detail) in outcome.details {
+                details.insert(name, detail);
             }
         }
         if outcome.connected.is_empty() {
@@ -241,7 +241,6 @@ impl CodeAgentSession {
                 current_servers.push(server);
             }
         }
-        self.clear_mcp_connection_failures_for_names(attached_server_names.clone());
         self.rebuild_mcp_resource_tools(runtime);
         info!(
             "connected deferred stdio MCP servers after permission-mode change: {}",

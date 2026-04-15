@@ -22,6 +22,14 @@ impl McpToolAdapter {
     ) -> Self {
         Self { spec, handler }
     }
+
+    #[must_use]
+    pub fn with_spec(&self, spec: ToolSpec) -> Self {
+        Self {
+            spec,
+            handler: self.handler.clone(),
+        }
+    }
 }
 
 #[async_trait]
@@ -183,5 +191,26 @@ mod tests {
             metadata["mcp_adapter"]["normalized_tool_name"],
             "remote_echo"
         );
+    }
+
+    #[test]
+    fn mcp_adapter_can_be_rebound_to_a_new_tool_spec() {
+        let adapter = McpToolAdapter::new(
+            test_spec(),
+            Arc::new(|_, _| Box::pin(async move { panic!("handler should not run in spec test") })),
+        );
+        let rebound = adapter.with_spec(ToolSpec::function(
+            "playwright_browser_snapshot",
+            "test",
+            json!({"type": "object"}),
+            ToolOutputMode::Text,
+            ToolOrigin::Mcp {
+                server_name: "playwright".into(),
+            },
+            ToolSource::McpTool {
+                server_name: "playwright".into(),
+            },
+        ));
+        assert_eq!(rebound.spec().name.as_str(), "playwright_browser_snapshot");
     }
 }

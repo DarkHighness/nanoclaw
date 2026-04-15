@@ -25,7 +25,7 @@ const MCP_CONNECT_CONCURRENCY_LIMIT: usize = 8;
 #[derive(Default)]
 pub struct PreparedMcpConnectionOutcome {
     pub connected: Vec<(ConnectedMcpServer, Vec<McpToolAdapter>)>,
-    pub failures: BTreeMap<String, String>,
+    pub details: BTreeMap<String, String>,
 }
 
 pub fn build_startup_diagnostics_snapshot(
@@ -92,7 +92,7 @@ pub fn build_startup_diagnostics_snapshot(
 pub fn summarize_mcp_servers(
     configured_servers: &[McpServerConfig],
     connected_servers: &[ConnectedMcpServer],
-    failures: &BTreeMap<String, String>,
+    details: &BTreeMap<String, String>,
 ) -> Vec<McpServerSummary> {
     let mut summaries = Vec::new();
     let mut seen = BTreeSet::new();
@@ -113,7 +113,7 @@ pub fn summarize_mcp_servers(
             tool_count: connected.map_or(0, |value| value.catalog.tools.len()),
             prompt_count: connected.map_or(0, |value| value.catalog.prompts.len()),
             resource_count: connected.map_or(0, |value| value.catalog.resources.len()),
-            last_error: failures.get(&name).cloned(),
+            status_detail: details.get(&name).cloned(),
         });
     }
 
@@ -130,7 +130,7 @@ pub fn summarize_mcp_servers(
             tool_count: server.catalog.tools.len(),
             prompt_count: server.catalog.prompts.len(),
             resource_count: server.catalog.resources.len(),
-            last_error: None,
+            status_detail: None,
         });
     }
 
@@ -171,41 +171,118 @@ pub async fn connect_and_prepare_mcp_servers(
         match result {
             Ok(connected) => outcome.connected.push(connected),
             Err((name, error)) => {
-                outcome.failures.insert(name, error);
+                outcome.details.insert(name, error);
             }
         }
     }
     outcome
 }
 
-pub fn filter_mcp_tool_conflicts(
+pub fn resolve_mcp_tool_conflicts(
     registry: &ToolRegistry,
     connected_servers: Vec<(ConnectedMcpServer, Vec<McpToolAdapter>)>,
 ) -> PreparedMcpConnectionOutcome {
     let mut outcome = PreparedMcpConnectionOutcome::default();
-    for (server, adapters) in connected_servers {
-        let conflicts = adapters
-            .iter()
-            .map(|adapter| adapter.spec().name.to_string())
-            .filter(|name| registry.get(name.as_str()).is_some())
-            .collect::<BTreeSet<_>>();
-        if conflicts.is_empty() {
-            outcome.connected.push((server, adapters));
-            continue;
+    for (mut server, adapters) in connected_servers {
+        let mut reserved = BTreeSet::new();
+        let mut rebound = Vec::with_capacity(adapters.len());
+        let mut renamed = Vec::new();
+
+        for adapter in adapters {
+            let spec = adapter.spec();
+            let original_name = spec.name.to_string();
+            if registry.get(original_name.as_str()).is_none()
+                && reserved.insert(original_name.clone())
+            {
+                rebound.push(adapter);
+                continue;
+            }
+
+            // Local/runtime-owned tools keep the canonical name. MCP fallbacks
+            // stay connected, but move behind a server-prefixed alias so the
+            // operator can still opt into them explicitly.
+            let rebound_name = next_mcp_tool_name(
+                registry,
+                &reserved,
+                server.server_name.as_str(),
+                original_name.as_str(),
+            );
+            reserved.insert(rebound_name.clone());
+            let mut rebound_spec = spec;
+            rebound_spec.name = rebound_name.clone().into();
+            rebound.push(adapter.with_spec(rebound_spec));
+            renamed.push(format!("{original_name} -> {rebound_name}"));
         }
-        outcome.failures.insert(
-            server.server_name.to_string(),
-            format!(
-                "MCP tool names conflict with existing registry entries: {}",
-                conflicts.into_iter().collect::<Vec<_>>().join(", ")
-            ),
-        );
+
+        if !renamed.is_empty() {
+            outcome.details.insert(
+                server.server_name.to_string(),
+                format!("renamed conflicting tools: {}", renamed.join(", ")),
+            );
+        }
+        server.catalog.tools = rebound.iter().map(|adapter| adapter.spec()).collect();
+        outcome.connected.push((server, rebound));
     }
     outcome
 }
 
 pub fn list_mcp_servers(servers: &[ConnectedMcpServer]) -> Vec<McpServerSummary> {
     summarize_mcp_servers(&[], servers, &BTreeMap::new())
+}
+
+fn next_mcp_tool_name(
+    registry: &ToolRegistry,
+    reserved: &BTreeSet<String>,
+    server_name: &str,
+    original_name: &str,
+) -> String {
+    let server_prefix = sanitize_tool_name_segment(server_name);
+    let original_suffix = sanitize_tool_name_segment(original_name);
+    for candidate in [
+        format!("{server_prefix}_{original_suffix}"),
+        format!("{server_prefix}_mcp_{original_suffix}"),
+    ] {
+        if registry.get(candidate.as_str()).is_none() && !reserved.contains(&candidate) {
+            return candidate;
+        }
+    }
+
+    let mut counter = 2usize;
+    loop {
+        let candidate = format!("{server_prefix}_{original_suffix}_{counter}");
+        if registry.get(candidate.as_str()).is_none() && !reserved.contains(&candidate) {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+fn sanitize_tool_name_segment(value: &str) -> String {
+    let mut sanitized = String::with_capacity(value.len());
+    let mut previous_was_underscore = false;
+    for character in value.chars() {
+        let keep = character.is_ascii_alphanumeric();
+        let mapped = if keep {
+            character.to_ascii_lowercase()
+        } else {
+            '_'
+        };
+        if mapped == '_' {
+            if previous_was_underscore {
+                continue;
+            }
+            previous_was_underscore = true;
+        } else {
+            previous_was_underscore = false;
+        }
+        sanitized.push(mapped);
+    }
+    let sanitized = sanitized.trim_matches('_').to_string();
+    if sanitized.is_empty() {
+        "mcp".to_string()
+    } else {
+        sanitized
+    }
 }
 
 pub fn mcp_connection_sandbox_policy(
@@ -609,19 +686,76 @@ fn describe_host_api_grant(grant: &HookHostApiGrant) -> String {
 mod tests {
     use super::{
         McpServerSummary, StartupDiagnosticsSnapshot, build_startup_diagnostics_snapshot,
-        mcp_connection_sandbox_policy, prompt_to_text, resource_to_text, summarize_mcp_servers,
+        mcp_connection_sandbox_policy, prompt_to_text, resolve_mcp_tool_conflicts,
+        resource_to_text, summarize_mcp_servers,
     };
     use agent::DriverActivationOutcome;
-    use agent::mcp::{McpPrompt, McpResource, McpServerConfig, McpTransportConfig};
+    use agent::ToolRegistry;
+    use agent::mcp::{
+        ConnectedMcpServer, McpCatalog, McpPrompt, McpResource, McpServerConfig,
+        McpTransportConfig, MockMcpClient,
+    };
     use agent::tools::{
-        FilesystemPolicy, HostEscapePolicy, NetworkPolicy, SandboxMode, SandboxPolicy,
+        FilesystemPolicy, HostEscapePolicy, McpToolAdapter, NetworkPolicy, SandboxMode,
+        SandboxPolicy, Tool, ToolExecutionContext,
     };
     use agent::types::{
-        Message, MessagePart, MessageRole, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec,
+        McpToolBoundary, McpTransportKind, Message, MessagePart, MessageRole, ToolCallId,
+        ToolOrigin, ToolOutputMode, ToolResult, ToolSource, ToolSpec,
     };
+    use async_trait::async_trait;
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use tempfile::tempdir;
+
+    #[derive(Clone)]
+    struct LocalStubTool {
+        spec: ToolSpec,
+    }
+
+    #[async_trait]
+    impl Tool for LocalStubTool {
+        fn spec(&self) -> ToolSpec {
+            self.spec.clone()
+        }
+
+        async fn execute(
+            &self,
+            _call_id: ToolCallId,
+            _arguments: Value,
+            _ctx: &ToolExecutionContext,
+        ) -> agent::tools::Result<ToolResult> {
+            unreachable!("test stub never executes")
+        }
+    }
+
+    fn local_tool_spec(name: &str) -> ToolSpec {
+        ToolSpec::function(
+            name,
+            "test local tool",
+            json!({"type": "object"}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
+    }
+
+    fn mcp_tool_spec(server_name: &str, tool_name: &str) -> ToolSpec {
+        ToolSpec::function(
+            tool_name,
+            "test MCP tool",
+            json!({"type": "object"}),
+            ToolOutputMode::Text,
+            ToolOrigin::Mcp {
+                server_name: server_name.into(),
+            },
+            ToolSource::McpTool {
+                server_name: server_name.into(),
+            },
+        )
+    }
 
     #[test]
     fn startup_diagnostics_separate_local_and_mcp_tool_counts() {
@@ -814,8 +948,67 @@ mod tests {
                 tool_count: 0,
                 prompt_count: 0,
                 resource_count: 0,
-                last_error: Some("connection timed out".to_string()),
+                status_detail: Some("connection timed out".to_string()),
             }]
+        );
+    }
+
+    #[test]
+    fn resolve_mcp_tool_conflicts_rebinds_playwright_tools_behind_browser_aliases() {
+        let mut registry = ToolRegistry::new();
+        registry.register(LocalStubTool {
+            spec: local_tool_spec("browser_snapshot"),
+        });
+
+        let remote_spec = mcp_tool_spec("playwright", "browser_snapshot");
+        let adapter = McpToolAdapter::new(
+            remote_spec.clone(),
+            Arc::new(|_, _| {
+                Box::pin(async move { unreachable!("conflict-resolution test never executes") })
+            }),
+        );
+        let server = ConnectedMcpServer {
+            server_name: "playwright".into(),
+            boundary: McpToolBoundary::local_process(McpTransportKind::Stdio),
+            client: Arc::new(MockMcpClient::new(
+                McpCatalog {
+                    server_name: "playwright".into(),
+                    tools: vec![remote_spec],
+                    prompts: Vec::new(),
+                    resources: Vec::new(),
+                    resource_templates: Vec::new(),
+                },
+                Arc::new(|_, _| unreachable!("mock client should stay idle")),
+            )),
+            catalog: McpCatalog {
+                server_name: "playwright".into(),
+                tools: vec![mcp_tool_spec("playwright", "browser_snapshot")],
+                prompts: Vec::new(),
+                resources: Vec::new(),
+                resource_templates: Vec::new(),
+            },
+        };
+
+        let outcome = resolve_mcp_tool_conflicts(&registry, vec![(server, vec![adapter])]);
+
+        assert_eq!(outcome.connected.len(), 1);
+        assert_eq!(
+            outcome.details.get("playwright"),
+            Some(
+                &"renamed conflicting tools: browser_snapshot -> playwright_browser_snapshot"
+                    .to_string()
+            )
+        );
+        let (server, adapters) = &outcome.connected[0];
+        assert_eq!(server.catalog.tools.len(), 1);
+        assert_eq!(
+            server.catalog.tools[0].name.as_str(),
+            "playwright_browser_snapshot"
+        );
+        assert_eq!(adapters.len(), 1);
+        assert_eq!(
+            adapters[0].spec().name.as_str(),
+            "playwright_browser_snapshot"
         );
     }
 }

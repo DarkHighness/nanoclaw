@@ -4,8 +4,8 @@ use crate::backend::SessionBrowserManager;
 use crate::backend::SessionCronManager;
 use crate::backend::boot_inputs::DriverHostInputs;
 use crate::backend::boot_mcp::{
-    build_startup_diagnostics_snapshot, connect_and_prepare_mcp_servers, filter_mcp_tool_conflicts,
-    mcp_connection_sandbox_policy, summarize_mcp_servers,
+    build_startup_diagnostics_snapshot, connect_and_prepare_mcp_servers,
+    mcp_connection_sandbox_policy, resolve_mcp_tool_conflicts, summarize_mcp_servers,
 };
 #[cfg(feature = "automation-tools")]
 use crate::backend::boot_runtime::register_automation_tools;
@@ -78,7 +78,7 @@ struct RuntimeBuildResult {
     plugin_instructions: Arc<RwLock<Vec<String>>>,
     mcp_servers: Vec<ConnectedMcpServer>,
     mcp_server_configs: Vec<McpServerConfig>,
-    mcp_connection_failures: BTreeMap<String, String>,
+    mcp_connection_details: BTreeMap<String, String>,
     runtime_hook_state: Arc<RwLock<Vec<HookRegistration>>>,
     configured_runtime_hooks: Arc<RwLock<Vec<HookRegistration>>>,
     driver_tool_names: Vec<String>,
@@ -377,7 +377,7 @@ where
         plugin_instructions,
         mcp_servers,
         mcp_server_configs,
-        mcp_connection_failures,
+        mcp_connection_details,
         runtime_hook_state,
         configured_runtime_hooks,
         driver_tool_names,
@@ -440,7 +440,7 @@ where
         store,
         mcp_servers,
         mcp_server_configs,
-        mcp_connection_failures,
+        mcp_connection_details,
         runtime_hook_state,
         configured_runtime_hooks,
         mcp_process_executor,
@@ -794,7 +794,7 @@ where
         &mut startup_warnings,
     );
     let mut connected_mcp_servers = Vec::new();
-    let mut mcp_connection_failures = BTreeMap::new();
+    let mut mcp_connection_details = BTreeMap::new();
     if !boot_mcp_servers.is_empty() {
         let mut prepared = connect_and_prepare_mcp_servers(
             boot_mcp_servers
@@ -814,10 +814,10 @@ where
                 .collect(),
         )
         .await;
-        let conflicts = filter_mcp_tool_conflicts(&tools, prepared.connected);
-        prepared.failures.extend(conflicts.failures);
+        let conflicts = resolve_mcp_tool_conflicts(&tools, prepared.connected);
+        prepared.details.extend(conflicts.details);
         prepared.connected = conflicts.connected;
-        mcp_connection_failures = prepared.failures;
+        mcp_connection_details = prepared.details;
         for (_, adapters) in &prepared.connected {
             for adapter in adapters.clone() {
                 tools.register(adapter);
@@ -965,7 +965,7 @@ where
     startup_diagnostics.mcp_servers = summarize_mcp_servers(
         &configured_mcp_server_configs,
         &connected_mcp_servers,
-        &mcp_connection_failures,
+        &mcp_connection_details,
     );
     let memory_backend = driver_outcome.primary_memory_backend.clone();
     let runtime_builder = AgentRuntimeBuilder::new(backend.clone(), store.clone())
@@ -1009,7 +1009,7 @@ where
         plugin_instructions,
         mcp_servers: connected_mcp_servers,
         mcp_server_configs: configured_mcp_server_configs,
-        mcp_connection_failures,
+        mcp_connection_details,
         runtime_hook_state,
         configured_runtime_hooks,
         driver_tool_names: driver_outcome.tool_names.clone(),

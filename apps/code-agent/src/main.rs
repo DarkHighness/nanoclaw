@@ -4124,8 +4124,8 @@ fn write_mcp_server_summary_line(
         summary.prompt_count,
         summary.resource_count,
     )?;
-    if let Some(error) = &summary.last_error {
-        writeln!(writer, "  error: {error}")?;
+    if let Some(detail) = &summary.status_detail {
+        writeln!(writer, "  detail: {detail}")?;
     }
     Ok(())
 }
@@ -5527,7 +5527,7 @@ mod tests {
                     tool_count: 2,
                     prompt_count: 1,
                     resource_count: 4,
-                    last_error: None,
+                    status_detail: None,
                 }],
                 plugin_details: vec!["memory slot: workspace".to_string()],
                 warnings: vec!["stdio server skipped".to_string()],

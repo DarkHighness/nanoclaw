@@ -320,7 +320,7 @@ pub(crate) fn format_mcp_server_summary_line(summary: &McpServerSummary) -> Insp
         "{} · {} · Tools={} Prompts={} Resources={}",
         summary.transport, status, summary.tool_count, summary.prompt_count, summary.resource_count
     );
-    if let Some(error) = &summary.last_error {
+    if let Some(error) = &summary.status_detail {
         detail.push_str(" · ");
         detail.push_str(error);
     }

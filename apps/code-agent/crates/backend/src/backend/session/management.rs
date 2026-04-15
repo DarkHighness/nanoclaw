@@ -32,7 +32,7 @@ impl CodeAgentSession {
                 tool_count: server.tool_count,
                 prompt_count: server.prompt_count,
                 resource_count: server.resource_count,
-                last_error: server.last_error,
+                status_detail: server.status_detail,
             })
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| left.name.cmp(&right.name));
@@ -297,7 +297,7 @@ impl CodeAgentSession {
                     registry.remove(tool.name.as_str());
                 }
             }
-            self.clear_mcp_connection_failures_for_names(
+            self.clear_mcp_connection_details_for_names(
                 removed_servers
                     .iter()
                     .map(|server| server.server_name.to_string()),
@@ -334,7 +334,7 @@ impl CodeAgentSession {
                     .collect(),
             )
             .await;
-            self.record_mcp_connection_failures(&pending_configs, &outcome.failures);
+            self.record_mcp_connection_details(&pending_configs, &outcome.details);
             self.attach_connected_stdio_mcp_servers(runtime, outcome.connected);
         } else {
             self.rebuild_mcp_resource_tools(runtime);

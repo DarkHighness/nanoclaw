@@ -191,7 +191,7 @@ fn format_managed_mcp_server_detail(summary: &ManagedMcpServerSummary) -> String
         summary.prompt_count,
         summary.resource_count
     );
-    if let Some(error) = &summary.last_error {
+    if let Some(error) = &summary.status_detail {
         detail.push_str(" · ");
         detail.push_str(error);
     }
