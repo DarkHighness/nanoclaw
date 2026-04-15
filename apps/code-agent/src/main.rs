@@ -100,6 +100,8 @@ enum CliCommand {
     ExportTranscript(SessionExportArgs),
     /// Manage and inspect configured MCP servers.
     Mcp(McpCommandArgs),
+    /// Inspect the currently available tool surface.
+    Tool(ToolCommandArgs),
     /// Manage workspace skills plus the built-in skill bundle.
     Skill(SkillCommandArgs),
     /// Manage workspace-local plugins and plugin enablement.
@@ -203,6 +205,18 @@ struct McpShowArgs {
     name: String,
     #[command(flatten)]
     output: ManagementOutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct ToolCommandArgs {
+    #[command(subcommand)]
+    command: ToolSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ToolSubcommand {
+    /// List tools available for the current runtime startup.
+    List(ManagementOutputArgs),
 }
 
 #[derive(Debug, Args)]
@@ -502,6 +516,7 @@ enum LiveInspectCommand {
     Diagnostics,
     Prompts,
     Resources,
+    Tools { style: ManagementOutputStyle },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -567,6 +582,7 @@ impl Cli {
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
+                | CliCommand::Tool(_)
                 | CliCommand::Plugin(_),
             ) => {}
         }
@@ -594,6 +610,7 @@ impl Cli {
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
+                | CliCommand::Tool(_)
                 | CliCommand::Plugin(_),
             ) => Ok(LaunchMode::Default),
             None => Ok(LaunchMode::Default),
@@ -625,7 +642,8 @@ impl Cli {
                 | CliCommand::Import(_)
                 | CliCommand::Manage(_)
                 | CliCommand::ExportSession(_)
-                | CliCommand::ExportTranscript(_),
+                | CliCommand::ExportTranscript(_)
+                | CliCommand::Tool(_),
             )
             | None => Ok(None),
         }
@@ -650,6 +668,7 @@ impl Cli {
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
+                | CliCommand::Tool(_)
                 | CliCommand::Plugin(_),
             )
             | None => None,
@@ -707,6 +726,7 @@ impl Cli {
                 | CliCommand::Manage(_)
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
+                | CliCommand::Tool(_)
                 | CliCommand::Plugin(_),
             )
             | None => Ok(None),
@@ -732,6 +752,7 @@ impl Cli {
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
+                | CliCommand::Tool(_)
                 | CliCommand::Plugin(_),
             )
             | None => Ok(None),
@@ -741,6 +762,7 @@ impl Cli {
     fn live_inspect_command(&self) -> Option<LiveInspectCommand> {
         match &self.command {
             Some(CliCommand::Mcp(command)) => command.live_inspect_command(),
+            Some(CliCommand::Tool(command)) => Some(command.live_inspect_command()),
             Some(
                 CliCommand::Exec(_)
                 | CliCommand::Resume(_)
@@ -828,6 +850,16 @@ impl McpCommandArgs {
             | McpSubcommand::Delete(_)
             | McpSubcommand::Enable(_)
             | McpSubcommand::Disable(_) => None,
+        }
+    }
+}
+
+impl ToolCommandArgs {
+    fn live_inspect_command(&self) -> LiveInspectCommand {
+        match &self.command {
+            ToolSubcommand::List(output) => LiveInspectCommand::Tools {
+                style: output.style,
+            },
         }
     }
 }
@@ -1377,6 +1409,10 @@ async fn run_live_inspection_command(
         LiveInspectCommand::Resources => {
             let resources = session.list_mcp_resources().await;
             write_mcp_resource_summaries(&mut stdout, &resources)?;
+        }
+        LiveInspectCommand::Tools { style } => {
+            let startup = session.startup_snapshot();
+            write_tool_summaries(&mut stdout, &startup.tool_names, style)?;
         }
     }
     stdout.flush()?;
@@ -2650,6 +2686,55 @@ fn write_managed_plugin_details(
     }
 }
 
+fn write_tool_summaries(
+    writer: &mut impl Write,
+    tool_names: &[String],
+    style: ManagementOutputStyle,
+) -> io::Result<()> {
+    let mut tool_names = tool_names.to_vec();
+    tool_names.sort();
+    tool_names.dedup();
+    match style {
+        ManagementOutputStyle::Table => {
+            if tool_names.is_empty() {
+                return write_titled_note_box(
+                    writer,
+                    format!("Tools · {}", tool_names.len()).as_str(),
+                    "No tools available for the current startup.",
+                    None,
+                    &[],
+                );
+            }
+
+            let rows = tool_names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| vec![(index + 1).to_string(), name.clone()])
+                .collect::<Vec<_>>();
+            write_titled_grid_table(
+                writer,
+                format!("Tools · {}", rows.len()).as_str(),
+                &["#", "Name"],
+                &rows,
+                &[4, 88],
+                None,
+                &[],
+            )
+        }
+        ManagementOutputStyle::Plain => {
+            write_plain_collection_header(writer, "Tools", tool_names.len())?;
+            if tool_names.is_empty() {
+                writeln!(writer, "No tools available for the current startup.")?;
+                return Ok(());
+            }
+            for (index, name) in tool_names.iter().enumerate() {
+                writeln!(writer, "{}. {}", index + 1, name)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 fn write_titled_grid_table(
     writer: &mut impl Write,
     title: &str,
@@ -3521,7 +3606,7 @@ mod tests {
         write_managed_plugin_summaries, write_managed_skill_details, write_managed_skill_summaries,
         write_mcp_prompt_summaries, write_mcp_resource_summaries, write_mcp_server_details,
         write_mcp_server_summaries, write_session_search_results, write_session_summaries,
-        write_startup_diagnostics,
+        write_startup_diagnostics, write_tool_summaries,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
@@ -3947,6 +4032,40 @@ mod tests {
     }
 
     #[test]
+    fn tool_list_output_defaults_to_single_table() {
+        let mut buffer = Vec::new();
+        write_tool_summaries(
+            &mut buffer,
+            &["web_search".to_string(), "exec_command".to_string()],
+            ManagementOutputStyle::Table,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.starts_with("┌"));
+        assert!(output.contains("│ Tools · 2"));
+        assert!(output.contains("│ #"));
+        assert!(output.contains("│ Name"));
+        assert!(output.contains("exec_command"));
+        assert!(output.contains("web_search"));
+    }
+
+    #[test]
+    fn tool_list_plain_style_keeps_linear_output() {
+        let mut buffer = Vec::new();
+        write_tool_summaries(
+            &mut buffer,
+            &["web_search".to_string()],
+            ManagementOutputStyle::Plain,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.starts_with("Tools (1)\n========="));
+        assert!(output.contains("1. web_search"));
+    }
+
+    #[test]
     fn plain_style_output_keeps_linear_layout() {
         let mut buffer = Vec::new();
         write_mcp_server_details(
@@ -4204,6 +4323,30 @@ mod tests {
         assert_eq!(
             cli.live_inspect_command(),
             Some(LiveInspectCommand::Resources)
+        );
+    }
+
+    #[test]
+    fn clap_parses_tool_list_live_command() {
+        let cli = Cli::parse_from(["code-agent", "tool", "list"]);
+
+        assert_eq!(
+            cli.live_inspect_command(),
+            Some(LiveInspectCommand::Tools {
+                style: ManagementOutputStyle::Table,
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_tool_list_plain_style() {
+        let cli = Cli::parse_from(["code-agent", "tool", "list", "--style", "plain"]);
+
+        assert_eq!(
+            cli.live_inspect_command(),
+            Some(LiveInspectCommand::Tools {
+                style: ManagementOutputStyle::Plain,
+            })
         );
     }
 

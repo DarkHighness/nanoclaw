@@ -207,6 +207,8 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp list
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show context7
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show context7 --style plain
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show docs
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- tool list
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- tool list --style plain
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- manage
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- manage skill
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp add docs --type stdio --env TOKEN=secret -- npx -y remote-mcp
@@ -253,6 +255,10 @@ linear form for piping, grep, or shell scripts.
 `manage [mcp|skill|plugin]` opens a dedicated full-screen terminal manager for
 toggling those surfaces interactively. It also operates directly on workspace
 configuration and does not boot the runtime or require a provider API key.
+
+`tool list` is a live startup inspection command. It boots the current runtime
+shape and prints the tool names that are actually available after provider,
+MCP, and environment-driven filtering.
 
 Code-agent also materializes two built-in managed MCP entries by default:
 `context7` and `playwright`. They start enabled, so `/mcp`, `mcp list`, and
