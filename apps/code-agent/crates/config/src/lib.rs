@@ -43,6 +43,7 @@ pub struct CodeAgentConfig {
     pub lsp_enabled: bool,
     pub lsp_auto_install: bool,
     pub lsp_install_root: Option<PathBuf>,
+    pub disabled_builtin_skills: BTreeSet<String>,
     pub approval_policy: CodeAgentApprovalPolicyConfig,
     pub display: TuiDisplayConfig,
     pub statusline: StatusLineConfig,
@@ -108,8 +109,15 @@ pub enum ExecApprovalRule {
 #[serde(default)]
 struct CodeAgentAppConfig {
     lsp: CodeAgentLspConfig,
+    skills: CodeAgentSkillsConfig,
     approval: CodeAgentApprovalConfig,
     tui: CodeAgentTuiConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct CodeAgentSkillsConfig {
+    disabled_builtin: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -206,6 +214,11 @@ impl CodeAgentConfig {
         // the same managed surface without forcing every workspace to persist
         // boilerplate overrides up front.
         management::materialize_builtin_core_mcp_servers(env_map, &mut core);
+        // Built-in skills are host-owned assets rather than workspace-managed
+        // copies, so materialize them into a hidden app-owned bundle before the
+        // runtime resolves skill roots. This keeps them available in clean
+        // workspaces and packaged installs without polluting `.nanoclaw/skills`.
+        management::materialize_builtin_skills(workspace_root)?;
         let mut app =
             load_optional_app_config::<CodeAgentAppConfig>(workspace_root, CODE_AGENT_APP_NAME)?;
         if let Some(parsed) = env_map.get_bool_var(CODE_AGENT_LSP_ENABLED) {
@@ -227,6 +240,7 @@ impl CodeAgentConfig {
                 .install_root
                 .as_deref()
                 .map(|value| resolve_path(workspace_root, value)),
+            disabled_builtin_skills: normalize_skill_name_list(app.skills.disabled_builtin),
             approval_policy: normalize_approval_policy(app.approval)?,
             display: app.tui.display,
             statusline: app.tui.statusline,
@@ -334,6 +348,14 @@ fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
     } else {
         base_dir.join(path)
     }
+}
+
+fn normalize_skill_name_list(names: Vec<String>) -> BTreeSet<String> {
+    names
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 fn normalize_exec_approval_rules(
@@ -605,6 +627,7 @@ mod tests {
         CodeAgentApprovalRule, CodeAgentApprovalRuleEffect, CodeAgentApprovalSourceMatcher,
         CodeAgentConfig, ExecApprovalRule,
     };
+    use crate::builtin_skill_root;
     use agent_env::EnvMap;
     use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
@@ -657,6 +680,42 @@ mod tests {
                 .iter()
                 .any(|server| server.name.as_str() == "playwright" && server.enabled)
         );
+    }
+
+    #[tokio::test]
+    async fn load_from_dir_materializes_builtin_skills_and_disabled_state() {
+        let _guard = env_test_lock().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().join(".nanoclaw/apps");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("code-agent.toml"),
+            r#"
+                [skills]
+                disabled_builtin = [" github-code-review ", ""]
+            "#,
+        )
+        .unwrap();
+        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
+
+        let config = CodeAgentConfig::load_from_dir(dir.path(), &env_map).unwrap();
+
+        assert!(
+            builtin_skill_root(dir.path())
+                .join("codebase-inspection/SKILL.md")
+                .is_file()
+        );
+        assert!(
+            builtin_skill_root(dir.path())
+                .join("github-code-review/SKILL.md")
+                .is_file()
+        );
+        assert!(
+            config
+                .disabled_builtin_skills
+                .contains("github-code-review")
+        );
+        assert_eq!(config.disabled_builtin_skills.len(), 1);
     }
 
     #[tokio::test]

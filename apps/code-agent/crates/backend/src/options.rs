@@ -7,6 +7,7 @@ use code_agent_contracts::motion::TuiMotionConfig;
 use code_agent_contracts::statusline::StatusLineConfig;
 use code_agent_contracts::theme::ThemeCatalog;
 use nanoclaw_config::{CoreConfig, PluginsConfig, ResolvedAgentProfile, ResolvedInternalProfile};
+use std::collections::BTreeSet;
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +21,7 @@ pub struct AppOptions {
     pub summary_profile: ResolvedInternalProfile,
     pub memory_profile: ResolvedInternalProfile,
     pub skill_roots: Vec<PathBuf>,
+    pub disabled_builtin_skills: BTreeSet<String>,
     pub plugins: PluginsConfig,
     pub workspace_only: bool,
     pub sandbox_fail_if_unavailable: bool,
@@ -114,6 +116,7 @@ impl AppOptions {
             summary_profile,
             memory_profile,
             skill_roots,
+            disabled_builtin_skills: workspace_config.disabled_builtin_skills,
             plugins,
             workspace_only: workspace_config.core.host.workspace_only,
             sandbox_fail_if_unavailable,

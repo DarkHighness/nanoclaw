@@ -194,10 +194,15 @@ fn format_managed_mcp_server_detail(summary: &ManagedMcpServerSummary) -> String
 }
 
 fn format_managed_skill_detail(summary: &ManagedSkillSummary) -> String {
-    if summary.description.trim().is_empty() {
-        summary.path.clone()
+    let source = if summary.builtin {
+        "built-in"
     } else {
-        format!("{} · {}", summary.path, summary.description)
+        "managed"
+    };
+    if summary.description.trim().is_empty() {
+        format!("{source} · {}", summary.path)
+    } else {
+        format!("{source} · {} · {}", summary.path, summary.description)
     }
 }
 

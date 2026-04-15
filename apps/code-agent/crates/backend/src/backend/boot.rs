@@ -56,7 +56,7 @@ use agent::{
 };
 use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
-use code_agent_config::filter_unavailable_builtin_mcp_servers;
+use code_agent_config::{builtin_skill_root, filter_unavailable_builtin_mcp_servers};
 use nanoclaw_config::{CoreConfig, ResolvedAgentProfile};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -481,6 +481,7 @@ where
             primary_profile: options.primary_profile.clone(),
             memory_profile: options.memory_profile.clone(),
             skill_roots: options.skill_roots.clone(),
+            disabled_builtin_skills: Arc::new(RwLock::new(options.disabled_builtin_skills.clone())),
             plugins: Arc::new(RwLock::new(options.plugins.clone())),
         },
         driver_tool_names,
@@ -593,9 +594,13 @@ where
             .collect(),
         note: Some("Loading skill roots".to_string()),
     });
-    let skill_catalog = agent::skills::load_skill_roots(&skill_roots)
-        .await
-        .context("failed to load skill roots")?;
+    let skill_catalog = filter_disabled_builtin_skills(
+        workspace_root,
+        &options.disabled_builtin_skills,
+        agent::skills::load_skill_roots(&skill_roots)
+            .await
+            .context("failed to load skill roots")?,
+    );
     let skills = skill_catalog.all();
     progress(BootProgressUpdate {
         stage: BootProgressStage::Skills,
@@ -1037,6 +1042,26 @@ fn ensure_model_supports_registered_tools(
     );
 }
 
+fn filter_disabled_builtin_skills(
+    workspace_root: &Path,
+    disabled_builtin_skills: &BTreeSet<String>,
+    skill_catalog: SkillCatalog,
+) -> SkillCatalog {
+    if disabled_builtin_skills.is_empty() {
+        return skill_catalog;
+    }
+    let builtin_root = builtin_skill_root(workspace_root);
+    let filtered = skill_catalog
+        .all()
+        .into_iter()
+        .filter(|skill| {
+            !(skill.provenance.root.path == builtin_root
+                && disabled_builtin_skills.contains(&skill.name))
+        })
+        .collect();
+    SkillCatalog::from_parts(skill_catalog.roots(), filtered)
+}
+
 fn disabled_tool_names_from_env(env_map: &EnvMap) -> BTreeSet<String> {
     env_map
         .get_non_empty_var(agent_env::vars::NANOCLAW_CORE_DISABLED_TOOLS)
@@ -1093,14 +1118,18 @@ mod tests {
     use super::{
         SessionApprovalMode, append_disabled_tool_warnings, apply_disabled_tools,
         configure_host_prompt_tool_visibility, disabled_tool_names_from_env,
-        filter_boot_mcp_servers, filter_runtime_hooks,
+        filter_boot_mcp_servers, filter_disabled_builtin_skills, filter_runtime_hooks,
     };
     use agent::mcp::{McpServerConfig, McpTransportConfig};
+    use agent::skills::load_skill_roots;
     use agent::types::{
         CommandHookHandler, HookEvent, HookHandler, HookRegistration, HttpHookHandler,
     };
-    use agent::{RequestPermissionsTool, RequestUserInputTool, ToolExecutionContext, ToolRegistry};
+    use agent::{
+        RequestPermissionsTool, RequestUserInputTool, SkillRoot, ToolExecutionContext, ToolRegistry,
+    };
     use agent_env::EnvMap;
+    use code_agent_config::{builtin_skill_root, materialize_builtin_skills};
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
@@ -1250,5 +1279,46 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!non_interactive_names.contains(&"request_user_input".to_string()));
         assert!(!non_interactive_names.contains(&"request_permissions".to_string()));
+    }
+
+    #[tokio::test]
+    async fn filtering_disabled_builtin_skills_drops_only_builtin_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        materialize_builtin_skills(dir.path()).unwrap();
+        let managed_root = dir.path().join(".nanoclaw/skills");
+        std::fs::create_dir_all(managed_root.join("local-review")).unwrap();
+        std::fs::write(
+            managed_root.join("local-review/SKILL.md"),
+            r#"---
+name: local-review
+description: local review flow
+---
+
+Use the local review skill.
+"#,
+        )
+        .unwrap();
+
+        let catalog = load_skill_roots(&[
+            SkillRoot::managed(managed_root),
+            SkillRoot::external(builtin_skill_root(dir.path())),
+        ])
+        .await
+        .unwrap();
+
+        let filtered = filter_disabled_builtin_skills(
+            dir.path(),
+            &BTreeSet::from(["github-code-review".to_string()]),
+            catalog,
+        );
+        let names = filtered
+            .all()
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"local-review".to_string()));
+        assert!(names.contains(&"codebase-inspection".to_string()));
+        assert!(!names.contains(&"github-code-review".to_string()));
     }
 }

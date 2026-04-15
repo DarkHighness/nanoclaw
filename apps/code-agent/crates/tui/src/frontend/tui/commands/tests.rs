@@ -415,7 +415,7 @@ fn command_palette_includes_help_and_clear_alias() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "/skill  toggle managed skills")
+            .any(|line| line == "/skill  toggle available skills")
     );
     assert!(
         lines

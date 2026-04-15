@@ -212,6 +212,7 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp enable docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp delete docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill list
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill show review
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill show codebase-inspection
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill add ./my-skill
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill disable review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill enable review
@@ -246,10 +247,13 @@ Code-agent also materializes two built-in managed MCP entries by default:
 servers. When no supported launcher is available in `PATH`, startup warns and
 skips connecting that built-in server instead of failing the whole session.
 
-`skill` management only targets the workspace-local managed root
-`.nanoclaw/skills`. Disabling a managed skill moves it under
-`.nanoclaw/skills/.disabled`, which keeps the skill on disk without letting the
-normal skill loader surface it.
+Code-agent also bundles three built-in skills by default:
+`codebase-inspection`, `github-code-review`, and `regression-debugging`.
+They are materialized under the app-owned hidden bundle
+`.nanoclaw/apps/code-agent/builtin-skills`, start enabled, and show up in both
+`skill list|show` and `/skill`. Disabling a built-in skill updates
+`.nanoclaw/apps/code-agent.toml` instead of moving files, while disabling a
+workspace-managed skill still archives it under `.nanoclaw/skills/.disabled`.
 
 `plugin add` and `plugin delete` manage workspace-local plugin copies under
 `.nanoclaw/plugins`. `plugin enable` and `plugin disable` update

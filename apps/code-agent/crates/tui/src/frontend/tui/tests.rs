@@ -97,7 +97,7 @@ fn startup_inspector_surfaces_backend_boot_snapshot() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "/skill  toggle managed skills")
+            .any(|line| line == "/skill  toggle available skills")
     );
     assert!(
         lines

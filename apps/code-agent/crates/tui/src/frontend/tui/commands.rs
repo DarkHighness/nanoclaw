@@ -423,7 +423,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         section: "Catalog",
         name: "skill",
         usage: "skill",
-        summary: "toggle managed skills",
+        summary: "toggle available skills",
     },
     SlashCommandSpec {
         section: "Catalog",

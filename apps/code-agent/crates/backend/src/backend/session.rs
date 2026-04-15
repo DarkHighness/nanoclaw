@@ -123,6 +123,7 @@ pub(crate) struct ManagedSurfaceReloadConfig {
     pub(crate) primary_profile: ResolvedAgentProfile,
     pub(crate) memory_profile: ResolvedInternalProfile,
     pub(crate) skill_roots: Vec<PathBuf>,
+    pub(crate) disabled_builtin_skills: Arc<RwLock<BTreeSet<String>>>,
     pub(crate) plugins: Arc<RwLock<PluginsConfig>>,
 }
 

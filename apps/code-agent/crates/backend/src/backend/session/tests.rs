@@ -48,7 +48,7 @@ use async_trait::async_trait;
 use futures::{StreamExt, stream, stream::BoxStream};
 use nanoclaw_config::{CoreConfig, PluginsConfig};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 use store::{EventSink, InMemorySessionStore, SessionStore, SessionStoreError};
 use tokio::sync::Semaphore;
@@ -692,6 +692,7 @@ fn build_session_with_runtime_state(
             .resolve_memory_profile()
             .expect("default memory profile"),
         skill_roots: Vec::new(),
+        disabled_builtin_skills: Arc::new(RwLock::new(BTreeSet::new())),
         plugins: Arc::new(RwLock::new(PluginsConfig::default())),
     };
     let session_tool_context = Arc::new(RwLock::new(ToolExecutionContext {

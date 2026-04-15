@@ -1,6 +1,7 @@
 use agent::AgentWorkspaceLayout;
 use agent::tools::HOST_FEATURE_REQUEST_USER_INPUT;
 use agent::types::ToolVisibilityContext;
+use code_agent_config::builtin_skill_root;
 use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile};
 use std::collections::BTreeSet;
 use std::fs;
@@ -179,15 +180,14 @@ pub fn resolve_skill_roots(
     workspace_root: &Path,
     plugin_plan: &agent::plugins::PluginActivationPlan,
 ) -> Vec<agent::SkillRoot> {
-    let mut roots = if configured_roots.is_empty() {
-        default_skill_roots(workspace_root)
-    } else {
-        configured_roots
-            .iter()
-            .cloned()
-            .map(agent::SkillRoot::external)
-            .collect()
-    };
+    let mut roots = vec![agent::SkillRoot::managed(
+        AgentWorkspaceLayout::new(workspace_root).skills_dir(),
+    )];
+    roots.extend(user_skill_roots(configured_roots, workspace_root));
+    push_if_exists(
+        &mut roots,
+        agent::SkillRoot::external(builtin_skill_root(workspace_root)),
+    );
     roots.extend(
         plugin_plan
             .skill_roots
@@ -231,11 +231,20 @@ pub fn build_plugin_activation_plan(
     agent::build_plugin_activation_plan(workspace_root, &resolver)
 }
 
-fn default_skill_roots(workspace_root: &Path) -> Vec<agent::SkillRoot> {
+fn user_skill_roots(configured_roots: &[PathBuf], workspace_root: &Path) -> Vec<agent::SkillRoot> {
+    if configured_roots.is_empty() {
+        default_external_skill_roots(workspace_root)
+    } else {
+        configured_roots
+            .iter()
+            .cloned()
+            .map(agent::SkillRoot::external)
+            .collect()
+    }
+}
+
+fn default_external_skill_roots(workspace_root: &Path) -> Vec<agent::SkillRoot> {
     let mut roots = Vec::new();
-    roots.push(agent::SkillRoot::managed(
-        AgentWorkspaceLayout::new(workspace_root).skills_dir(),
-    ));
     push_if_exists(
         &mut roots,
         agent::SkillRoot::external(workspace_root.join(".codex/skills")),
@@ -260,6 +269,7 @@ mod tests {
     use super::{build_system_preamble, resolve_skill_roots};
     use agent::tools::HOST_FEATURE_REQUEST_USER_INPUT;
     use agent::types::ToolVisibilityContext;
+    use code_agent_config::{builtin_skill_root, materialize_builtin_skills};
     use nanoclaw_config::CoreConfig;
     use tempfile::tempdir;
 
@@ -345,6 +355,7 @@ mod tests {
     #[test]
     fn resolve_skill_roots_keeps_managed_root_ahead_of_external_roots() {
         let dir = tempdir().unwrap();
+        materialize_builtin_skills(dir.path()).unwrap();
         std::fs::create_dir_all(dir.path().join(".codex/skills")).unwrap();
         std::fs::create_dir_all(dir.path().join(".nanoclaw/skills")).unwrap();
         let plugin_root = dir.path().join("plugin-skills");
@@ -359,6 +370,35 @@ mod tests {
         assert_eq!(roots[0].kind, agent::SkillRootKind::Managed);
         assert_eq!(roots[0].path, dir.path().join(".nanoclaw/skills"));
         assert_eq!(roots[1].path, dir.path().join(".codex/skills"));
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.path == builtin_skill_root(dir.path()))
+        );
         assert!(roots.iter().any(|root| root.path == plugin_root));
+    }
+
+    #[test]
+    fn resolve_skill_roots_keeps_managed_root_ahead_of_explicit_roots() {
+        let dir = tempdir().unwrap();
+        materialize_builtin_skills(dir.path()).unwrap();
+        std::fs::create_dir_all(dir.path().join(".nanoclaw/skills")).unwrap();
+        let explicit = dir.path().join("custom-skills");
+        std::fs::create_dir_all(&explicit).unwrap();
+
+        let roots = resolve_skill_roots(
+            std::slice::from_ref(&explicit),
+            dir.path(),
+            &agent::plugins::PluginActivationPlan::default(),
+        );
+
+        assert_eq!(roots[0].kind, agent::SkillRootKind::Managed);
+        assert_eq!(roots[0].path, dir.path().join(".nanoclaw/skills"));
+        assert_eq!(roots[1].path, explicit);
+        assert!(
+            roots
+                .iter()
+                .any(|root| root.path == builtin_skill_root(dir.path()))
+        );
     }
 }

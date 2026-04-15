@@ -95,7 +95,7 @@ enum CliCommand {
     ExportTranscript(SessionExportArgs),
     /// Manage and inspect configured MCP servers.
     Mcp(McpCommandArgs),
-    /// Manage workspace-local managed skills.
+    /// Manage workspace skills plus the built-in skill bundle.
     Skill(SkillCommandArgs),
     /// Manage workspace-local plugins and plugin enablement.
     Plugin(PluginCommandArgs),
@@ -175,17 +175,17 @@ struct SkillCommandArgs {
 
 #[derive(Debug, Subcommand)]
 enum SkillSubcommand {
-    /// List managed skill copies.
+    /// List managed and built-in skills.
     List,
-    /// Inspect one managed skill copy.
+    /// Inspect one managed or built-in skill.
     Show(SkillNamedArgs),
     /// Copy a skill directory into the managed workspace root.
     Add(SkillAddArgs),
     /// Delete a managed skill copy.
     Delete(SkillNamedArgs),
-    /// Re-enable a previously disabled managed skill.
+    /// Re-enable a previously disabled managed or built-in skill.
     Enable(SkillNamedArgs),
-    /// Disable a managed skill without deleting it.
+    /// Disable a managed or built-in skill without deleting its files.
     Disable(SkillNamedArgs),
 }
 
@@ -1862,7 +1862,7 @@ fn write_managed_skill_summaries(
     skills: &[ManagedSkillDetail],
 ) -> io::Result<()> {
     if skills.is_empty() {
-        writeln!(writer, "No managed skills found.")?;
+        writeln!(writer, "No managed or built-in skills found.")?;
         return Ok(());
     }
 
@@ -1872,9 +1872,10 @@ fn write_managed_skill_summaries(
         }
         writeln!(
             writer,
-            "{}  enabled={}  path={}",
+            "{}  enabled={}  source={}  path={}",
             skill.skill_name,
             skill.enabled,
+            if skill.builtin { "builtin" } else { "managed" },
             display_workspace_path(workspace_root, &skill.skill_path)
         )?;
         if !skill.description.is_empty() {
@@ -1889,9 +1890,14 @@ fn write_managed_skill_details(
     workspace_root: &Path,
     skill: &ManagedSkillDetail,
 ) -> io::Result<()> {
-    writeln!(writer, "Managed Skill")?;
+    writeln!(writer, "Skill")?;
     writeln!(writer, "  name: {}", skill.skill_name)?;
     writeln!(writer, "  enabled: {}", skill.enabled)?;
+    writeln!(
+        writer,
+        "  source: {}",
+        if skill.builtin { "builtin" } else { "managed" }
+    )?;
     writeln!(
         writer,
         "  path: {}",
@@ -2022,7 +2028,12 @@ fn write_skill_management_artifact(
 ) -> io::Result<()> {
     writeln!(
         writer,
-        "{verb} managed skill `{}` at {} (enabled: {}).",
+        "{verb} {} skill `{}` at {} (enabled: {}).",
+        if artifact.builtin {
+            "built-in"
+        } else {
+            "managed"
+        },
         artifact.skill_name,
         artifact.skill_path.display(),
         artifact.enabled,

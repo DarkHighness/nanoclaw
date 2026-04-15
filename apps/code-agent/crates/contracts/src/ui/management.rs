@@ -15,6 +15,7 @@ pub struct ManagedSkillSummary {
     pub description: String,
     pub path: String,
     pub enabled: bool,
+    pub builtin: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

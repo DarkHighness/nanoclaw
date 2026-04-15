@@ -6,15 +6,16 @@ use crate::backend::{
 use crate::provider::build_memory_reasoning_service;
 use agent::plugins::discover_plugins;
 use agent::runtime::UserMessageAugmentor;
-use agent::{AgentWorkspaceLayout, ToolRegistry};
+use agent::{SkillCatalog, ToolRegistry};
 use code_agent_config::{
-    filter_unavailable_builtin_mcp_servers, list_core_mcp_servers,
-    list_managed_skills as list_managed_skill_artifacts, set_core_mcp_server_enabled,
+    builtin_skill_root, filter_unavailable_builtin_mcp_servers, list_core_mcp_servers,
+    list_managed_skill_details, set_core_mcp_server_enabled,
     set_managed_plugin_enabled as persist_managed_plugin_enabled,
     set_managed_skill_enabled as persist_managed_skill_enabled,
 };
 use nanoclaw_config::CoreConfig;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::Arc;
 
 impl CodeAgentSession {
@@ -69,19 +70,14 @@ impl CodeAgentSession {
     }
 
     pub async fn list_managed_skills(&self) -> Result<Vec<ManagedSkillSummary>> {
-        let managed_root = AgentWorkspaceLayout::new(self.workspace_root()).skills_dir();
         let mut summaries = Vec::new();
-        for artifact in list_managed_skill_artifacts(self.workspace_root()).await? {
-            let skill = agent::skills::load_skill_from_dir(
-                &artifact.skill_path,
-                &agent::SkillRoot::managed(managed_root.clone()),
-            )
-            .await?;
+        for skill in list_managed_skill_details(self.workspace_root()).await? {
             summaries.push(ManagedSkillSummary {
-                name: skill.name,
+                name: skill.skill_name,
                 description: skill.description,
-                path: relativize_to_workspace(self.workspace_root(), &artifact.skill_path),
-                enabled: artifact.enabled,
+                path: relativize_to_workspace(self.workspace_root(), &skill.skill_path),
+                enabled: skill.enabled,
+                builtin: skill.builtin,
             });
         }
         summaries.sort_by(|left, right| left.name.cmp(&right.name));
@@ -131,7 +127,20 @@ impl CodeAgentSession {
 
     pub async fn set_managed_skill_enabled(&self, name: &str, enabled: bool) -> Result<()> {
         self.ensure_turn_idle_for_managed_surface_refresh()?;
-        persist_managed_skill_enabled(self.workspace_root(), name, enabled).await?;
+        let artifact = persist_managed_skill_enabled(self.workspace_root(), name, enabled).await?;
+        let mut disabled_builtin = self
+            .managed_surface_reload
+            .disabled_builtin_skills
+            .write()
+            .unwrap();
+        if artifact.builtin {
+            if enabled {
+                disabled_builtin.remove(&artifact.skill_name);
+            } else {
+                disabled_builtin.insert(artifact.skill_name);
+            }
+        }
+        drop(disabled_builtin);
         self.refresh_managed_surfaces().await
     }
 
@@ -160,7 +169,15 @@ impl CodeAgentSession {
             self.workspace_root(),
             &plugin_plan,
         );
-        let refreshed_catalog = agent::skills::load_skill_roots(&skill_roots).await?;
+        let refreshed_catalog = filter_disabled_builtin_skills(
+            self.workspace_root(),
+            &self
+                .managed_surface_reload
+                .disabled_builtin_skills
+                .read()
+                .unwrap(),
+            agent::skills::load_skill_roots(&skill_roots).await?,
+        );
         self.preamble
             .skill_catalog
             .replace(refreshed_catalog.roots(), refreshed_catalog.all());
@@ -463,6 +480,26 @@ fn filter_runtime_hooks_for_host_surfaces(
         ));
     }
     retained
+}
+
+fn filter_disabled_builtin_skills(
+    workspace_root: &Path,
+    disabled_builtin_skills: &BTreeSet<String>,
+    skill_catalog: SkillCatalog,
+) -> SkillCatalog {
+    if disabled_builtin_skills.is_empty() {
+        return skill_catalog;
+    }
+    let builtin_root = builtin_skill_root(workspace_root);
+    let filtered = skill_catalog
+        .all()
+        .into_iter()
+        .filter(|skill| {
+            !(skill.provenance.root.path == builtin_root
+                && disabled_builtin_skills.contains(&skill.name))
+        })
+        .collect();
+    SkillCatalog::from_parts(skill_catalog.roots(), filtered)
 }
 
 fn filter_mcp_servers_for_host_surfaces(

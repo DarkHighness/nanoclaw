@@ -8,21 +8,51 @@ use agent::{AgentWorkspaceLayout, PluginBootResolverConfig, build_plugin_activat
 use agent_env::{EnvMap, EnvVar, vars};
 use anyhow::{Context, Result, anyhow, bail};
 use nanoclaw_config::CoreConfig;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use tokio::fs;
+use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 const DISABLED_SKILL_DIR: &str = ".disabled";
 const BUILTIN_CONTEXT7_SERVER: &str = "context7";
 const BUILTIN_PLAYWRIGHT_SERVER: &str = "playwright";
 const BUILTIN_CONTEXT7_PACKAGE: &str = "@upstash/context7-mcp@latest";
 const BUILTIN_PLAYWRIGHT_PACKAGE: &str = "@playwright/mcp@latest";
+const BUILTIN_CODEBASE_INSPECTION_SKILL: &str =
+    include_str!("../../../skills/codebase-inspection/SKILL.md");
+const BUILTIN_GITHUB_CODE_REVIEW_SKILL: &str =
+    include_str!("../../../skills/github-code-review/SKILL.md");
+const BUILTIN_REGRESSION_DEBUGGING_SKILL: &str =
+    include_str!("../../../skills/regression-debugging/SKILL.md");
+
+#[derive(Clone, Copy)]
+struct BuiltinSkillDefinition {
+    name: &'static str,
+    markdown: &'static str,
+}
+
+const BUILTIN_SKILL_DEFINITIONS: &[BuiltinSkillDefinition] = &[
+    BuiltinSkillDefinition {
+        name: "codebase-inspection",
+        markdown: BUILTIN_CODEBASE_INSPECTION_SKILL,
+    },
+    BuiltinSkillDefinition {
+        name: "github-code-review",
+        markdown: BUILTIN_GITHUB_CODE_REVIEW_SKILL,
+    },
+    BuiltinSkillDefinition {
+        name: "regression-debugging",
+        markdown: BUILTIN_REGRESSION_DEBUGGING_SKILL,
+    },
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedSkillArtifact {
     pub skill_name: String,
     pub skill_path: PathBuf,
     pub enabled: bool,
+    pub builtin: bool,
+    pub skill_root: SkillRoot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +68,7 @@ pub struct ManagedSkillDetail {
     pub description: String,
     pub skill_path: PathBuf,
     pub enabled: bool,
+    pub builtin: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,6 +158,104 @@ pub(crate) fn materialize_builtin_core_mcp_servers(env_map: &EnvMap, config: &mu
     config.mcp_servers = merged_core_mcp_servers(env_map, &config.mcp_servers);
 }
 
+pub fn materialize_builtin_skills(workspace_root: &Path) -> Result<PathBuf> {
+    let root = builtin_skill_root(workspace_root);
+    std::fs::create_dir_all(&root)
+        .with_context(|| format!("failed to create {}", root.display()))?;
+    for definition in BUILTIN_SKILL_DEFINITIONS {
+        let skill_dir = root.join(definition.name);
+        std::fs::create_dir_all(&skill_dir)
+            .with_context(|| format!("failed to create {}", skill_dir.display()))?;
+        let skill_path = skill_dir.join("SKILL.md");
+        let needs_write = match std::fs::read_to_string(&skill_path) {
+            Ok(existing) => existing != definition.markdown,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to read {}", skill_path.display()));
+            }
+        };
+        if needs_write {
+            std::fs::write(&skill_path, definition.markdown)
+                .with_context(|| format!("failed to write {}", skill_path.display()))?;
+        }
+    }
+    Ok(root)
+}
+
+pub fn builtin_skill_root(workspace_root: &Path) -> PathBuf {
+    AgentWorkspaceLayout::new(workspace_root)
+        .apps_dir()
+        .join("code-agent")
+        .join("builtin-skills")
+}
+
+pub fn disabled_builtin_skill_names(workspace_root: &Path) -> Result<BTreeSet<String>> {
+    let app = nanoclaw_config::load_optional_app_config::<super::CodeAgentAppConfig>(
+        workspace_root,
+        super::CODE_AGENT_APP_NAME,
+    )?;
+    Ok(app
+        .skills
+        .disabled_builtin
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect())
+}
+
+fn persist_builtin_skill_enabled(workspace_root: &Path, name: &str, enabled: bool) -> Result<()> {
+    let path = workspace_root.join(super::CODE_AGENT_APP_CONFIG_PATH);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let raw = if path.exists() {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?
+    } else {
+        String::new()
+    };
+    let mut document = if raw.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        raw.parse::<DocumentMut>()
+            .with_context(|| format!("failed to parse {}", path.display()))?
+    };
+
+    let mut disabled = disabled_builtin_skill_names(workspace_root)?;
+    if enabled {
+        disabled.remove(name);
+    } else {
+        disabled.insert(name.to_string());
+    }
+
+    let root = document.as_table_mut();
+    let skills_item = root.entry("skills").or_insert(Item::Table(Table::new()));
+    if !skills_item.is_table() {
+        *skills_item = Item::Table(Table::new());
+    }
+    let skills = skills_item
+        .as_table_mut()
+        .expect("skills config must be a TOML table");
+    if disabled.is_empty() {
+        skills.remove("disabled_builtin");
+    } else {
+        let mut items = Array::new();
+        for name in disabled {
+            items.push(name);
+        }
+        skills["disabled_builtin"] = value(items);
+    }
+
+    let mut serialized = document.to_string();
+    if !serialized.ends_with('\n') {
+        serialized.push('\n');
+    }
+    std::fs::write(&path, serialized).with_context(|| format!("failed to write {}", path.display()))
+}
+
 pub fn filter_unavailable_builtin_mcp_servers(
     env_map: &EnvMap,
     servers: Vec<McpServerConfig>,
@@ -200,23 +329,34 @@ pub async fn add_managed_skill(
         skill_name: source_skill.name,
         skill_path: destination,
         enabled: true,
+        builtin: false,
+        skill_root: SkillRoot::managed(managed_root),
     })
 }
 
 pub async fn list_managed_skills(workspace_root: &Path) -> Result<Vec<ManagedSkillArtifact>> {
+    materialize_builtin_skills(workspace_root)?;
     let managed_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
-    let mut skills = collect_skill_artifacts(&managed_root, true).await?;
-    skills.extend(collect_skill_artifacts(&managed_root, false).await?);
+    let builtin_root = builtin_skill_root(workspace_root);
+    let disabled_builtin = disabled_builtin_skill_names(workspace_root)?;
+    let mut skills = collect_managed_skill_artifacts(&managed_root, true).await?;
+    skills.extend(collect_managed_skill_artifacts(&managed_root, false).await?);
+    let existing_names = skills
+        .iter()
+        .map(|artifact| artifact.skill_name.clone())
+        .collect::<BTreeSet<_>>();
+    skills.extend(
+        collect_builtin_skill_artifacts(&builtin_root, &disabled_builtin, &existing_names).await?,
+    );
     skills.sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
     Ok(skills)
 }
 
 pub async fn list_managed_skill_details(workspace_root: &Path) -> Result<Vec<ManagedSkillDetail>> {
-    let managed_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
     let artifacts = list_managed_skills(workspace_root).await?;
     let mut details = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {
-        details.push(load_managed_skill_detail_from_artifact(&managed_root, artifact).await?);
+        details.push(load_managed_skill_detail_from_artifact(artifact).await?);
     }
     Ok(details)
 }
@@ -225,17 +365,20 @@ pub async fn load_managed_skill_detail(
     workspace_root: &Path,
     name: &str,
 ) -> Result<ManagedSkillDetail> {
-    let managed_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
-    let artifact = resolve_managed_skill(&managed_root, name).await?;
-    load_managed_skill_detail_from_artifact(&managed_root, artifact).await
+    let artifact = resolve_managed_skill(workspace_root, name).await?;
+    load_managed_skill_detail_from_artifact(artifact).await
 }
 
 pub async fn delete_managed_skill(
     workspace_root: &Path,
     name: &str,
 ) -> Result<ManagedSkillArtifact> {
-    let managed_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
-    let skill = resolve_managed_skill(&managed_root, name).await?;
+    let skill = resolve_managed_skill(workspace_root, name).await?;
+    if skill.builtin {
+        bail!(
+            "built-in skill `{name}` cannot be deleted; use `skill disable {name}` or `/skill` instead"
+        );
+    }
     fs::remove_dir_all(&skill.skill_path)
         .await
         .with_context(|| format!("failed to delete {}", skill.skill_path.display()))?;
@@ -248,12 +391,21 @@ pub async fn set_managed_skill_enabled(
     enabled: bool,
 ) -> Result<ManagedSkillArtifact> {
     let managed_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
-    let disabled_root = disabled_skill_root(&managed_root);
-    let skill = resolve_managed_skill(&managed_root, name).await?;
+    let skill = resolve_managed_skill(workspace_root, name).await?;
     if skill.enabled == enabled {
         let verb = if enabled { "enabled" } else { "disabled" };
-        bail!("managed skill `{}` is already {verb}", skill.skill_name);
+        let scope = if skill.builtin {
+            "built-in skill"
+        } else {
+            "managed skill"
+        };
+        bail!("{scope} `{}` is already {verb}", skill.skill_name);
     }
+    if skill.builtin {
+        persist_builtin_skill_enabled(workspace_root, &skill.skill_name, enabled)?;
+        return Ok(ManagedSkillArtifact { enabled, ..skill });
+    }
+    let disabled_root = disabled_skill_root(&managed_root);
     if enabled {
         let destination = managed_root.join(&skill.skill_name);
         if destination.exists() {
@@ -270,6 +422,8 @@ pub async fn set_managed_skill_enabled(
             skill_name: skill.skill_name,
             skill_path: destination,
             enabled: true,
+            builtin: false,
+            skill_root: SkillRoot::managed(managed_root),
         })
     } else {
         fs::create_dir_all(&disabled_root)
@@ -293,6 +447,8 @@ pub async fn set_managed_skill_enabled(
             skill_name: skill.skill_name,
             skill_path: destination,
             enabled: false,
+            builtin: false,
+            skill_root: SkillRoot::managed(managed_root),
         })
     }
 }
@@ -699,12 +855,16 @@ fn managed_plugin_path(workspace_root: &Path, plugin_id: &PluginId) -> PathBuf {
         .join(plugin_id.as_str())
 }
 
-async fn resolve_managed_skill(managed_root: &Path, name: &str) -> Result<ManagedSkillArtifact> {
-    let active = find_managed_skill(managed_root, name, true).await?;
-    let disabled = find_managed_skill(managed_root, name, false).await?;
+async fn resolve_managed_skill(workspace_root: &Path, name: &str) -> Result<ManagedSkillArtifact> {
+    materialize_builtin_skills(workspace_root)?;
+    let managed_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
+    let active = find_managed_skill(&managed_root, name, true).await?;
+    let disabled = find_managed_skill(&managed_root, name, false).await?;
     match (active, disabled) {
         (Some(skill), None) | (None, Some(skill)) => Ok(skill),
-        (None, None) => bail!("unknown managed skill `{name}`"),
+        (None, None) => find_builtin_skill(workspace_root, name)
+            .await?
+            .ok_or_else(|| anyhow!("unknown managed or built-in skill `{name}`")),
         (Some(_), Some(_)) => {
             bail!("managed skill `{name}` exists in both active and disabled locations")
         }
@@ -741,6 +901,36 @@ async fn find_managed_skill(
                 skill_name: skill.name,
                 skill_path: skill_dir,
                 enabled,
+                builtin: false,
+                skill_root: SkillRoot::managed(managed_root.to_path_buf()),
+            });
+        }
+    }
+    Ok(matched)
+}
+
+async fn find_builtin_skill(
+    workspace_root: &Path,
+    name: &str,
+) -> Result<Option<ManagedSkillArtifact>> {
+    let builtin_root = builtin_skill_root(workspace_root);
+    let disabled_builtin = disabled_builtin_skill_names(workspace_root)?;
+    let skill_dirs = collect_skill_directories(&builtin_root).await?;
+    let mut matched = None;
+    for skill_dir in skill_dirs {
+        let skill = load_skill_from_dir(&skill_dir, &SkillRoot::external(builtin_root.clone()))
+            .await
+            .with_context(|| format!("failed to load built-in skill {}", skill_dir.display()))?;
+        if skill.name == name {
+            if matched.is_some() {
+                bail!("multiple built-in skill copies matched `{name}`");
+            }
+            matched = Some(ManagedSkillArtifact {
+                skill_name: skill.name.clone(),
+                skill_path: skill_dir,
+                enabled: !disabled_builtin.contains(&skill.name),
+                builtin: true,
+                skill_root: SkillRoot::external(builtin_root.clone()),
             });
         }
     }
@@ -765,7 +955,7 @@ async fn collect_skill_directories(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(directories)
 }
 
-async fn collect_skill_artifacts(
+async fn collect_managed_skill_artifacts(
     managed_root: &Path,
     enabled: bool,
 ) -> Result<Vec<ManagedSkillArtifact>> {
@@ -790,34 +980,53 @@ async fn collect_skill_artifacts(
             skill_name: skill.name,
             skill_path: skill_dir,
             enabled,
+            builtin: false,
+            skill_root: SkillRoot::managed(managed_root.to_path_buf()),
+        });
+    }
+    Ok(skills)
+}
+
+async fn collect_builtin_skill_artifacts(
+    builtin_root: &Path,
+    disabled_builtin: &BTreeSet<String>,
+    excluded_names: &BTreeSet<String>,
+) -> Result<Vec<ManagedSkillArtifact>> {
+    let skill_dirs = collect_skill_directories(builtin_root).await?;
+    let mut skills = Vec::with_capacity(skill_dirs.len());
+    for skill_dir in skill_dirs {
+        let skill =
+            load_skill_from_dir(&skill_dir, &SkillRoot::external(builtin_root.to_path_buf()))
+                .await
+                .with_context(|| {
+                    format!("failed to load built-in skill {}", skill_dir.display())
+                })?;
+        if excluded_names.contains(&skill.name) {
+            continue;
+        }
+        skills.push(ManagedSkillArtifact {
+            skill_name: skill.name.clone(),
+            skill_path: skill_dir,
+            enabled: !disabled_builtin.contains(&skill.name),
+            builtin: true,
+            skill_root: SkillRoot::external(builtin_root.to_path_buf()),
         });
     }
     Ok(skills)
 }
 
 async fn load_managed_skill_detail_from_artifact(
-    managed_root: &Path,
     artifact: ManagedSkillArtifact,
 ) -> Result<ManagedSkillDetail> {
-    let skill = load_skill_from_dir(
-        &artifact.skill_path,
-        &SkillRoot {
-            path: managed_root.to_path_buf(),
-            kind: SkillRootKind::Managed,
-        },
-    )
-    .await
-    .with_context(|| {
-        format!(
-            "failed to load managed skill {}",
-            artifact.skill_path.display()
-        )
-    })?;
+    let skill = load_skill_from_dir(&artifact.skill_path, &artifact.skill_root)
+        .await
+        .with_context(|| format!("failed to load skill {}", artifact.skill_path.display()))?;
     Ok(ManagedSkillDetail {
         skill_name: skill.name,
         description: skill.description,
         skill_path: artifact.skill_path,
         enabled: artifact.enabled,
+        builtin: artifact.builtin,
     })
 }
 
@@ -968,9 +1177,10 @@ mod tests {
     use super::{
         BUILTIN_CONTEXT7_SERVER, BUILTIN_PLAYWRIGHT_SERVER, add_core_mcp_server,
         add_managed_plugin, add_managed_skill, delete_core_mcp_server, delete_managed_plugin,
-        delete_managed_skill, filter_unavailable_builtin_mcp_servers, list_core_mcp_servers,
-        list_managed_plugin_details, list_managed_skill_details, set_core_mcp_server_enabled,
-        set_managed_plugin_enabled, set_managed_skill_enabled,
+        delete_managed_skill, disabled_builtin_skill_names, filter_unavailable_builtin_mcp_servers,
+        list_core_mcp_servers, list_managed_plugin_details, list_managed_skill_details,
+        materialize_builtin_skills, set_core_mcp_server_enabled, set_managed_plugin_enabled,
+        set_managed_skill_enabled,
     };
     use agent::AgentWorkspaceLayout;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
@@ -1113,6 +1323,7 @@ mod tests {
 
         assert_eq!(artifact.skill_name, "review");
         assert!(artifact.enabled);
+        assert!(!artifact.builtin);
         assert_eq!(
             artifact.skill_path,
             AgentWorkspaceLayout::new(workspace.path())
@@ -1134,12 +1345,14 @@ mod tests {
             .await
             .unwrap();
         assert!(!disabled.enabled);
+        assert!(!disabled.builtin);
         assert!(disabled.skill_path.ends_with(".disabled/review"));
 
         let enabled = set_managed_skill_enabled(workspace.path(), "review", true)
             .await
             .unwrap();
         assert!(enabled.enabled);
+        assert!(!enabled.builtin);
         assert!(enabled.skill_path.ends_with(".nanoclaw/skills/review"));
     }
 
@@ -1171,11 +1384,98 @@ mod tests {
         add_managed_skill(workspace.path(), &source).await.unwrap();
 
         let details = list_managed_skill_details(workspace.path()).await.unwrap();
+        let review = details
+            .iter()
+            .find(|detail| detail.skill_name == "review")
+            .expect("managed review skill");
 
-        assert_eq!(details.len(), 1);
-        assert_eq!(details[0].skill_name, "review");
-        assert_eq!(details[0].description, "Demo skill");
-        assert!(details[0].enabled);
+        assert!(details.len() >= 1);
+        assert_eq!(review.description, "Demo skill");
+        assert!(review.enabled);
+        assert!(!review.builtin);
+    }
+
+    #[tokio::test]
+    async fn list_managed_skill_details_includes_builtin_skills_by_default() {
+        let workspace = tempdir().unwrap();
+        materialize_builtin_skills(workspace.path()).unwrap();
+
+        let details = list_managed_skill_details(workspace.path()).await.unwrap();
+
+        assert!(details.iter().any(|detail| {
+            detail.skill_name == "codebase-inspection" && detail.builtin && detail.enabled
+        }));
+        assert!(details.iter().any(|detail| {
+            detail.skill_name == "github-code-review" && detail.builtin && detail.enabled
+        }));
+    }
+
+    #[tokio::test]
+    async fn disabling_builtin_skill_persists_disabled_list() {
+        let workspace = tempdir().unwrap();
+        materialize_builtin_skills(workspace.path()).unwrap();
+
+        let disabled = set_managed_skill_enabled(workspace.path(), "github-code-review", false)
+            .await
+            .unwrap();
+        let details = list_managed_skill_details(workspace.path()).await.unwrap();
+
+        assert!(disabled.builtin);
+        assert!(!disabled.enabled);
+        assert!(
+            disabled
+                .skill_path
+                .ends_with(".nanoclaw/apps/code-agent/builtin-skills/github-code-review")
+        );
+        assert!(
+            disabled_builtin_skill_names(workspace.path())
+                .unwrap()
+                .contains("github-code-review")
+        );
+        assert!(details.iter().any(|detail| {
+            detail.skill_name == "github-code-review" && detail.builtin && !detail.enabled
+        }));
+    }
+
+    #[tokio::test]
+    async fn delete_managed_skill_rejects_builtin_entries() {
+        let workspace = tempdir().unwrap();
+        materialize_builtin_skills(workspace.path()).unwrap();
+
+        let error = delete_managed_skill(workspace.path(), "codebase-inspection")
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("built-in skill `codebase-inspection` cannot be deleted")
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_skills_yield_to_managed_name_collisions_in_management_views() {
+        let workspace = tempdir().unwrap();
+        materialize_builtin_skills(workspace.path()).unwrap();
+        let source_root = tempdir().unwrap();
+        let source = source_root.path().join("code-review");
+        write_skill_source(&source, "github-code-review");
+        add_managed_skill(workspace.path(), &source).await.unwrap();
+
+        let details = list_managed_skill_details(workspace.path()).await.unwrap();
+
+        let matches = details
+            .iter()
+            .filter(|detail| detail.skill_name == "github-code-review")
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1);
+        assert!(!matches[0].builtin);
+        assert_eq!(
+            matches[0].skill_path,
+            AgentWorkspaceLayout::new(workspace.path())
+                .skills_dir()
+                .join("github-code-review")
+        );
     }
 
     fn write_plugin_source(dir: &Path, id: &str) {
