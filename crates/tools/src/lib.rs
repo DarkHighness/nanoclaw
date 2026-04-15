@@ -29,6 +29,7 @@ pub mod permissions;
 pub mod process;
 pub mod registry;
 pub mod schema;
+mod session_control;
 pub mod user_input;
 #[cfg(feature = "web-tools")]
 pub mod web;
@@ -50,6 +51,7 @@ pub use permissions::*;
 pub use process::*;
 pub use registry::*;
 pub use schema::*;
+pub use session_control::*;
 pub use user_input::*;
 #[cfg(feature = "web-tools")]
 pub use web::*;

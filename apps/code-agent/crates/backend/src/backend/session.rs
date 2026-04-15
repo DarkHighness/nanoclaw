@@ -64,8 +64,9 @@ use agent::runtime::{
     RunTurnOutcome, RuntimeControlPlane, VisibleHistoryRollbackRound,
 };
 use agent::tools::{
-    McpToolAdapter, MonitorManager, MonitorRuntimeContext, SandboxPolicy, SubagentExecutor,
-    SubagentInputDelivery, SubagentLaunchSpec, SubagentParentContext,
+    McpToolAdapter, MonitorManager, MonitorRuntimeContext, SandboxPolicy, SessionCompactionResult,
+    SessionControlHandler, SubagentExecutor, SubagentInputDelivery, SubagentLaunchSpec,
+    SubagentParentContext,
 };
 use agent::types::{
     AgentSessionId, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, HookHandler, HookRegistration,
@@ -73,6 +74,7 @@ use agent::types::{
 };
 use agent::{AgentRuntime, RuntimeCommand, ToolExecutionContext};
 use anyhow::Result;
+use async_trait::async_trait;
 use futures::{StreamExt, stream};
 #[cfg(test)]
 use memory::{CompactionWorkingSnapshot, SessionMemoryRefreshContext};
@@ -238,7 +240,7 @@ impl CodeAgentSession {
             last_captured_message_id: initial_captured_message_id,
             ..SessionEpisodicCaptureState::default()
         }));
-        Self {
+        let session = Self {
             runtime,
             control_plane,
             checkpoint_manager,
@@ -278,7 +280,28 @@ impl CodeAgentSession {
             applied_plugin_surfaces: Arc::new(RwLock::new(AppliedPluginSurfaceState {
                 driver_tool_names,
             })),
-        }
+        };
+        session
+            .session_tool_context
+            .write()
+            .unwrap()
+            .session_control_handler = Some(Arc::new(session.clone()));
+        session
+    }
+}
+
+#[async_trait]
+impl SessionControlHandler for CodeAgentSession {
+    async fn compact_now(
+        &self,
+        _ctx: &ToolExecutionContext,
+        notes: Option<String>,
+    ) -> agent::tools::Result<SessionCompactionResult> {
+        Ok(SessionCompactionResult {
+            compacted: CodeAgentSession::compact_now(self, notes)
+                .await
+                .map_err(|error| agent::tools::ToolError::invalid_state(error.to_string()))?,
+        })
     }
 }
 

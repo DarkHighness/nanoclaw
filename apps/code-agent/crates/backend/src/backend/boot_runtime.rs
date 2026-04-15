@@ -17,15 +17,15 @@ use agent::{
     BrowserSnapshotTool, BrowserTypeTool,
 };
 use agent::{
-    CheckpointListTool, CheckpointRestoreTool, CodeDiagnosticsTool, CodeDocumentSymbolsTool,
-    CodeIntelBackend, CodeNavTool, CodeSearchTool, CodeSymbolSearchTool, EditTool, ExecCommandTool,
-    GlobTool, GrepTool, JsReplTool, ListTool, ManagedCodeIntelBackend, ManagedCodeIntelOptions,
-    ManagedPolicyProcessExecutor, MonitorListTool, MonitorStartTool, MonitorStopTool,
-    PatchFilesTool, ReadTool, RequestPermissionsTool, RequestUserInputTool, SandboxPolicy,
-    SkillCatalog, SkillManageTool, SkillViewTool, SkillsListTool, ToolCallId, ToolDiscoverTool,
-    ToolExecutionContext, ToolRegistry, ToolResult, WebFetchTool, WebSearchBackendsTool,
-    WebSearchTool, WorkspaceTextCodeIntelBackend, WorktreeEnterTool, WorktreeExitTool,
-    WorktreeListTool, WriteStdinTool, WriteTool,
+    CheckpointListTool, CheckpointRestoreTool, CheckpointSummarizeTool, CodeDiagnosticsTool,
+    CodeDocumentSymbolsTool, CodeIntelBackend, CodeNavTool, CodeSearchTool, CodeSymbolSearchTool,
+    EditTool, ExecCommandTool, GlobTool, GrepTool, JsReplTool, ListTool, ManagedCodeIntelBackend,
+    ManagedCodeIntelOptions, ManagedPolicyProcessExecutor, MonitorListTool, MonitorStartTool,
+    MonitorStopTool, PatchFilesTool, ReadTool, RequestPermissionsTool, RequestUserInputTool,
+    SandboxPolicy, SkillCatalog, SkillManageTool, SkillViewTool, SkillsListTool, ToolCallId,
+    ToolDiscoverTool, ToolExecutionContext, ToolRegistry, ToolResult, WebFetchTool,
+    WebSearchBackendsTool, WebSearchTool, WorkspaceTextCodeIntelBackend, WorktreeEnterTool,
+    WorktreeExitTool, WorktreeListTool, WriteStdinTool, WriteTool,
 };
 #[cfg(feature = "automation-tools")]
 use agent::{CronCreateTool, CronDeleteTool, CronListTool};
@@ -545,6 +545,7 @@ pub fn register_subagent_tools(
     task_manager: Arc<dyn TaskManager>,
 ) {
     tools.register(CheckpointListTool::new());
+    tools.register(CheckpointSummarizeTool::new());
     tools.register(CheckpointRestoreTool::new());
     tools.register(agent::tools::TaskCreateTool::new(task_manager.clone()));
     tools.register(agent::tools::TaskGetTool::new(task_manager.clone()));

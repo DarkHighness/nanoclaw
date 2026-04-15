@@ -1,6 +1,7 @@
 use crate::CheckpointHandler;
 use crate::PermissionRequestHandler;
 use crate::Result;
+use crate::SessionControlHandler;
 #[cfg(feature = "agentic-tools")]
 use crate::TaskManager;
 use crate::UserInputHandler;
@@ -43,6 +44,7 @@ pub struct ToolExecutionContext {
     pub user_input_handler: Option<Arc<dyn UserInputHandler>>,
     pub permission_request_handler: Option<Arc<dyn PermissionRequestHandler>>,
     pub checkpoint_handler: Option<Arc<dyn CheckpointHandler>>,
+    pub session_control_handler: Option<Arc<dyn SessionControlHandler>>,
     #[cfg(feature = "agentic-tools")]
     pub task_manager: Option<Arc<dyn TaskManager>>,
 }
@@ -75,6 +77,10 @@ impl fmt::Debug for ToolExecutionContext {
             .field(
                 "checkpoint_handler",
                 &self.checkpoint_handler.as_ref().map(|_| "<handler>"),
+            )
+            .field(
+                "session_control_handler",
+                &self.session_control_handler.as_ref().map(|_| "<handler>"),
             );
         #[cfg(feature = "agentic-tools")]
         debug.field(

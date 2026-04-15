@@ -9,13 +9,14 @@ pub use skills::{
 pub use store::{FileSessionStore, InMemorySessionStore, SessionStore};
 #[cfg(feature = "agentic-tools")]
 pub use tools::{
-    AgentResumeTool, CheckpointListTool, CheckpointRestoreTool, PRIMARY_WORKTREE_ID,
-    PermissionGrantScope, RequestPermissionProfile, RequestPermissionsArgs, RequestPermissionsTool,
-    RequestUserInputTool, SkillDetail, SkillFileView, SkillManageOutput, SkillManageTool,
-    SkillSummary, SkillViewOutput, SkillViewTool, SkillsListOutput, SkillsListTool, TaskCreateTool,
-    TaskGetTool, TaskListTool, TaskManager, TaskStopTool, TaskUpdateTool, ToolDiscoverTool,
-    UserInputAnswer, UserInputHandler, UserInputOption, UserInputQuestion, UserInputRequest,
-    UserInputResponse, WorktreeEnterTool, WorktreeExitTool, WorktreeListTool,
+    AgentResumeTool, CheckpointListTool, CheckpointRestoreTool, CheckpointSummarizeTool,
+    PRIMARY_WORKTREE_ID, PermissionGrantScope, RequestPermissionProfile, RequestPermissionsArgs,
+    RequestPermissionsTool, RequestUserInputTool, SkillDetail, SkillFileView, SkillManageOutput,
+    SkillManageTool, SkillSummary, SkillViewOutput, SkillViewTool, SkillsListOutput,
+    SkillsListTool, TaskCreateTool, TaskGetTool, TaskListTool, TaskManager, TaskStopTool,
+    TaskUpdateTool, ToolDiscoverTool, UserInputAnswer, UserInputHandler, UserInputOption,
+    UserInputQuestion, UserInputRequest, UserInputResponse, WorktreeEnterTool, WorktreeExitTool,
+    WorktreeListTool,
 };
 #[cfg(feature = "browser-tools")]
 pub use tools::{
