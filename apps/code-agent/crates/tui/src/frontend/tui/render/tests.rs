@@ -626,26 +626,26 @@ fn welcome_lines_keep_the_start_screen_sparse() {
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("workspace · session + runtime") })
+            .any(|line| { line_text_for(line).contains("Workspace · session + runtime") })
     );
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("launch · next actions") })
+            .any(|line| { line_text_for(line).contains("Launch · next actions") })
     );
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("workspace  nanoclaw") })
+            .any(|line| { line_text_for(line).contains("Workspace  nanoclaw") })
     );
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("model      gpt-5.4 · high") })
+            .any(|line| { line_text_for(line).contains("gpt-5.4 · high") })
     );
     assert!(
         lines.iter().any(|line| {
-            line_text_for(line).contains("runtime    0 tools · 0 mcp · 0 skills")
+            line_text_for(line).contains("Runtime    0 Tools · 0 MCP · 0 Skills")
         })
     );
     assert!(
@@ -690,7 +690,7 @@ fn welcome_lines_switch_to_the_compact_logo_on_narrow_viewports() {
     assert!(
         lines
             .iter()
-            .any(|line| { line_text_for(line).contains("launch · next actions") })
+            .any(|line| { line_text_for(line).contains("Launch · next actions") })
     );
 }
 
@@ -1334,18 +1334,18 @@ fn statusline_picker_text_renders_checked_rows() {
         &StatusLinePickerState { selected: 1 },
     );
 
-    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "status line");
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Status Line");
     assert!(
         rendered
             .lines
             .iter()
-            .any(|line| line_text_for(line).contains("› [x] model"))
+            .any(|line| line_text_for(line).contains("› [x] Model"))
     );
     assert!(
         rendered
             .lines
             .iter()
-            .any(|line| line_text_for(line).contains("[ ] session"))
+            .any(|line| line_text_for(line).contains("[ ] Session"))
     );
 }
 
@@ -1369,7 +1369,7 @@ fn theme_picker_text_renders_available_themes() {
         },
     );
 
-    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "theme");
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Theme");
     assert!(
         rendered
             .lines
@@ -1386,13 +1386,13 @@ fn theme_picker_text_renders_available_themes() {
         rendered
             .lines
             .iter()
-            .any(|line| line_text_for(line).contains("enter save"))
+            .any(|line| line_text_for(line).contains("Enter save"))
     );
     assert!(
         rendered
             .lines
             .iter()
-            .any(|line| line_text_for(line).contains("esc restore"))
+            .any(|line| line_text_for(line).contains("Esc restore"))
     );
 }
 
@@ -1420,12 +1420,12 @@ fn managed_toggle_picker_text_renders_toggle_rows() {
         },
     );
 
-    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "plugins");
+    assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "Plugins");
     assert!(
         rendered
             .lines
             .iter()
-            .any(|line| line_text_for(line).contains("1/2 enabled plugins"))
+            .any(|line| line_text_for(line).contains("1/2 Enabled Plugins"))
     );
     assert!(
         rendered
@@ -1446,8 +1446,8 @@ fn command_palette_text_matches_picker_style() {
     let rendered = build_command_palette_text(
         &[
             section_entry("Session"),
-            actionable_collection_entry("/help [query]", "browse commands"),
-            actionable_collection_entry("/sessions [query]", "browse persisted sessions"),
+            actionable_collection_entry("/help [query]", "Browse commands"),
+            actionable_collection_entry("/sessions [query]", "Browse persisted sessions"),
         ],
         Some(0),
     );
@@ -1458,7 +1458,7 @@ fn command_palette_text_matches_picker_style() {
     assert_eq!(rendered.lines[1].spans[2].content.as_ref(), "/help [query]");
     assert_eq!(
         rendered.lines[2].spans[1].content.as_ref(),
-        "browse commands"
+        "Browse commands"
     );
     assert_eq!(
         rendered.lines[3].spans[2].content.as_ref(),
@@ -2657,14 +2657,14 @@ fn command_hint_text_surfaces_selected_usage_and_matches() {
             section: "History",
             name: "sessions",
             usage: "sessions [query]",
-            summary: "browse persisted sessions",
+            summary: "Browse persisted sessions",
         }),
         matches: vec![
             builtin_slash(SlashCommandSpec {
                 section: "History",
                 name: "sessions",
                 usage: "sessions [query]",
-                summary: "browse persisted sessions",
+                summary: "Browse persisted sessions",
             }),
             builtin_slash(SlashCommandSpec {
                 section: "History",
@@ -2686,7 +2686,7 @@ fn command_hint_text_surfaces_selected_usage_and_matches() {
     );
     assert_eq!(
         rendered.lines[1].spans[4].content.as_ref(),
-        "browse persisted sessions"
+        "Browse persisted sessions"
     );
     assert_eq!(
         rendered.lines[2].spans[1].content.as_ref(),
@@ -2703,13 +2703,13 @@ fn command_hint_text_surfaces_argument_progress() {
             section: "Export",
             name: "export-transcript",
             usage: "export-transcript <session-ref> <path>",
-            summary: "write transcript export",
+            summary: "Write transcript export",
         }),
         matches: vec![builtin_slash(SlashCommandSpec {
             section: "Export",
             name: "export-transcript",
             usage: "export-transcript <session-ref> <path>",
-            summary: "write transcript export",
+            summary: "Write transcript export",
         })],
         selected_match_index: 0,
         arguments: Some(SlashCommandArgumentHint {
@@ -2744,13 +2744,13 @@ fn command_hint_text_keeps_enter_run_for_optional_arguments() {
             section: "Session",
             name: "help",
             usage: "help [query]",
-            summary: "browse commands",
+            summary: "Browse commands",
         }),
         matches: vec![builtin_slash(SlashCommandSpec {
             section: "Session",
             name: "help",
             usage: "help [query]",
-            summary: "browse commands",
+            summary: "Browse commands",
         })],
         selected_match_index: 0,
         arguments: Some(SlashCommandArgumentHint {
@@ -2782,25 +2782,25 @@ fn command_hint_text_shows_browse_window_ellipsis() {
                 section: "Session",
                 name: "help",
                 usage: "help",
-                summary: "browse commands",
+                summary: "Browse commands",
             }),
             builtin_slash(SlashCommandSpec {
                 section: "Session",
                 name: "status",
                 usage: "status",
-                summary: "session overview",
+                summary: "Session overview",
             }),
             builtin_slash(SlashCommandSpec {
                 section: "Session",
                 name: "new",
                 usage: "new",
-                summary: "fresh top-level session",
+                summary: "Fresh top-level session",
             }),
             builtin_slash(SlashCommandSpec {
                 section: "History",
                 name: "sessions",
                 usage: "sessions [query]",
-                summary: "browse persisted sessions",
+                summary: "Browse persisted sessions",
             }),
             builtin_slash(SlashCommandSpec {
                 section: "History",
@@ -2818,7 +2818,7 @@ fn command_hint_text_shows_browse_window_ellipsis() {
                 section: "Agents",
                 name: "live-tasks",
                 usage: "live-tasks",
-                summary: "list live child agents",
+                summary: "List live child agents",
             }),
         ],
         selected_match_index: 5,
@@ -2902,13 +2902,13 @@ fn footer_context_renders_configured_status_items() {
     let text = line_text_for(&footer);
 
     assert!(text.contains("[• Ready]"));
-    assert!(text.contains("[model gpt-5.4 (high)]"));
-    assert!(text.contains("[workspace nanoclaw]"));
-    assert!(text.contains("[git nanoclaw-repo@main]"));
+    assert!(text.contains("[Model gpt-5.4 (high)]"));
+    assert!(text.contains("[Workspace nanoclaw]"));
+    assert!(text.contains("[Git nanoclaw-repo@main]"));
     assert!(text.contains("Context [     ]"));
-    assert!(text.contains("[tokens in 17k+3kc · out 1.2k+300r]"));
-    assert!(!text.contains("[queue 0]"));
-    assert!(text.contains("[sid session_123456]"));
+    assert!(text.contains("[Tokens In 17k+3kc · Out 1.2k+300r]"));
+    assert!(!text.contains("[Queue 0]"));
+    assert!(text.contains("[Session session_123456]"));
 }
 
 #[test]
@@ -3045,7 +3045,7 @@ fn input_footer_switches_to_queue_hint_and_context_left() {
 
     assert!(left.contains("Tab to queue message"));
     assert!(left.contains("Enter to send steer"));
-    assert_eq!(right, "65% context left");
+    assert_eq!(right, "65% Context left");
 }
 
 #[test]
@@ -3108,7 +3108,7 @@ fn toast_band_renders_tone_and_message_preview() {
     let text = line_text_for(&line);
 
     assert_eq!(toast_height(&state), Some(1));
-    assert!(text.contains("notice"));
+    assert!(text.contains("Notice"));
     assert!(text.contains("task task_123 failed"));
     assert!(text.contains("/task"));
 }

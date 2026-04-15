@@ -3,14 +3,14 @@ use crate::frontend::tui::state::InspectorAction;
 pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<InspectorEntry> {
     let mut lines = vec![
         InspectorEntry::section("Session"),
-        InspectorEntry::field("session ref", session.summary.session_id.to_string()),
-        InspectorEntry::field("event count", session.summary.event_count.to_string()),
+        InspectorEntry::field("Session Ref", session.summary.session_id.to_string()),
+        InspectorEntry::field("Event Count", session.summary.event_count.to_string()),
         InspectorEntry::field(
-            "message count",
+            "Message Count",
             session.summary.transcript_message_count.to_string(),
         ),
         InspectorEntry::field(
-            "worker sessions",
+            "Worker Sessions",
             session.summary.agent_session_count.to_string(),
         ),
     ];
@@ -18,25 +18,25 @@ pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<Inspector
         lines.push(InspectorEntry::section("Token Budget"));
         if let Some(window) = session_usage.ledger.context_window {
             lines.push(InspectorEntry::field(
-                "context",
+                "Context",
                 format!("{} / {}", window.used_tokens, window.max_tokens),
             ));
         }
         lines.push(InspectorEntry::field(
-            "session tokens",
+            "Session Tokens",
             format_token_usage_brief(session_usage.ledger.cumulative_usage),
         ));
     }
     if !session.token_usage.aggregate_usage.is_zero() {
         lines.push(InspectorEntry::field(
-            "total tokens",
+            "Total Tokens",
             format_token_usage_detailed(session.token_usage.aggregate_usage),
         ));
     }
     if !session.token_usage.subagents.is_empty() {
         lines.push(InspectorEntry::section("Subagents"));
         lines.push(InspectorEntry::field(
-            "subagent count",
+            "Subagent Count",
             session.token_usage.subagents.len().to_string(),
         ));
         lines.extend(
@@ -51,14 +51,14 @@ pub(crate) fn format_session_inspector(session: &LoadedSession) -> Vec<Inspector
     if let Some(prompt) = &session.summary.last_user_prompt {
         lines.push(InspectorEntry::section("Prompt"));
         lines.push(InspectorEntry::field(
-            "last prompt",
+            "Last Prompt",
             preview_text(prompt, 80),
         ));
     }
     if !session.agent_session_ids.is_empty() {
         lines.push(InspectorEntry::section("Runtime IDs"));
         lines.push(InspectorEntry::field(
-            "runtime sessions",
+            "Runtime Sessions",
             session
                 .agent_session_ids
                 .iter()
@@ -88,21 +88,21 @@ pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Ve
     let mut lines = vec![
         InspectorEntry::section("Agent Session"),
         InspectorEntry::field(
-            "agent session ref",
+            "Agent Session Ref",
             session.summary.agent_session_ref.clone(),
         ),
-        InspectorEntry::field("session ref", session.summary.session_ref.clone()),
-        InspectorEntry::field("label", session.summary.label.clone()),
-        InspectorEntry::field("event count", session.summary.event_count.to_string()),
+        InspectorEntry::field("Session Ref", session.summary.session_ref.clone()),
+        InspectorEntry::field("Label", session.summary.label.clone()),
+        InspectorEntry::field("Event Count", session.summary.event_count.to_string()),
         InspectorEntry::field(
-            "message count",
+            "Message Count",
             session.summary.transcript_message_count.to_string(),
         ),
-        InspectorEntry::field("resume", session.summary.resume_support.label()),
+        InspectorEntry::field("Resume", session.summary.resume_support.label()),
     ];
     if let Some(session_title) = &session.summary.session_title {
         lines.push(InspectorEntry::field(
-            "session title",
+            "Session Title",
             preview_text(session_title, 80),
         ));
     }
@@ -110,26 +110,26 @@ pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Ve
         lines.push(InspectorEntry::section("Token Budget"));
         if let Some(window) = token_usage.ledger.context_window {
             lines.push(InspectorEntry::field(
-                "context",
+                "Context",
                 format!("{} / {}", window.used_tokens, window.max_tokens),
             ));
         }
         lines.push(InspectorEntry::field(
-            "agent tokens",
+            "Agent Tokens",
             format_token_usage_brief(token_usage.ledger.cumulative_usage),
         ));
     }
     if let Some(prompt) = &session.summary.last_user_prompt {
         lines.push(InspectorEntry::section("Prompt"));
         lines.push(InspectorEntry::field(
-            "last prompt",
+            "Last Prompt",
             preview_text(prompt, 80),
         ));
     }
     if !session.subagents.is_empty() {
         lines.push(InspectorEntry::section("Spawned Subagents"));
         lines.push(InspectorEntry::field(
-            "count",
+            "Count",
             session.subagents.len().to_string(),
         ));
         lines.extend(
@@ -160,46 +160,46 @@ pub(crate) fn format_agent_session_inspector(session: &LoadedAgentSession) -> Ve
 pub(crate) fn format_task_inspector(task: &LoadedTask) -> Vec<InspectorEntry> {
     let mut lines = vec![
         InspectorEntry::section("Task"),
-        InspectorEntry::field("task id", task.summary.task_id.to_string()),
-        InspectorEntry::field("session ref", task.summary.session_ref.clone()),
+        InspectorEntry::field("Task ID", task.summary.task_id.to_string()),
+        InspectorEntry::field("Session Ref", task.summary.session_ref.clone()),
         InspectorEntry::field(
-            "parent agent session ref",
+            "Parent Agent Session Ref",
             task.summary.parent_agent_session_ref.clone(),
         ),
-        InspectorEntry::field("role", task.summary.role.clone()),
-        InspectorEntry::field("status", task.summary.status.to_string()),
-        InspectorEntry::field("summary", task.summary.summary.clone()),
+        InspectorEntry::field("Role", task.summary.role.clone()),
+        InspectorEntry::field("Status", task.summary.status.to_string()),
+        InspectorEntry::field("Summary", task.summary.summary.clone()),
     ];
     if let Some(child_session_ref) = &task.summary.child_session_ref {
         lines.push(InspectorEntry::section("Runtime"));
         lines.push(InspectorEntry::field(
-            "child session ref",
+            "Child Session Ref",
             child_session_ref.clone(),
         ));
         if let Some(child_agent_session_ref) = &task.summary.child_agent_session_ref {
             lines.push(InspectorEntry::field(
-                "child agent session ref",
+                "Child Agent Session Ref",
                 child_agent_session_ref.clone(),
             ));
         }
     }
     lines.push(InspectorEntry::section("Prompt"));
     lines.push(InspectorEntry::field(
-        "prompt",
+        "Prompt",
         preview_text(&task.spec.prompt, 96),
     ));
     if let Some(steer) = &task.spec.steer {
-        lines.push(InspectorEntry::field("steer", preview_text(steer, 96)));
+        lines.push(InspectorEntry::field("Steer", preview_text(steer, 96)));
     }
     if !task.spec.requested_write_set.is_empty() {
         lines.push(InspectorEntry::field(
-            "writes",
+            "Writes",
             preview_text(&task.spec.requested_write_set.join(", "), 96),
         ));
     }
     if !task.spec.dependency_ids.is_empty() {
         lines.push(InspectorEntry::field(
-            "deps",
+            "Deps",
             preview_text(&task.spec.dependency_ids.join(", "), 96),
         ));
     }
@@ -207,24 +207,24 @@ pub(crate) fn format_task_inspector(task: &LoadedTask) -> Vec<InspectorEntry> {
         lines.push(InspectorEntry::section("Token Budget"));
         if let Some(window) = token_usage.ledger.context_window {
             lines.push(InspectorEntry::field(
-                "context",
+                "Context",
                 format!("{} / {}", window.used_tokens, window.max_tokens),
             ));
         }
         lines.push(InspectorEntry::field(
-            "task tokens",
+            "Task Tokens",
             format_token_usage_brief(token_usage.ledger.cumulative_usage),
         ));
     }
     if let Some(result) = &task.result {
         lines.push(InspectorEntry::section("Result"));
         lines.push(InspectorEntry::field(
-            "result",
+            "Result",
             preview_text(&result.summary, 96),
         ));
         if !result.claimed_files.is_empty() {
             lines.push(InspectorEntry::field(
-                "claimed files",
+                "Claimed Files",
                 preview_text(&result.claimed_files.join(", "), 96),
             ));
         }
@@ -259,16 +259,16 @@ pub(crate) fn format_startup_diagnostics(
 ) -> Vec<InspectorEntry> {
     let mut lines = vec![
         InspectorEntry::section("Runtime"),
-        InspectorEntry::field("local tools", snapshot.local_tool_count.to_string()),
-        InspectorEntry::field("mcp tools", snapshot.mcp_tool_count.to_string()),
+        InspectorEntry::field("Local Tools", snapshot.local_tool_count.to_string()),
+        InspectorEntry::field("MCP Tools", snapshot.mcp_tool_count.to_string()),
         InspectorEntry::field(
-            "plugins",
+            "Plugins",
             format!(
-                "{} enabled / {} total",
+                "{} Enabled / {} Total",
                 snapshot.enabled_plugin_count, snapshot.total_plugin_count
             ),
         ),
-        InspectorEntry::field("mcp servers", snapshot.mcp_servers.len().to_string()),
+        InspectorEntry::field("MCP Servers", snapshot.mcp_servers.len().to_string()),
     ];
     if !snapshot.plugin_details.is_empty() {
         lines.push(InspectorEntry::section("Plugins"));
@@ -295,7 +295,7 @@ pub(crate) fn format_startup_diagnostics(
             snapshot
                 .warnings
                 .iter()
-                .map(|warning| InspectorEntry::Muted(format!("warning: {warning}"))),
+                .map(|warning| InspectorEntry::Muted(format!("Warning: {warning}"))),
         );
     }
     if !snapshot.diagnostics.is_empty() {
@@ -304,7 +304,7 @@ pub(crate) fn format_startup_diagnostics(
             snapshot
                 .diagnostics
                 .iter()
-                .map(|diagnostic| InspectorEntry::Plain(format!("diagnostic: {diagnostic}"))),
+                .map(|diagnostic| InspectorEntry::Plain(format!("Diagnostic: {diagnostic}"))),
         );
     }
     lines
@@ -314,7 +314,7 @@ pub(crate) fn format_mcp_server_summary_line(summary: &McpServerSummary) -> Insp
     InspectorEntry::collection(
         summary.server_name.clone(),
         Some(format!(
-            "tools={} prompts={} resources={}",
+            "Tools={} Prompts={} Resources={}",
             summary.tool_count, summary.prompt_count, summary.resource_count
         )),
     )
@@ -382,7 +382,7 @@ fn format_loaded_subagent_line(subagent: &LoadedSubagentSession) -> TranscriptEn
         })
         .unwrap_or_default();
     TranscriptEntry::AssistantMessage(format!(
-        "{} role={} status={} {}{}",
+        "{} Role={} Status={} {}{}",
         preview_id(subagent.handle.agent_session_id.as_str()),
         subagent.task.role,
         subagent.status,
@@ -397,7 +397,7 @@ fn format_task_message_line(message: &LoadedTaskMessage) -> TranscriptEntry {
 
 fn format_token_usage_brief(usage: TokenUsage) -> String {
     format!(
-        "in={} out={} cache={}{}",
+        "In={} Out={} Cache={}{}",
         usage.input_tokens,
         usage.output_tokens,
         usage.cache_read_tokens,
@@ -407,7 +407,7 @@ fn format_token_usage_brief(usage: TokenUsage) -> String {
 
 fn format_token_usage_detailed(usage: TokenUsage) -> String {
     format!(
-        "in={} out={} prefill={} decode={} cache={}{}",
+        "In={} Out={} Prefill={} Decode={} Cache={}{}",
         usage.input_tokens,
         usage.output_tokens,
         usage.uncached_input_tokens(),
@@ -421,6 +421,6 @@ fn format_reasoning_suffix(reasoning_tokens: u64) -> String {
     if reasoning_tokens == 0 {
         String::new()
     } else {
-        format!(" reasoning={reasoning_tokens}")
+        format!(" Reasoning={reasoning_tokens}")
     }
 }

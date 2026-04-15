@@ -175,37 +175,37 @@ fn workspace_panel_lines(state: &TuiState, compact: bool) -> Vec<Line<'static>> 
     );
 
     vec![
-        section_heading_line("workspace", "session + runtime"),
+        section_heading_line("Workspace", "session + runtime"),
         fact_line(
-            "workspace",
+            "Workspace",
             &state.session.workspace_name,
             palette().subtle,
             palette().header,
             compact,
         ),
         fact_line(
-            "model",
+            "Model",
             &model_label(state),
             palette().subtle,
             palette().accent,
             compact,
         ),
         fact_line(
-            "runtime",
+            "Runtime",
             &runtime_value,
             palette().subtle,
             palette().muted,
             compact,
         ),
         fact_line(
-            "repo",
+            "Repo",
             &repo_value,
             palette().subtle,
             palette().user,
             compact,
         ),
         fact_line(
-            "plugins",
+            "Plugins",
             &plugin_value,
             palette().subtle,
             palette().assistant,
@@ -216,37 +216,37 @@ fn workspace_panel_lines(state: &TuiState, compact: bool) -> Vec<Line<'static>> 
 
 fn launch_panel_lines(compact: bool) -> Vec<Line<'static>> {
     vec![
-        section_heading_line("launch", "next actions"),
+        section_heading_line("Launch", "next actions"),
         fact_line(
-            "start",
+            "Start",
             "Describe the change in plain language",
             palette().accent,
             palette().text,
             compact,
         ),
         fact_line(
-            "queue",
+            "Queue",
             "Tab stages follow-ups behind the current run",
             palette().accent,
             palette().text,
             compact,
         ),
         fact_line(
-            "control",
+            "Control",
             "/ commands, $ skills, ↑ history",
             palette().accent,
             palette().text,
             compact,
         ),
         fact_line(
-            "inspect",
+            "Inspect",
             "/task, review history, or /help",
             palette().accent,
             palette().text,
             compact,
         ),
         fact_line(
-            "edit",
+            "Edit",
             "^T effort · ^O external editor",
             palette().accent,
             palette().text,
@@ -265,7 +265,7 @@ fn model_label(state: &TuiState) -> String {
 fn runtime_label(state: &TuiState) -> String {
     let diagnostics = &state.session.startup_diagnostics;
     format!(
-        "{} tools · {} mcp · {} skills",
+        "{} Tools · {} MCP · {} Skills",
         diagnostics.local_tool_count + diagnostics.mcp_tool_count,
         diagnostics.mcp_servers.len(),
         state.session.skills.len()
@@ -283,7 +283,7 @@ fn repo_label(state: &TuiState) -> String {
             )
         }
     } else {
-        "no git context yet".to_string()
+        "No Git context yet".to_string()
     }
 }
 

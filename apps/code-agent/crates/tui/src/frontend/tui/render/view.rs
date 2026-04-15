@@ -217,15 +217,15 @@ pub(super) fn build_statusline_picker_text(
         .count();
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("status line", Style::default().fg(palette().header)),
+            Span::styled("Status Line", Style::default().fg(palette().header)),
             Span::styled(" · ", Style::default().fg(palette().subtle)),
             Span::styled(
-                format!("{enabled_count}/{} visible", status_line_fields().len()),
+                format!("{enabled_count}/{} Visible", status_line_fields().len()),
                 Style::default().fg(palette().user),
             ),
         ]),
         Line::from(Span::styled(
-            "space toggle · enter close · esc close",
+            "Space toggle · Enter close · Esc close",
             Style::default().fg(palette().subtle),
         )),
         Line::raw(""),
@@ -289,12 +289,12 @@ pub(super) fn build_thinking_effort_picker_text(
     let current = current.unwrap_or("default");
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("thinking effort", Style::default().fg(palette().header)),
+            Span::styled("Thinking Effort", Style::default().fg(palette().header)),
             Span::styled(" · ", Style::default().fg(palette().subtle)),
             Span::styled(current.to_string(), Style::default().fg(palette().user)),
         ]),
         Line::from(Span::styled(
-            "enter save · ↑↓ preview · home/end jump · esc restore",
+            "Enter save · ↑↓ preview · Home/End jump · Esc restore",
             Style::default().fg(palette().subtle),
         )),
         Line::raw(""),
@@ -362,12 +362,12 @@ pub(super) fn build_theme_picker_text(
 ) -> Text<'static> {
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("theme", Style::default().fg(palette().header)),
+            Span::styled("Theme", Style::default().fg(palette().header)),
             Span::styled(" · ", Style::default().fg(palette().subtle)),
             Span::styled(current.to_string(), Style::default().fg(palette().user)),
         ]),
         Line::from(Span::styled(
-            "enter save · ↑↓ preview · home/end jump · esc restore",
+            "Enter save · ↑↓ preview · Home/End jump · Esc restore",
             Style::default().fg(palette().subtle),
         )),
         Line::raw(""),
@@ -439,24 +439,21 @@ pub(super) fn build_managed_toggle_picker_text(
 ) -> Text<'static> {
     let enabled_count = picker.items.iter().filter(|item| item.enabled).count();
     let noun = match picker.kind {
-        crate::frontend::tui::state::ManagedTogglePickerKind::Mcp => "servers",
-        crate::frontend::tui::state::ManagedTogglePickerKind::Skill => "skills",
-        crate::frontend::tui::state::ManagedTogglePickerKind::Plugin => "plugins",
+        crate::frontend::tui::state::ManagedTogglePickerKind::Mcp => "Servers",
+        crate::frontend::tui::state::ManagedTogglePickerKind::Skill => "Skills",
+        crate::frontend::tui::state::ManagedTogglePickerKind::Plugin => "Plugins",
     };
     let mut lines = vec![
         Line::from(vec![
-            Span::styled(
-                title.to_ascii_lowercase(),
-                Style::default().fg(palette().header),
-            ),
+            Span::styled(title.to_string(), Style::default().fg(palette().header)),
             Span::styled(" · ", Style::default().fg(palette().subtle)),
             Span::styled(
-                format!("{enabled_count}/{} enabled {noun}", picker.items.len()),
+                format!("{enabled_count}/{} Enabled {noun}", picker.items.len()),
                 Style::default().fg(palette().user),
             ),
         ]),
         Line::from(Span::styled(
-            "space toggle · enter toggle · ↑↓ move · home/end jump · esc close",
+            "Space toggle · Enter toggle · ↑↓ move · Home/End jump · Esc close",
             Style::default().fg(palette().subtle),
         )),
         Line::raw(""),
@@ -703,21 +700,23 @@ fn inspector_accent(title: &str) -> Color {
 }
 
 fn value_style(key: &str, value: &str) -> Style {
+    let key = key.to_ascii_lowercase();
+    let value_lower = value.to_ascii_lowercase();
     if key.contains("warning") {
         Style::default().fg(palette().warn)
     } else if key.contains("status") {
-        if value.contains("completed") || value.contains("ready") {
+        if value_lower.contains("completed") || value_lower.contains("ready") {
             Style::default().fg(palette().assistant)
-        } else if value.contains("cancel") || value.contains("failed") {
+        } else if value_lower.contains("cancel") || value_lower.contains("failed") {
             Style::default().fg(palette().error)
         } else {
             Style::default().fg(palette().warn)
         }
     } else if key.contains("action") {
-        if value.contains("sent")
-            || value.contains("cancelled")
-            || value.contains("reattached")
-            || value.contains("started")
+        if value_lower.contains("sent")
+            || value_lower.contains("cancelled")
+            || value_lower.contains("reattached")
+            || value_lower.contains("started")
         {
             Style::default().fg(palette().assistant)
         } else {
@@ -726,9 +725,9 @@ fn value_style(key: &str, value: &str) -> Style {
     } else if key.contains("sandbox") {
         Style::default().fg(palette().user)
     } else if key.contains("dirty") {
-        if value.contains("modified 0")
-            && value.contains("untracked 0")
-            && value.contains("staged 0")
+        if value_lower.contains("modified 0")
+            && value_lower.contains("untracked 0")
+            && value_lower.contains("staged 0")
         {
             Style::default().fg(palette().assistant)
         } else {
@@ -755,11 +754,12 @@ fn value_style(key: &str, value: &str) -> Style {
 }
 
 fn plain_text_style(line: &str) -> Style {
+    let line_lower = line.to_ascii_lowercase();
     if line.starts_with("Use /") {
         Style::default().fg(palette().muted)
-    } else if line.starts_with("warning:") {
+    } else if line_lower.starts_with("warning:") {
         Style::default().fg(palette().warn)
-    } else if line.starts_with("diagnostic:") {
+    } else if line_lower.starts_with("diagnostic:") {
         Style::default().fg(palette().user)
     } else if line.starts_with("No ") || line.starts_with("no ") {
         Style::default().fg(palette().subtle)

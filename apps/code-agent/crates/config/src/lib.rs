@@ -44,6 +44,7 @@ pub struct CodeAgentConfig {
     pub lsp_auto_install: bool,
     pub lsp_install_root: Option<PathBuf>,
     pub disabled_builtin_skills: BTreeSet<String>,
+    pub disabled_tools: BTreeSet<String>,
     pub approval_policy: CodeAgentApprovalPolicyConfig,
     pub display: TuiDisplayConfig,
     pub statusline: StatusLineConfig,
@@ -110,6 +111,7 @@ pub enum ExecApprovalRule {
 struct CodeAgentAppConfig {
     lsp: CodeAgentLspConfig,
     skills: CodeAgentSkillsConfig,
+    tools: CodeAgentToolsConfig,
     approval: CodeAgentApprovalConfig,
     tui: CodeAgentTuiConfig,
 }
@@ -118,6 +120,12 @@ struct CodeAgentAppConfig {
 #[serde(default)]
 struct CodeAgentSkillsConfig {
     disabled_builtin: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct CodeAgentToolsConfig {
+    disabled: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -240,7 +248,8 @@ impl CodeAgentConfig {
                 .install_root
                 .as_deref()
                 .map(|value| resolve_path(workspace_root, value)),
-            disabled_builtin_skills: normalize_skill_name_list(app.skills.disabled_builtin),
+            disabled_builtin_skills: normalize_name_list(app.skills.disabled_builtin),
+            disabled_tools: normalize_name_list(app.tools.disabled),
             approval_policy: normalize_approval_policy(app.approval)?,
             display: app.tui.display,
             statusline: app.tui.statusline,
@@ -350,7 +359,7 @@ fn resolve_path(base_dir: &Path, value: &str) -> PathBuf {
     }
 }
 
-fn normalize_skill_name_list(names: Vec<String>) -> BTreeSet<String> {
+fn normalize_name_list(names: Vec<String>) -> BTreeSet<String> {
     names
         .into_iter()
         .map(|name| name.trim().to_string())

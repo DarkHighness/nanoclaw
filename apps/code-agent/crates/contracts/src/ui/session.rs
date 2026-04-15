@@ -5,7 +5,7 @@ use crate::motion::TuiMotionConfig;
 use crate::statusline::StatusLineConfig;
 use agent::types::{
     AgentHandle, AgentSessionId, AgentStatus, AgentTaskSpec, CheckpointId, CheckpointRestoreRecord,
-    Message, MessageId, SessionEventEnvelope, SessionId, SessionSummaryTokenUsage,
+    Message, MessageId, SessionEventEnvelope, SessionId, SessionSummaryTokenUsage, ToolSpec,
 };
 use std::path::PathBuf;
 use store::{SessionSummary, SessionTokenUsageReport, TokenUsageRecord};
@@ -22,6 +22,8 @@ pub struct SessionStartupSnapshot {
     pub supported_model_reasoning_efforts: Vec<String>,
     pub supports_image_input: bool,
     pub tool_names: Vec<String>,
+    pub tool_specs: Vec<ToolSpec>,
+    pub disabled_tool_names: Vec<String>,
     pub store_label: String,
     pub store_warning: Option<String>,
     pub stored_session_count: usize,

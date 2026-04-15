@@ -100,14 +100,14 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
     push_labeled_badge(
         &mut spans,
         config.model,
-        "model",
+        "Model",
         format_model_label(state),
         Style::default().fg(palette().accent),
     );
     push_labeled_badge(
         &mut spans,
         config.cwd,
-        "workspace",
+        "Workspace",
         state.session.workspace_name.clone(),
         Style::default().fg(palette().text),
     );
@@ -123,7 +123,7 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         push_labeled_badge(
             &mut spans,
             true,
-            "git",
+            "Git",
             format!(
                 "{}@{}",
                 state.session.git.repo_name, state.session.git.branch
@@ -134,14 +134,14 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         push_labeled_badge(
             &mut spans,
             config.repo && state.session.git.available && !state.session.git.repo_name.is_empty(),
-            "repo",
+            "Repo",
             state.session.git.repo_name.clone(),
             Style::default().fg(palette().user),
         );
         push_labeled_badge(
             &mut spans,
             config.branch && state.session.git.available,
-            "branch",
+            "Branch",
             state.session.git.branch.clone(),
             Style::default().fg(palette().muted),
         );
@@ -152,7 +152,7 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
             StatusLineContextWindowStyle::Summary => push_labeled_badge(
                 &mut spans,
                 true,
-                "ctx",
+                "Context",
                 format_context_window_label(state),
                 Style::default().fg(context_window_color(state)),
             ),
@@ -164,9 +164,9 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         push_labeled_badge(
             &mut spans,
             true,
-            "tokens",
+            "Tokens",
             format!(
-                "in {} · out {}",
+                "In {} · Out {}",
                 compact_input_usage(state.session.token_ledger.cumulative_usage),
                 compact_output_usage(state.session.token_ledger.cumulative_usage)
             ),
@@ -176,14 +176,14 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
         push_labeled_badge(
             &mut spans,
             config.input_tokens,
-            "in",
+            "Input",
             compact_input_usage(state.session.token_ledger.cumulative_usage),
             Style::default().fg(palette().muted),
         );
         push_labeled_badge(
             &mut spans,
             config.output_tokens,
-            "out",
+            "Output",
             compact_output_usage(state.session.token_ledger.cumulative_usage),
             Style::default().fg(palette().muted),
         );
@@ -192,21 +192,21 @@ pub(super) fn format_footer_context(state: &TuiState) -> Line<'static> {
     push_labeled_badge(
         &mut spans,
         config.queue && state.session.queued_commands > 0,
-        "queue",
+        "Queue",
         state.session.queued_commands.to_string(),
         Style::default().fg(palette().warn),
     );
     push_labeled_badge(
         &mut spans,
         config.session,
-        "sid",
+        "Session",
         state.session.active_session_ref.clone(),
         Style::default().fg(palette().muted),
     );
     push_labeled_badge(
         &mut spans,
         config.clock,
-        "clock",
+        "Clock",
         Local::now().format("%H:%M").to_string(),
         Style::default().fg(palette().muted),
     );
@@ -234,7 +234,7 @@ pub(super) fn format_toast_line(state: &TuiState) -> Line<'static> {
             Style::default().fg(tone_color).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled("notice", Style::default().fg(tone_color)),
+        Span::styled("Notice", Style::default().fg(tone_color)),
         Span::styled(" · ", Style::default().fg(palette().subtle)),
         Span::styled(
             preview_text(&toast.message, 120),
@@ -421,9 +421,9 @@ fn format_context_left_label(state: &TuiState) -> String {
             let used = window.used_tokens.min(window.max_tokens);
             let left = 100_u64
                 .saturating_sub((used as u64).saturating_mul(100) / window.max_tokens as u64);
-            format!("{left}% context left")
+            format!("{left}% Context left")
         }
-        Some(_) | None => "context left --".to_string(),
+        Some(_) | None => "Context left --".to_string(),
     }
 }
 

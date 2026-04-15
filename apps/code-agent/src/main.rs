@@ -2,6 +2,7 @@ mod management_tui;
 
 use agent::AgentWorkspaceLayout;
 use agent::runtime::{HostRuntimeLimits, build_host_tokio_runtime};
+use agent::types::{ToolOrigin, ToolSource, ToolSpec};
 use agent_env::EnvMap;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -22,6 +23,7 @@ use code_agent_config::{
     filter_unavailable_builtin_mcp_servers, list_core_mcp_servers, list_managed_plugin_details,
     list_managed_skill_details, load_managed_plugin_detail, load_managed_skill_detail,
     set_core_mcp_server_enabled, set_managed_plugin_enabled, set_managed_skill_enabled,
+    set_tool_enabled,
 };
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
@@ -29,7 +31,7 @@ use code_agent_tui::{
 };
 use management_tui::{ManagementSurfaceKind, run_management_tui};
 use nanoclaw_config::CoreConfig;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -217,6 +219,26 @@ struct ToolCommandArgs {
 enum ToolSubcommand {
     /// List tools available for the current runtime startup.
     List(ManagementOutputArgs),
+    /// Inspect one tool from the current startup catalog.
+    Show(ToolShowArgs),
+    /// Re-enable a previously disabled tool name.
+    Enable(ToolNamedArgs),
+    /// Disable a tool name for future startups.
+    Disable(ToolNamedArgs),
+}
+
+#[derive(Debug, Args)]
+struct ToolNamedArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
+}
+
+#[derive(Debug, Args)]
+struct ToolShowArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[command(flatten)]
+    output: ManagementOutputArgs,
 }
 
 #[derive(Debug, Args)]
@@ -407,6 +429,7 @@ enum LaunchMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ManagementCommand {
     Mcp(McpManagementCommand),
+    Tool(ToolManagementCommand),
     Skill(SkillManagementCommand),
     Plugin(PluginManagementCommand),
 }
@@ -430,6 +453,11 @@ enum McpManagementCommand {
         name: String,
         enabled: bool,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ToolManagementCommand {
+    SetEnabled { name: String, enabled: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -516,7 +544,13 @@ enum LiveInspectCommand {
     Diagnostics,
     Prompts,
     Resources,
-    Tools { style: ManagementOutputStyle },
+    ToolList {
+        style: ManagementOutputStyle,
+    },
+    ToolShow {
+        name: String,
+        style: ManagementOutputStyle,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -622,6 +656,9 @@ impl Cli {
             Some(CliCommand::Mcp(command)) => {
                 Ok(command.management_command()?.map(ManagementCommand::Mcp))
             }
+            Some(CliCommand::Tool(command)) => {
+                Ok(command.management_command().map(ManagementCommand::Tool))
+            }
             Some(CliCommand::Skill(command)) => {
                 Ok(Some(ManagementCommand::Skill(command.management_command())))
             }
@@ -642,8 +679,7 @@ impl Cli {
                 | CliCommand::Import(_)
                 | CliCommand::Manage(_)
                 | CliCommand::ExportSession(_)
-                | CliCommand::ExportTranscript(_)
-                | CliCommand::Tool(_),
+                | CliCommand::ExportTranscript(_),
             )
             | None => Ok(None),
         }
@@ -762,7 +798,7 @@ impl Cli {
     fn live_inspect_command(&self) -> Option<LiveInspectCommand> {
         match &self.command {
             Some(CliCommand::Mcp(command)) => command.live_inspect_command(),
-            Some(CliCommand::Tool(command)) => Some(command.live_inspect_command()),
+            Some(CliCommand::Tool(command)) => command.live_inspect_command(),
             Some(
                 CliCommand::Exec(_)
                 | CliCommand::Resume(_)
@@ -855,11 +891,30 @@ impl McpCommandArgs {
 }
 
 impl ToolCommandArgs {
-    fn live_inspect_command(&self) -> LiveInspectCommand {
+    fn management_command(&self) -> Option<ToolManagementCommand> {
         match &self.command {
-            ToolSubcommand::List(output) => LiveInspectCommand::Tools {
+            ToolSubcommand::Enable(command) => Some(ToolManagementCommand::SetEnabled {
+                name: command.name.clone(),
+                enabled: true,
+            }),
+            ToolSubcommand::Disable(command) => Some(ToolManagementCommand::SetEnabled {
+                name: command.name.clone(),
+                enabled: false,
+            }),
+            ToolSubcommand::List(_) | ToolSubcommand::Show(_) => None,
+        }
+    }
+
+    fn live_inspect_command(&self) -> Option<LiveInspectCommand> {
+        match &self.command {
+            ToolSubcommand::List(output) => Some(LiveInspectCommand::ToolList {
                 style: output.style,
-            },
+            }),
+            ToolSubcommand::Show(command) => Some(LiveInspectCommand::ToolShow {
+                name: command.name.clone(),
+                style: command.output.style,
+            }),
+            ToolSubcommand::Enable(_) | ToolSubcommand::Disable(_) => None,
         }
     }
 }
@@ -1242,6 +1297,18 @@ async fn run_management_command(workspace_root: PathBuf, command: ManagementComm
                 )?;
             }
         },
+        ManagementCommand::Tool(command) => match command {
+            ToolManagementCommand::SetEnabled { name, enabled } => {
+                let path = set_tool_enabled(&workspace_root, &name, enabled)?;
+                write_tool_management_artifact(
+                    &mut stdout,
+                    if enabled { "Enabled" } else { "Disabled" },
+                    &name,
+                    &path,
+                    enabled,
+                )?;
+            }
+        },
         ManagementCommand::Skill(command) => match command {
             SkillManagementCommand::List { style } => {
                 let skills = list_managed_skill_details(&workspace_root).await?;
@@ -1410,9 +1477,24 @@ async fn run_live_inspection_command(
             let resources = session.list_mcp_resources().await;
             write_mcp_resource_summaries(&mut stdout, &resources)?;
         }
-        LiveInspectCommand::Tools { style } => {
+        LiveInspectCommand::ToolList { style } => {
             let startup = session.startup_snapshot();
-            write_tool_summaries(&mut stdout, &startup.tool_names, style)?;
+            write_tool_summaries(
+                &mut stdout,
+                &startup.tool_specs,
+                &startup.disabled_tool_names,
+                style,
+            )?;
+        }
+        LiveInspectCommand::ToolShow { name, style } => {
+            let startup = session.startup_snapshot();
+            write_tool_details(
+                &mut stdout,
+                &name,
+                &startup.tool_specs,
+                &startup.disabled_tool_names,
+                style,
+            )?;
         }
     }
     stdout.flush()?;
@@ -1642,23 +1724,41 @@ fn write_session_summaries(
     sessions: &[PersistedSessionSummary],
 ) -> io::Result<()> {
     if sessions.is_empty() {
-        writeln!(writer, "No persisted sessions found.")?;
-        return Ok(());
-    }
-
-    for (index, summary) in sessions.iter().enumerate() {
-        if index > 0 {
-            writeln!(writer)?;
-        }
-        writeln!(
+        return write_titled_note_box(
             writer,
-            "{}  {}",
-            summary.session_ref,
-            session_title_or_prompt(summary)
-        )?;
-        writeln!(writer, "  {}", format_session_counts(summary))?;
+            "Sessions · 0",
+            "No persisted sessions found.",
+            Some("Next"),
+            &[format!(
+                "Inspect: {} session <session-ref>",
+                current_program_name()
+            )],
+        );
     }
-    Ok(())
+    let rows = sessions
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| {
+            vec![
+                (index + 1).to_string(),
+                summary.session_ref.clone(),
+                session_title_or_prompt(summary).to_string(),
+                format_session_counts(summary),
+            ]
+        })
+        .collect::<Vec<_>>();
+    write_titled_grid_table(
+        writer,
+        format!("Sessions · {}", rows.len()).as_str(),
+        &["#", "Session", "Title / Prompt", "Activity"],
+        &rows,
+        &[4, 28, 40, 64],
+        Some("Next"),
+        &[format!(
+            "Inspect: {} session <session-ref>",
+            current_program_name()
+        )],
+    )
 }
 
 fn write_session_search_results(
@@ -1666,31 +1766,50 @@ fn write_session_search_results(
     matches: &[PersistedSessionSearchMatch],
 ) -> io::Result<()> {
     if matches.is_empty() {
-        writeln!(writer, "No persisted sessions matched.")?;
-        return Ok(());
-    }
-
-    for (index, entry) in matches.iter().enumerate() {
-        if index > 0 {
-            writeln!(writer)?;
-        }
-        writeln!(
+        return write_titled_note_box(
             writer,
-            "{}  {}",
-            entry.summary.session_ref,
-            session_title_or_prompt(&entry.summary)
-        )?;
-        writeln!(
-            writer,
-            "  {} · {} matched events",
-            format_session_counts(&entry.summary),
-            entry.matched_event_count,
-        )?;
-        for preview in &entry.preview_matches {
-            writeln!(writer, "  match: {preview}")?;
-        }
+            "Session Matches · 0",
+            "No persisted sessions matched.",
+            Some("Next"),
+            &[format!(
+                "Search: {} sessions <query>",
+                current_program_name()
+            )],
+        );
     }
-    Ok(())
+    let rows = matches
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            vec![
+                (index + 1).to_string(),
+                entry.summary.session_ref.clone(),
+                session_title_or_prompt(&entry.summary).to_string(),
+                format!(
+                    "{} · {} matched events",
+                    format_session_counts(&entry.summary),
+                    entry.matched_event_count,
+                ),
+                if entry.preview_matches.is_empty() {
+                    "-".to_string()
+                } else {
+                    entry.preview_matches.join(" | ")
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    write_titled_grid_table(
+        writer,
+        format!("Session Matches · {}", rows.len()).as_str(),
+        &["#", "Session", "Title / Prompt", "Activity", "Preview"],
+        &rows,
+        &[4, 28, 32, 48, 56],
+        Some("Next"),
+        &[format!(
+            "Inspect: {} session <session-ref>",
+            current_program_name()
+        )],
+    )
 }
 
 fn write_agent_session_summaries(
@@ -1698,50 +1817,95 @@ fn write_agent_session_summaries(
     agent_sessions: &[PersistedAgentSessionSummary],
 ) -> io::Result<()> {
     if agent_sessions.is_empty() {
-        writeln!(writer, "No persisted agent sessions found.")?;
-        return Ok(());
-    }
-
-    for (index, summary) in agent_sessions.iter().enumerate() {
-        if index > 0 {
-            writeln!(writer)?;
-        }
-        writeln!(
+        return write_titled_note_box(
             writer,
-            "{}  {}",
-            summary.agent_session_ref,
-            format_agent_session_heading(summary)
-        )?;
-        writeln!(
-            writer,
-            "  session={} · {} messages · {} events · resume={}",
-            summary.session_ref,
-            format_token_count(summary.transcript_message_count as u64),
-            format_token_count(summary.event_count as u64),
-            summary.resume_support.label(),
-        )?;
+            "Agent Sessions · 0",
+            "No persisted agent sessions found.",
+            Some("Next"),
+            &[format!(
+                "Inspect: {} agent-session <agent-session-ref>",
+                current_program_name()
+            )],
+        );
     }
-    Ok(())
+    let rows = agent_sessions
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| {
+            vec![
+                (index + 1).to_string(),
+                summary.agent_session_ref.clone(),
+                summary.session_ref.clone(),
+                format_agent_session_heading(summary),
+                summary.resume_support.label().to_string(),
+                format!(
+                    "{} messages · {} events",
+                    format_token_count(summary.transcript_message_count as u64),
+                    format_token_count(summary.event_count as u64),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    write_titled_grid_table(
+        writer,
+        format!("Agent Sessions · {}", rows.len()).as_str(),
+        &[
+            "#",
+            "Agent Session",
+            "Session",
+            "Label",
+            "Resume",
+            "Activity",
+        ],
+        &rows,
+        &[4, 28, 28, 28, 14, 32],
+        Some("Next"),
+        &[format!(
+            "Inspect: {} agent-session <agent-session-ref>",
+            current_program_name()
+        )],
+    )
 }
 
 fn write_task_summaries(writer: &mut impl Write, tasks: &[PersistedTaskSummary]) -> io::Result<()> {
     if tasks.is_empty() {
-        writeln!(writer, "No persisted tasks found.")?;
-        return Ok(());
-    }
-
-    for (index, summary) in tasks.iter().enumerate() {
-        if index > 0 {
-            writeln!(writer)?;
-        }
-        writeln!(writer, "{}  {}", summary.task_id, summary.summary)?;
-        writeln!(
+        return write_titled_note_box(
             writer,
-            "  session={} · role={} · status={} · origin={}",
-            summary.session_ref, summary.role, summary.status, summary.origin,
-        )?;
+            "Tasks · 0",
+            "No persisted tasks found.",
+            Some("Next"),
+            &[format!(
+                "Inspect: {} task <task-id>",
+                current_program_name()
+            )],
+        );
     }
-    Ok(())
+    let rows = tasks
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| {
+            vec![
+                (index + 1).to_string(),
+                summary.task_id.to_string(),
+                summary.summary.clone(),
+                summary.status.to_string(),
+                summary.role.to_string(),
+                summary.session_ref.clone(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    write_titled_grid_table(
+        writer,
+        format!("Tasks · {}", rows.len()).as_str(),
+        &["#", "Task", "Summary", "Status", "Role", "Session"],
+        &rows,
+        &[4, 24, 42, 14, 18, 24],
+        Some("Next"),
+        &[format!(
+            "Inspect: {} task <task-id>",
+            current_program_name()
+        )],
+    )
 }
 
 fn write_loaded_session_details(
@@ -1749,69 +1913,75 @@ fn write_loaded_session_details(
     summary: &PersistedSessionSummary,
     loaded: &LoadedSession,
 ) -> io::Result<()> {
-    writeln!(writer, "Session")?;
-    writeln!(writer, "  ref: {}", summary.session_ref)?;
-    if let Some(session_title) = summary.session_title.as_deref() {
-        writeln!(writer, "  title: {session_title}")?;
-    }
-    if let Some(prompt) = summary.last_user_prompt.as_deref() {
-        writeln!(writer, "  last prompt: {prompt}")?;
-    }
-    writeln!(writer, "  {}", format_session_counts(summary))?;
+    let mut overview = vec![
+        ("Ref".to_string(), summary.session_ref.clone()),
+        (
+            "Title / Prompt".to_string(),
+            session_title_or_prompt(summary).to_string(),
+        ),
+        ("Activity".to_string(), format_session_counts(summary)),
+    ];
     if let Some(window) = loaded
         .token_usage
         .session
         .as_ref()
         .and_then(|session_usage| session_usage.ledger.context_window)
     {
-        writeln!(
-            writer,
-            "  context: {} / {}",
-            format_token_count(window.used_tokens as u64),
-            format_token_count(window.max_tokens as u64),
-        )?;
+        overview.push((
+            "Context".to_string(),
+            format!(
+                "{} / {}",
+                format_token_count(window.used_tokens as u64),
+                format_token_count(window.max_tokens as u64),
+            ),
+        ));
     }
     if !loaded.token_usage.aggregate_usage.is_zero() {
         let usage = loaded.token_usage.aggregate_usage;
-        writeln!(
-            writer,
-            "  total tokens: in={} out={} prefill={} decode={} cache={}{}",
-            format_token_count(usage.input_tokens),
-            format_token_count(usage.output_tokens),
-            format_token_count(usage.uncached_input_tokens()),
-            format_token_count(usage.visible_decode_tokens()),
-            format_token_count(usage.cache_read_tokens),
-            format_reasoning_field_suffix(usage.reasoning_tokens),
-        )?;
+        overview.push((
+            "Tokens".to_string(),
+            format!(
+                "in={} out={} prefill={} decode={} cache={}{}",
+                format_token_count(usage.input_tokens),
+                format_token_count(usage.output_tokens),
+                format_token_count(usage.uncached_input_tokens()),
+                format_token_count(usage.visible_decode_tokens()),
+                format_token_count(usage.cache_read_tokens),
+                format_reasoning_field_suffix(usage.reasoning_tokens),
+            ),
+        ));
     }
     if !loaded.agent_session_ids.is_empty() {
-        writeln!(
-            writer,
-            "  runtime sessions: {}",
+        overview.push((
+            "Runtime Sessions".to_string(),
             loaded
                 .agent_session_ids
                 .iter()
                 .map(|agent_session_id| agent_session_id.as_str().to_string())
                 .collect::<Vec<_>>()
-                .join(", ")
-        )?;
+                .join(", "),
+        ));
     }
-    if loaded.transcript.is_empty() {
-        writeln!(writer)?;
-        writeln!(writer, "Transcript")?;
-        writeln!(writer, "  <empty>")?;
-        return Ok(());
-    }
-
-    writeln!(writer)?;
-    writeln!(writer, "Transcript")?;
-    for (index, message) in loaded.transcript.iter().enumerate() {
-        if index > 0 {
-            writeln!(writer)?;
-        }
-        writeln!(writer, "{}", message_to_text(message))?;
-    }
-    Ok(())
+    let mut sections = vec![("Overview".to_string(), overview)];
+    sections.push((
+        "Transcript".to_string(),
+        if loaded.transcript.is_empty() {
+            vec![("1".to_string(), "<empty>".to_string())]
+        } else {
+            loaded
+                .transcript
+                .iter()
+                .enumerate()
+                .map(|(index, message)| ((index + 1).to_string(), message_to_text(message)))
+                .collect()
+        },
+    ));
+    write_sectioned_key_value_table(
+        writer,
+        format!("Session · {}", summary.session_ref).as_str(),
+        &sections,
+        [18, 92],
+    )
 }
 
 fn write_loaded_agent_session_details(
@@ -1819,158 +1989,203 @@ fn write_loaded_agent_session_details(
     loaded: &LoadedAgentSession,
 ) -> io::Result<()> {
     let summary = &loaded.summary;
-    writeln!(writer, "Agent Session")?;
-    writeln!(writer, "  ref: {}", summary.agent_session_ref)?;
-    writeln!(writer, "  session: {}", summary.session_ref)?;
-    writeln!(writer, "  label: {}", summary.label)?;
-    writeln!(writer, "  resume: {}", summary.resume_support.label())?;
+    let mut overview = vec![
+        ("Ref".to_string(), summary.agent_session_ref.clone()),
+        ("Session".to_string(), summary.session_ref.clone()),
+        ("Label".to_string(), summary.label.clone()),
+        (
+            "Resume".to_string(),
+            summary.resume_support.label().to_string(),
+        ),
+        (
+            "Activity".to_string(),
+            format!(
+                "{} messages · {} events",
+                format_token_count(summary.transcript_message_count as u64),
+                format_token_count(summary.event_count as u64),
+            ),
+        ),
+    ];
     if let Some(session_title) = summary.session_title.as_deref() {
-        writeln!(writer, "  session title: {session_title}")?;
+        overview.push(("Session Title".to_string(), session_title.to_string()));
     }
     if let Some(prompt) = summary.last_user_prompt.as_deref() {
-        writeln!(writer, "  last prompt: {prompt}")?;
+        overview.push(("Last Prompt".to_string(), prompt.to_string()));
     }
-    writeln!(
-        writer,
-        "  counts: {} messages · {} events",
-        format_token_count(summary.transcript_message_count as u64),
-        format_token_count(summary.event_count as u64),
-    )?;
     if let Some(token_usage) = &loaded.token_usage {
         if let Some(window) = token_usage.ledger.context_window {
-            writeln!(
-                writer,
-                "  context: {} / {}",
-                format_token_count(window.used_tokens as u64),
-                format_token_count(window.max_tokens as u64),
-            )?;
+            overview.push((
+                "Context".to_string(),
+                format!(
+                    "{} / {}",
+                    format_token_count(window.used_tokens as u64),
+                    format_token_count(window.max_tokens as u64),
+                ),
+            ));
         }
-        writeln!(
-            writer,
-            "  tokens: in={} out={} cache={}{}",
-            format_token_count(token_usage.ledger.cumulative_usage.input_tokens),
-            format_token_count(token_usage.ledger.cumulative_usage.output_tokens),
-            format_token_count(token_usage.ledger.cumulative_usage.cache_read_tokens),
-            format_reasoning_field_suffix(token_usage.ledger.cumulative_usage.reasoning_tokens),
-        )?;
+        overview.push((
+            "Tokens".to_string(),
+            format!(
+                "in={} out={} cache={}{}",
+                format_token_count(token_usage.ledger.cumulative_usage.input_tokens),
+                format_token_count(token_usage.ledger.cumulative_usage.output_tokens),
+                format_token_count(token_usage.ledger.cumulative_usage.cache_read_tokens),
+                format_reasoning_field_suffix(token_usage.ledger.cumulative_usage.reasoning_tokens),
+            ),
+        ));
     }
+    let mut sections = vec![("Overview".to_string(), overview)];
     if !loaded.subagents.is_empty() {
-        writeln!(writer)?;
-        writeln!(writer, "Spawned Subagents")?;
-        for subagent in &loaded.subagents {
-            writeln!(
-                writer,
-                "  {} role={} status={} summary={}",
-                subagent.handle.agent_session_id,
-                subagent.task.role,
-                subagent.status,
-                subagent.summary,
-            )?;
-        }
+        sections.push((
+            "Spawned Subagents".to_string(),
+            loaded
+                .subagents
+                .iter()
+                .map(|subagent| {
+                    (
+                        subagent.handle.agent_session_id.to_string(),
+                        format!(
+                            "role={} · status={} · summary={}",
+                            subagent.task.role, subagent.status, subagent.summary
+                        ),
+                    )
+                })
+                .collect(),
+        ));
     }
-    if loaded.transcript.is_empty() {
-        writeln!(writer)?;
-        writeln!(writer, "Transcript")?;
-        writeln!(writer, "  <empty>")?;
-        return Ok(());
-    }
-
-    writeln!(writer)?;
-    writeln!(writer, "Transcript")?;
-    for (index, message) in loaded.transcript.iter().enumerate() {
-        if index > 0 {
-            writeln!(writer)?;
-        }
-        writeln!(writer, "{}", message_to_text(message))?;
-    }
-    Ok(())
+    sections.push((
+        "Transcript".to_string(),
+        if loaded.transcript.is_empty() {
+            vec![("1".to_string(), "<empty>".to_string())]
+        } else {
+            loaded
+                .transcript
+                .iter()
+                .enumerate()
+                .map(|(index, message)| ((index + 1).to_string(), message_to_text(message)))
+                .collect()
+        },
+    ));
+    write_sectioned_key_value_table(
+        writer,
+        format!("Agent Session · {}", summary.agent_session_ref).as_str(),
+        &sections,
+        [20, 92],
+    )
 }
 
 fn write_loaded_task_details(writer: &mut impl Write, loaded: &LoadedTask) -> io::Result<()> {
     let summary = &loaded.summary;
-    writeln!(writer, "Task")?;
-    writeln!(writer, "  id: {}", summary.task_id)?;
-    writeln!(writer, "  session: {}", summary.session_ref)?;
-    writeln!(
-        writer,
-        "  parent agent session: {}",
-        summary.parent_agent_session_ref
-    )?;
-    writeln!(writer, "  role: {}", summary.role)?;
-    writeln!(writer, "  origin: {}", summary.origin)?;
-    writeln!(writer, "  status: {}", summary.status)?;
-    writeln!(writer, "  summary: {}", summary.summary)?;
-    writeln!(writer, "  prompt: {}", loaded.spec.prompt)?;
+    let mut overview = vec![
+        ("ID".to_string(), summary.task_id.to_string()),
+        ("Session".to_string(), summary.session_ref.clone()),
+        (
+            "Parent Agent Session".to_string(),
+            summary.parent_agent_session_ref.clone(),
+        ),
+        ("Role".to_string(), summary.role.to_string()),
+        ("Origin".to_string(), summary.origin.to_string()),
+        ("Status".to_string(), summary.status.to_string()),
+        ("Summary".to_string(), summary.summary.clone()),
+        ("Prompt".to_string(), loaded.spec.prompt.clone()),
+    ];
     if let Some(steer) = loaded.spec.steer.as_deref() {
-        writeln!(writer, "  steer: {steer}")?;
+        overview.push(("Steer".to_string(), steer.to_string()));
     }
     if let Some(child_session_ref) = summary.child_session_ref.as_deref() {
-        writeln!(writer, "  child session: {child_session_ref}")?;
+        overview.push(("Child Session".to_string(), child_session_ref.to_string()));
     }
     if let Some(child_agent_session_ref) = summary.child_agent_session_ref.as_deref() {
-        writeln!(writer, "  child agent session: {child_agent_session_ref}")?;
+        overview.push((
+            "Child Agent Session".to_string(),
+            child_agent_session_ref.to_string(),
+        ));
     }
     if let Some(token_usage) = &loaded.token_usage {
         if let Some(window) = token_usage.ledger.context_window {
-            writeln!(
-                writer,
-                "  context: {} / {}",
-                format_token_count(window.used_tokens as u64),
-                format_token_count(window.max_tokens as u64),
-            )?;
+            overview.push((
+                "Context".to_string(),
+                format!(
+                    "{} / {}",
+                    format_token_count(window.used_tokens as u64),
+                    format_token_count(window.max_tokens as u64),
+                ),
+            ));
         }
-        writeln!(
-            writer,
-            "  tokens: in={} out={} cache={}{}",
-            format_token_count(token_usage.ledger.cumulative_usage.input_tokens),
-            format_token_count(token_usage.ledger.cumulative_usage.output_tokens),
-            format_token_count(token_usage.ledger.cumulative_usage.cache_read_tokens),
-            format_reasoning_field_suffix(token_usage.ledger.cumulative_usage.reasoning_tokens),
-        )?;
+        overview.push((
+            "Tokens".to_string(),
+            format!(
+                "in={} out={} cache={}{}",
+                format_token_count(token_usage.ledger.cumulative_usage.input_tokens),
+                format_token_count(token_usage.ledger.cumulative_usage.output_tokens),
+                format_token_count(token_usage.ledger.cumulative_usage.cache_read_tokens),
+                format_reasoning_field_suffix(token_usage.ledger.cumulative_usage.reasoning_tokens),
+            ),
+        ));
     }
+    let mut sections = vec![("Overview".to_string(), overview)];
     if let Some(result) = &loaded.result {
-        writeln!(writer)?;
-        writeln!(writer, "Result")?;
-        writeln!(writer, "  status: {}", result.status)?;
-        writeln!(writer, "  summary: {}", result.summary)?;
+        let mut result_rows = vec![
+            ("Status".to_string(), result.status.to_string()),
+            ("Summary".to_string(), result.summary.clone()),
+        ];
         if !result.claimed_files.is_empty() {
-            writeln!(
-                writer,
-                "  claimed files: {}",
-                result.claimed_files.join(", ")
-            )?;
+            result_rows.push(("Claimed Files".to_string(), result.claimed_files.join(", ")));
         }
+        sections.push(("Result".to_string(), result_rows));
     }
     if let Some(error) = loaded.error.as_deref() {
-        writeln!(writer)?;
-        writeln!(writer, "Error")?;
-        writeln!(writer, "  {error}")?;
+        sections.push((
+            "Error".to_string(),
+            vec![("Message".to_string(), error.to_string())],
+        ));
     }
     if !loaded.artifacts.is_empty() {
-        writeln!(writer)?;
-        writeln!(writer, "Artifacts")?;
-        for artifact in &loaded.artifacts {
-            writeln!(writer, "  {} {}", artifact.kind, artifact.uri)?;
-        }
+        sections.push((
+            "Artifacts".to_string(),
+            loaded
+                .artifacts
+                .iter()
+                .enumerate()
+                .map(|(index, artifact)| {
+                    (
+                        (index + 1).to_string(),
+                        format!("{} {}", artifact.kind, artifact.uri),
+                    )
+                })
+                .collect(),
+        ));
     }
     if !loaded.messages.is_empty() {
-        writeln!(writer)?;
-        writeln!(writer, "Agent Messages")?;
-        for message in &loaded.messages {
-            writeln!(writer, "{}", message_to_text(&message.message))?;
-        }
+        sections.push((
+            "Agent Messages".to_string(),
+            loaded
+                .messages
+                .iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    ((index + 1).to_string(), message_to_text(&message.message))
+                })
+                .collect(),
+        ));
     }
     if !loaded.child_transcript.is_empty() {
-        writeln!(writer)?;
-        writeln!(writer, "Child Transcript")?;
-        for (index, message) in loaded.child_transcript.iter().enumerate() {
-            if index > 0 {
-                writeln!(writer)?;
-            }
-            writeln!(writer, "{}", message_to_text(message))?;
-        }
+        sections.push((
+            "Child Transcript".to_string(),
+            loaded
+                .child_transcript
+                .iter()
+                .enumerate()
+                .map(|(index, message)| ((index + 1).to_string(), message_to_text(message)))
+                .collect(),
+        ));
     }
-    Ok(())
+    write_sectioned_key_value_table(
+        writer,
+        format!("Task · {}", summary.task_id).as_str(),
+        &sections,
+        [20, 92],
+    )
 }
 
 fn write_mcp_server_summaries(
@@ -2686,50 +2901,370 @@ fn write_managed_plugin_details(
     }
 }
 
+#[derive(Clone)]
+struct ToolCatalogEntry {
+    name: String,
+    enabled: bool,
+    spec: Option<ToolSpec>,
+}
+
+fn collect_tool_catalog_entries(
+    tool_specs: &[ToolSpec],
+    disabled_tool_names: &[String],
+) -> Vec<ToolCatalogEntry> {
+    let disabled = disabled_tool_names
+        .iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut entries = BTreeMap::new();
+    for spec in tool_specs {
+        entries.insert(
+            spec.name.to_string(),
+            ToolCatalogEntry {
+                name: spec.name.to_string(),
+                enabled: !disabled.contains(spec.name.as_str()),
+                spec: Some(spec.clone()),
+            },
+        );
+    }
+    for name in disabled {
+        entries.entry(name.clone()).or_insert(ToolCatalogEntry {
+            name,
+            enabled: false,
+            spec: None,
+        });
+    }
+    entries.into_values().collect()
+}
+
+fn resolve_tool_catalog_entry<'a>(
+    entries: &'a [ToolCatalogEntry],
+    name: &str,
+) -> Option<&'a ToolCatalogEntry> {
+    entries.iter().find(|entry| {
+        entry.name == name
+            || entry
+                .spec
+                .as_ref()
+                .is_some_and(|spec| spec.aliases.iter().any(|alias| alias.as_str() == name))
+    })
+}
+
 fn write_tool_summaries(
     writer: &mut impl Write,
-    tool_names: &[String],
+    tool_specs: &[ToolSpec],
+    disabled_tool_names: &[String],
     style: ManagementOutputStyle,
 ) -> io::Result<()> {
-    let mut tool_names = tool_names.to_vec();
-    tool_names.sort();
-    tool_names.dedup();
+    let entries = collect_tool_catalog_entries(tool_specs, disabled_tool_names);
     match style {
         ManagementOutputStyle::Table => {
-            if tool_names.is_empty() {
+            if entries.is_empty() {
                 return write_titled_note_box(
                     writer,
-                    format!("Tools · {}", tool_names.len()).as_str(),
+                    "Tools · 0",
                     "No tools available for the current startup.",
-                    None,
-                    &[],
+                    Some("Next"),
+                    &[format!(
+                        "Inspect: {} tool show <name>",
+                        current_program_name()
+                    )],
                 );
             }
 
-            let rows = tool_names
+            let rows = entries
                 .iter()
                 .enumerate()
-                .map(|(index, name)| vec![(index + 1).to_string(), name.clone()])
+                .map(|(index, entry)| {
+                    vec![
+                        (index + 1).to_string(),
+                        entry.name.clone(),
+                        status_label(entry.enabled).to_string(),
+                        entry
+                            .spec
+                            .as_ref()
+                            .map_or("-".to_string(), |spec| tool_kind_label(spec).to_string()),
+                        entry
+                            .spec
+                            .as_ref()
+                            .map_or("config".to_string(), |spec| tool_source_label(spec)),
+                        entry
+                            .spec
+                            .as_ref()
+                            .map_or("unresolved".to_string(), |spec| tool_origin_label(spec)),
+                        entry.spec.as_ref().map_or_else(
+                            || {
+                                "Configured as disabled but missing from the current startup catalog."
+                                    .to_string()
+                            },
+                            |spec| spec.description.clone(),
+                        ),
+                    ]
+                })
                 .collect::<Vec<_>>();
             write_titled_grid_table(
                 writer,
                 format!("Tools · {}", rows.len()).as_str(),
-                &["#", "Name"],
+                &[
+                    "#",
+                    "Name",
+                    "State",
+                    "Kind",
+                    "Source",
+                    "Origin",
+                    "Description",
+                ],
                 &rows,
-                &[4, 88],
-                None,
-                &[],
+                &[4, 26, 10, 10, 14, 14, 64],
+                Some("Next"),
+                &[
+                    format!("Inspect: {} tool show <name>", current_program_name()),
+                    format!("Disable: {} tool disable <name>", current_program_name()),
+                ],
             )
         }
         ManagementOutputStyle::Plain => {
-            write_plain_collection_header(writer, "Tools", tool_names.len())?;
-            if tool_names.is_empty() {
+            write_plain_collection_header(writer, "Tools", entries.len())?;
+            if entries.is_empty() {
                 writeln!(writer, "No tools available for the current startup.")?;
                 return Ok(());
             }
-            for (index, name) in tool_names.iter().enumerate() {
-                writeln!(writer, "{}. {}", index + 1, name)?;
+            for (index, entry) in entries.iter().enumerate() {
+                if index > 0 {
+                    writeln!(writer)?;
+                }
+                let badge = entry
+                    .spec
+                    .as_ref()
+                    .map_or("config".to_string(), tool_source_label);
+                write_plain_summary_item_header(
+                    writer,
+                    index + 1,
+                    &entry.name,
+                    status_label(entry.enabled),
+                    badge,
+                )?;
+                if let Some(spec) = &entry.spec {
+                    write_plain_summary_field(writer, "kind", tool_kind_label(spec))?;
+                    write_plain_summary_field(writer, "origin", tool_origin_label(spec))?;
+                    write_plain_summary_field(writer, "description", &spec.description)?;
+                } else {
+                    write_plain_summary_field(
+                        writer,
+                        "status",
+                        "configured as disabled but unresolved in the current startup catalog",
+                    )?;
+                }
+                write_plain_summary_field(
+                    writer,
+                    "inspect",
+                    format!("{} tool show {}", current_program_name(), entry.name),
+                )?;
             }
+            Ok(())
+        }
+    }
+}
+
+fn write_tool_details(
+    writer: &mut impl Write,
+    name: &str,
+    tool_specs: &[ToolSpec],
+    disabled_tool_names: &[String],
+    style: ManagementOutputStyle,
+) -> io::Result<()> {
+    let entries = collect_tool_catalog_entries(tool_specs, disabled_tool_names);
+    let entry = resolve_tool_catalog_entry(&entries, name)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("unknown tool `{name}`")))?;
+    match style {
+        ManagementOutputStyle::Table => {
+            let mut sections = vec![(
+                "Overview".to_string(),
+                vec![
+                    ("Name".to_string(), entry.name.clone()),
+                    ("State".to_string(), status_label(entry.enabled).to_string()),
+                ],
+            )];
+            if let Some(spec) = &entry.spec {
+                sections[0].1.extend([
+                    ("Kind".to_string(), tool_kind_label(spec).to_string()),
+                    ("Source".to_string(), tool_source_label(spec)),
+                    ("Origin".to_string(), tool_origin_label(spec)),
+                    ("Description".to_string(), spec.description.clone()),
+                ]);
+                if !spec.aliases.is_empty() {
+                    sections.push((
+                        "Aliases".to_string(),
+                        vec![(
+                            "Names".to_string(),
+                            spec.aliases
+                                .iter()
+                                .map(|alias| alias.as_str().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        )],
+                    ));
+                }
+                sections.push((
+                    "Visibility".to_string(),
+                    vec![
+                        (
+                            "Feature Flags".to_string(),
+                            join_or_dash(&spec.availability.feature_flags),
+                        ),
+                        (
+                            "Providers".to_string(),
+                            join_or_dash(&spec.availability.provider_allowlist),
+                        ),
+                        (
+                            "Models".to_string(),
+                            join_or_dash(&spec.availability.model_allowlist),
+                        ),
+                        (
+                            "Roles".to_string(),
+                            join_or_dash(&spec.availability.role_allowlist),
+                        ),
+                        (
+                            "Hidden".to_string(),
+                            bool_label(spec.availability.hidden_from_model).to_string(),
+                        ),
+                    ],
+                ));
+                sections.push((
+                    "Approval".to_string(),
+                    vec![
+                        (
+                            "Read Only".to_string(),
+                            bool_label(spec.approval.read_only).to_string(),
+                        ),
+                        (
+                            "Mutates State".to_string(),
+                            bool_label(spec.approval.mutates_state).to_string(),
+                        ),
+                        (
+                            "Idempotent".to_string(),
+                            spec.approval
+                                .idempotent
+                                .map(|value| bool_label(value).to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                        ),
+                        (
+                            "Open World".to_string(),
+                            bool_label(spec.approval.open_world).to_string(),
+                        ),
+                        (
+                            "Needs Network".to_string(),
+                            bool_label(spec.approval.needs_network).to_string(),
+                        ),
+                        (
+                            "Needs Host Escape".to_string(),
+                            bool_label(spec.approval.needs_host_escape).to_string(),
+                        ),
+                        (
+                            "Message".to_string(),
+                            spec.approval
+                                .approval_message
+                                .clone()
+                                .unwrap_or_else(|| "-".to_string()),
+                        ),
+                    ],
+                ));
+                if let Some(boundary) = &spec.mcp_boundary {
+                    sections.push((
+                        "MCP Boundary".to_string(),
+                        vec![
+                            (
+                                "Transport".to_string(),
+                                mcp_boundary_transport_label(boundary).to_string(),
+                            ),
+                            (
+                                "Class".to_string(),
+                                mcp_boundary_class_label(boundary).to_string(),
+                            ),
+                        ],
+                    ));
+                }
+            } else {
+                sections.push((
+                    "Catalog".to_string(),
+                    vec![(
+                        "Status".to_string(),
+                        "Configured as disabled but not present in the current startup catalog."
+                            .to_string(),
+                    )],
+                ));
+            }
+            sections.push((
+                "Actions".to_string(),
+                vec![
+                    (
+                        "List".to_string(),
+                        format!("{} tool list", current_program_name()),
+                    ),
+                    (
+                        if entry.enabled { "Disable" } else { "Enable" }.to_string(),
+                        format!(
+                            "{} tool {} {}",
+                            current_program_name(),
+                            if entry.enabled { "disable" } else { "enable" },
+                            entry.name
+                        ),
+                    ),
+                ],
+            ));
+            write_sectioned_key_value_table(
+                writer,
+                format!("Tool · {}", entry.name).as_str(),
+                &sections,
+                [18, 88],
+            )
+        }
+        ManagementOutputStyle::Plain => {
+            write_plain_show_header(writer, "Tool")?;
+            write_plain_detail_section(writer, "Overview")?;
+            write_plain_detail_field(writer, "name", &entry.name)?;
+            write_plain_detail_field(writer, "state", status_label(entry.enabled))?;
+            if let Some(spec) = &entry.spec {
+                write_plain_detail_field(writer, "kind", tool_kind_label(spec))?;
+                write_plain_detail_field(writer, "source", tool_source_label(spec))?;
+                write_plain_detail_field(writer, "origin", tool_origin_label(spec))?;
+                write_plain_detail_field(writer, "description", &spec.description)?;
+                if !spec.aliases.is_empty() {
+                    write_plain_detail_section(writer, "Aliases")?;
+                    write_plain_detail_field(
+                        writer,
+                        "names",
+                        spec.aliases
+                            .iter()
+                            .map(|alias| alias.as_str().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    )?;
+                }
+            } else {
+                write_plain_detail_field(
+                    writer,
+                    "catalog",
+                    "configured as disabled but unresolved in the current startup catalog",
+                )?;
+            }
+            write_plain_detail_section(writer, "Actions")?;
+            write_plain_detail_field(
+                writer,
+                "list",
+                format!("{} tool list", current_program_name()),
+            )?;
+            write_plain_detail_field(
+                writer,
+                if entry.enabled { "disable" } else { "enable" },
+                format!(
+                    "{} tool {} {}",
+                    current_program_name(),
+                    if entry.enabled { "disable" } else { "enable" },
+                    entry.name
+                ),
+            )?;
             Ok(())
         }
     }
@@ -3031,6 +3566,59 @@ fn status_label(enabled: bool) -> &'static str {
     if enabled { "enabled" } else { "disabled" }
 }
 
+fn bool_label(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
+fn join_or_dash(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn tool_kind_label(spec: &ToolSpec) -> &'static str {
+    match spec.kind {
+        agent::types::ToolKind::Function => "function",
+        agent::types::ToolKind::Freeform => "freeform",
+        agent::types::ToolKind::Native => "native",
+    }
+}
+
+fn tool_source_label(spec: &ToolSpec) -> String {
+    match &spec.source {
+        ToolSource::Builtin => "builtin".to_string(),
+        ToolSource::Dynamic => "dynamic".to_string(),
+        ToolSource::Plugin { plugin } => format!("plugin:{plugin}"),
+        ToolSource::McpTool { server_name } => format!("mcp:{server_name}"),
+        ToolSource::McpResource { server_name } => format!("mcp-resource:{server_name}"),
+        ToolSource::ProviderBuiltin { provider } => format!("provider:{provider}"),
+    }
+}
+
+fn tool_origin_label(spec: &ToolSpec) -> String {
+    match &spec.origin {
+        ToolOrigin::Local => "local".to_string(),
+        ToolOrigin::Mcp { server_name } => format!("mcp:{server_name}"),
+        ToolOrigin::Provider { provider } => format!("provider:{provider}"),
+    }
+}
+
+fn mcp_boundary_transport_label(boundary: &agent::types::McpToolBoundary) -> &'static str {
+    match boundary.transport {
+        agent::types::McpTransportKind::Stdio => "stdio",
+        agent::types::McpTransportKind::StreamableHttp => "streamable_http",
+    }
+}
+
+fn mcp_boundary_class_label(boundary: &agent::types::McpToolBoundary) -> &'static str {
+    match boundary.boundary_class {
+        agent::types::McpToolBoundaryClass::LocalProcess => "local_process",
+        agent::types::McpToolBoundaryClass::RemoteService => "remote_service",
+    }
+}
+
 fn join_sorted_keys(mut values: Vec<String>) -> String {
     values.sort();
     values.join(", ")
@@ -3131,6 +3719,21 @@ fn write_plugin_config_artifact(
     writeln!(
         writer,
         "{verb} plugin `{plugin_id}` in {} (enabled: {}).",
+        config_path.display(),
+        enabled,
+    )
+}
+
+fn write_tool_management_artifact(
+    writer: &mut impl Write,
+    verb: &str,
+    name: &str,
+    config_path: &Path,
+    enabled: bool,
+) -> io::Result<()> {
+    writeln!(
+        writer,
+        "{verb} tool `{name}` in {} (enabled: {}).",
         config_path.display(),
         enabled,
     )
@@ -3600,21 +4203,24 @@ mod tests {
         Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ManagementCommand,
         ManagementOutputStyle, ManagementSurfaceKind, McpManagementCommand,
         PluginManagementCommand, ReadOnlyCommand, SandboxFallbackAction, SessionSelector,
-        SkillManagementCommand, active_session_is_persisted, choose_sandbox_fallback_action,
-        format_sandbox_abort_message, format_session_counts, format_token_count,
-        launch_headless_one_shot, write_exit_summary, write_managed_plugin_details,
-        write_managed_plugin_summaries, write_managed_skill_details, write_managed_skill_summaries,
-        write_mcp_prompt_summaries, write_mcp_resource_summaries, write_mcp_server_details,
-        write_mcp_server_summaries, write_session_search_results, write_session_summaries,
-        write_startup_diagnostics, write_tool_summaries,
+        SkillManagementCommand, ToolManagementCommand, active_session_is_persisted,
+        choose_sandbox_fallback_action, format_sandbox_abort_message, format_session_counts,
+        format_token_count, launch_headless_one_shot, write_exit_summary,
+        write_managed_plugin_details, write_managed_plugin_summaries, write_managed_skill_details,
+        write_managed_skill_summaries, write_mcp_prompt_summaries, write_mcp_resource_summaries,
+        write_mcp_server_details, write_mcp_server_summaries, write_session_search_results,
+        write_session_summaries, write_startup_diagnostics, write_tool_summaries,
     };
     use agent::DriverActivationOutcome;
     use agent::ToolExecutionContext;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::runtime::SubagentProfileResolver;
     use agent::tools::{NetworkPolicy, SandboxMode, SubagentLaunchSpec};
-    use agent::types::{AgentTaskSpec, HookEvent, HookHandler, HookRegistration, HttpHookHandler};
-    use agent::types::{SessionSummaryTokenUsage, TokenUsage};
+    use agent::types::{
+        AgentTaskSpec, HookEvent, HookHandler, HookRegistration, HttpHookHandler,
+        SessionSummaryTokenUsage, TokenUsage, ToolName, ToolOrigin, ToolOutputMode, ToolSource,
+        ToolSpec,
+    };
     use agent_env::EnvMap;
     use clap::Parser;
     use code_agent_backend::{
@@ -3628,6 +4234,7 @@ mod tests {
     use nanoclaw_config::{
         AgentProfileConfig, AgentSandboxMode, CoreConfig, ModelCapabilitiesConfig, ModelConfig,
     };
+    use serde_json::json;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, OnceLock};
@@ -3670,6 +4277,17 @@ mod tests {
             }),
             resume_support: ResumeSupport::Reattachable,
         }
+    }
+
+    fn sample_tool_spec(name: &str, description: &str) -> ToolSpec {
+        ToolSpec::function(
+            ToolName::from(name),
+            description.to_string(),
+            json!({"type":"object","properties":{}}),
+            ToolOutputMode::Text,
+            ToolOrigin::Local,
+            ToolSource::Builtin,
+        )
     }
 
     #[test]
@@ -4036,7 +4654,11 @@ mod tests {
         let mut buffer = Vec::new();
         write_tool_summaries(
             &mut buffer,
-            &["web_search".to_string(), "exec_command".to_string()],
+            &[
+                sample_tool_spec("web_search", "Search the web"),
+                sample_tool_spec("exec_command", "Run a command"),
+            ],
+            &[],
             ManagementOutputStyle::Table,
         )
         .unwrap();
@@ -4046,6 +4668,7 @@ mod tests {
         assert!(output.contains("│ Tools · 2"));
         assert!(output.contains("│ #"));
         assert!(output.contains("│ Name"));
+        assert!(output.contains("│ State"));
         assert!(output.contains("exec_command"));
         assert!(output.contains("web_search"));
     }
@@ -4055,14 +4678,15 @@ mod tests {
         let mut buffer = Vec::new();
         write_tool_summaries(
             &mut buffer,
-            &["web_search".to_string()],
+            &[sample_tool_spec("web_search", "Search the web")],
+            &[],
             ManagementOutputStyle::Plain,
         )
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
         assert!(output.starts_with("Tools (1)\n========="));
-        assert!(output.contains("1. web_search"));
+        assert!(output.contains("1. web_search  [enabled]  builtin"));
     }
 
     #[test]
@@ -4332,7 +4956,7 @@ mod tests {
 
         assert_eq!(
             cli.live_inspect_command(),
-            Some(LiveInspectCommand::Tools {
+            Some(LiveInspectCommand::ToolList {
                 style: ManagementOutputStyle::Table,
             })
         );
@@ -4344,9 +4968,35 @@ mod tests {
 
         assert_eq!(
             cli.live_inspect_command(),
-            Some(LiveInspectCommand::Tools {
+            Some(LiveInspectCommand::ToolList {
                 style: ManagementOutputStyle::Plain,
             })
+        );
+    }
+
+    #[test]
+    fn clap_parses_tool_show_live_command() {
+        let cli = Cli::parse_from(["code-agent", "tool", "show", "web_search"]);
+
+        assert_eq!(
+            cli.live_inspect_command(),
+            Some(LiveInspectCommand::ToolShow {
+                name: "web_search".to_string(),
+                style: ManagementOutputStyle::Table,
+            })
+        );
+    }
+
+    #[test]
+    fn clap_parses_tool_disable_management_command() {
+        let cli = Cli::parse_from(["code-agent", "tool", "disable", "web_search"]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Tool(ToolManagementCommand::SetEnabled {
+                name: "web_search".to_string(),
+                enabled: false,
+            }))
         );
     }
 
@@ -4371,13 +5021,11 @@ mod tests {
         write_session_summaries(&mut output, &[persisted_summary("session-a")]).unwrap();
 
         let rendered = String::from_utf8(output).unwrap();
-        assert_eq!(
-            rendered,
-            concat!(
-                "session-a  Session title\n",
-                "  7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789 reasoning=12\n",
-            )
-        );
+        assert!(rendered.starts_with("┌"));
+        assert!(rendered.contains("│ Sessions · 1"));
+        assert!(rendered.contains("session-a"));
+        assert!(rendered.contains("Session title"));
+        assert!(rendered.contains("tokens in=1,234"));
     }
 
     #[test]
@@ -4397,15 +5045,10 @@ mod tests {
         .unwrap();
 
         let rendered = String::from_utf8(output).unwrap();
-        assert_eq!(
-            rendered,
-            concat!(
-                "session-a  Session title\n",
-                "  7 messages · 12 events · 3 agent sessions · tokens in=1,234 out=56 cache=789 reasoning=12 · 2 matched events\n",
-                "  match: session title: Session title\n",
-                "  match: user> inspect repository\n",
-            )
-        );
+        assert!(rendered.starts_with("┌"));
+        assert!(rendered.contains("│ Session Matches · 1"));
+        assert!(rendered.contains("session-a"));
+        assert!(rendered.contains("session title: Session title | user> inspect repository"));
     }
 
     #[test]

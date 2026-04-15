@@ -49,7 +49,7 @@ use agent::tools::{
     HOST_FEATURE_REQUEST_USER_INPUT, SubagentExecutor, SubagentLaunchSpec, describe_sandbox_policy,
     ensure_sandbox_policy_supported,
 };
-use agent::types::{HookHandler, HookRegistration};
+use agent::types::{HookHandler, HookRegistration, ToolSpec};
 use agent::{
     AgentRuntime, AgentRuntimeBuilder, SandboxPolicy, SkillCatalog, ToolExecutionContext,
     ToolRegistry,
@@ -58,7 +58,7 @@ use agent_env::EnvMap;
 use anyhow::{Context, Result, bail};
 use code_agent_config::{builtin_skill_root, filter_unavailable_builtin_mcp_servers};
 use nanoclaw_config::{CoreConfig, ResolvedAgentProfile};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 use tracing::{info, warn};
@@ -84,6 +84,8 @@ struct RuntimeBuildResult {
     command_hook_executor: Arc<SwitchableCommandHookExecutor>,
     code_intel_backend: Arc<SwitchableCodeIntelBackend>,
     host_process_surfaces_allowed: bool,
+    tool_catalog_specs: Vec<ToolSpec>,
+    disabled_tool_names: BTreeSet<String>,
     store_label: String,
     store_warning: Option<String>,
     stored_session_count: usize,
@@ -380,6 +382,8 @@ where
         command_hook_executor,
         code_intel_backend,
         host_process_surfaces_allowed,
+        tool_catalog_specs,
+        disabled_tool_names,
         store_label,
         store_warning,
         stored_session_count,
@@ -460,6 +464,8 @@ where
             supported_model_reasoning_efforts,
             supports_image_input: backend_capabilities.vision,
             tool_names,
+            tool_specs: tool_catalog_specs,
+            disabled_tool_names: disabled_tool_names.iter().cloned().collect(),
             store_label,
             store_warning,
             stored_session_count: stored_session_count,
@@ -787,8 +793,9 @@ where
         }
         connected_mcp_servers = connected;
     }
-    let disabled_tool_names = disabled_tool_names_from_env(&options.env_map);
+    let disabled_tool_names = disabled_tool_names(options, &options.env_map);
     let mut disabled_tool_hits = BTreeSet::new();
+    let mut tool_catalog_specs = tools.specs();
     apply_disabled_tools(&tools, &disabled_tool_names, &mut disabled_tool_hits);
     progress(BootProgressUpdate {
         stage: BootProgressStage::Mcp,
@@ -895,6 +902,7 @@ where
     register_monitor_tools(&mut tools, monitor_manager.clone());
     register_worktree_tools(&mut tools, worktree_manager.clone());
     register_subagent_tools(&mut tools, subagent_executor.clone(), task_manager);
+    tool_catalog_specs.extend(tools.specs());
     apply_disabled_tools(&tools, &disabled_tool_names, &mut disabled_tool_hits);
     append_disabled_tool_warnings(
         &disabled_tool_names,
@@ -903,6 +911,10 @@ where
     );
     let tool_specs = tools
         .specs()
+        .into_iter()
+        .filter(|spec| spec.is_model_visible(&tool_context.model_visibility))
+        .collect::<Vec<_>>();
+    let tool_catalog_specs = merge_tool_catalog_specs(tool_catalog_specs)
         .into_iter()
         .filter(|spec| spec.is_model_visible(&tool_context.model_visibility))
         .collect::<Vec<_>>();
@@ -964,6 +976,8 @@ where
         command_hook_executor,
         code_intel_backend,
         host_process_surfaces_allowed,
+        tool_catalog_specs,
+        disabled_tool_names,
         store_label: store_handle.label,
         store_warning: store_handle.warning,
         stored_session_count,
@@ -1076,6 +1090,12 @@ fn disabled_tool_names_from_env(env_map: &EnvMap) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
+fn disabled_tool_names(options: &AppOptions, env_map: &EnvMap) -> BTreeSet<String> {
+    let mut names = options.disabled_tools.clone();
+    names.extend(disabled_tool_names_from_env(env_map));
+    names
+}
+
 fn apply_disabled_tools(
     tools: &ToolRegistry,
     requested_names: &BTreeSet<String>,
@@ -1086,6 +1106,14 @@ fn apply_disabled_tools(
             removed_names.insert(name.clone());
         }
     }
+}
+
+fn merge_tool_catalog_specs(specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
+    let mut merged = BTreeMap::new();
+    for spec in specs {
+        merged.entry(spec.name.clone()).or_insert(spec);
+    }
+    merged.into_values().collect()
 }
 
 fn append_disabled_tool_warnings(

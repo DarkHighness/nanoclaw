@@ -33,58 +33,58 @@ pub struct StatusLineFieldSpec {
 const STATUS_LINE_FIELDS: &[StatusLineFieldSpec] = &[
     StatusLineFieldSpec {
         field: StatusLineField::Status,
-        label: "status",
-        summary: "runtime status marker and summary",
+        label: "Status",
+        summary: "Runtime status marker and summary",
     },
     StatusLineFieldSpec {
         field: StatusLineField::Model,
-        label: "model",
-        summary: "full model name and reasoning effort",
+        label: "Model",
+        summary: "Full model name and reasoning effort",
     },
     StatusLineFieldSpec {
         field: StatusLineField::Cwd,
-        label: "cwd",
-        summary: "current workspace directory name",
+        label: "Workspace",
+        summary: "Current workspace directory name",
     },
     StatusLineFieldSpec {
         field: StatusLineField::Repo,
-        label: "repo",
-        summary: "git repository name when available",
+        label: "Repo",
+        summary: "Git repository name when available",
     },
     StatusLineFieldSpec {
         field: StatusLineField::Branch,
-        label: "branch",
-        summary: "git branch name when available",
+        label: "Branch",
+        summary: "Git branch name when available",
     },
     StatusLineFieldSpec {
         field: StatusLineField::ContextWindow,
-        label: "context",
-        summary: "context-window usage",
+        label: "Context",
+        summary: "Context-window usage",
     },
     StatusLineFieldSpec {
         field: StatusLineField::InputTokens,
-        label: "input",
-        summary: "cumulative input tokens",
+        label: "Input",
+        summary: "Cumulative input tokens",
     },
     StatusLineFieldSpec {
         field: StatusLineField::OutputTokens,
-        label: "output",
-        summary: "cumulative output tokens",
+        label: "Output",
+        summary: "Cumulative output tokens",
     },
     StatusLineFieldSpec {
         field: StatusLineField::Queue,
-        label: "queue",
-        summary: "queued command depth",
+        label: "Queue",
+        summary: "Queued command depth",
     },
     StatusLineFieldSpec {
         field: StatusLineField::Clock,
-        label: "clock",
-        summary: "local wall clock",
+        label: "Clock",
+        summary: "Local wall clock",
     },
     StatusLineFieldSpec {
         field: StatusLineField::Session,
-        label: "session",
-        summary: "active substrate session id",
+        label: "Session",
+        summary: "Active substrate session id",
     },
 ];
 
@@ -193,8 +193,17 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "status", "model", "cwd", "repo", "branch", "context", "input", "output", "queue",
-                "clock", "session",
+                "Status",
+                "Model",
+                "Workspace",
+                "Repo",
+                "Branch",
+                "Context",
+                "Input",
+                "Output",
+                "Queue",
+                "Clock",
+                "Session",
             ]
         );
     }

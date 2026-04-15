@@ -380,57 +380,57 @@ fn command_palette_includes_help_and_clear_alias() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "/help [query]  browse commands")
+            .any(|line| line == "/help [query]  Browse commands")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/details  toggle tool details")
+            .any(|line| line == "/details  Toggle tool details")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/statusline  toggle footer items")
+            .any(|line| line == "/statusline  Toggle footer items")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/thinking [level]  pick or set thinking effort")
+            .any(|line| line == "/thinking [level]  Pick or set thinking effort")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/theme [name]  pick or set the tui theme")
+            .any(|line| line == "/theme [name]  Pick or set the TUI theme")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/motion [on|off]  toggle transcript intro motion")
+            .any(|line| line == "/motion [on|off]  Toggle transcript intro motion")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/mcp  toggle managed MCP servers")
+            .any(|line| line == "/mcp  Toggle managed MCP servers")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/skill  toggle available skills")
+            .any(|line| line == "/skill  Toggle available skills")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/plugin  toggle managed plugins")
+            .any(|line| line == "/plugin  Toggle managed plugins")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/new  fresh top-level session · aliases: /clear")
+            .any(|line| line == "/new  Fresh top-level session · aliases: /clear")
     );
     assert!(
         lines
             .iter()
-            .any(|line| { line == "/exit  leave tui · aliases: /quit /q" })
+            .any(|line| { line == "/exit  Leave TUI · aliases: /quit /q" })
     );
 }
 

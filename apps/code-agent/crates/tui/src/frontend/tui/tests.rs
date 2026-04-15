@@ -56,53 +56,53 @@ fn startup_inspector_surfaces_backend_boot_snapshot() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "store: file /workspace/.nanoclaw/store (12 sessions)")
+            .any(|line| line == "Store: file /workspace/.nanoclaw/store (12 sessions)")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "sandbox: enforced via seatbelt")
+            .any(|line| line == "Sandbox: enforced via seatbelt")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("warning: falling back soon"))
+            .any(|line| line.contains("Warning: falling back soon"))
     );
-    assert!(lines.iter().any(|line| line == "image input: enabled"));
+    assert!(lines.iter().any(|line| line == "Image Input: Enabled"));
     assert!(
         lines
             .iter()
-            .any(|line| line == "/statusline  choose footer items")
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line == "/thinking [level]  pick or set model effort")
+            .any(|line| line == "/statusline  Choose footer items")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/theme [name]  pick or set tui theme")
+            .any(|line| line == "/thinking [level]  Pick or set model effort")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/details  toggle tool details")
+            .any(|line| line == "/theme [name]  Pick or set TUI theme")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/mcp  toggle managed MCP servers")
+            .any(|line| line == "/details  Toggle tool details")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/skill  toggle available skills")
+            .any(|line| line == "/mcp  Toggle managed MCP servers")
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "/plugin  toggle managed plugins")
+            .any(|line| line == "/skill  Toggle available skills")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "/plugin  Toggle managed plugins")
     );
 }
 
@@ -137,7 +137,7 @@ fn command_palette_groups_operator_commands() {
     assert!(
         lines
             .iter()
-            .any(|line| { line.starts_with("/live-tasks  list live child agents") })
+            .any(|line| { line.starts_with("/live-tasks  List live child agents") })
     );
 }
 

@@ -199,7 +199,46 @@ pub fn disabled_builtin_skill_names(workspace_root: &Path) -> Result<BTreeSet<St
         .collect())
 }
 
+pub fn disabled_tool_names(workspace_root: &Path) -> Result<BTreeSet<String>> {
+    let app = nanoclaw_config::load_optional_app_config::<super::CodeAgentAppConfig>(
+        workspace_root,
+        super::CODE_AGENT_APP_NAME,
+    )?;
+    Ok(app
+        .tools
+        .disabled
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect())
+}
+
 fn persist_builtin_skill_enabled(workspace_root: &Path, name: &str, enabled: bool) -> Result<()> {
+    let mut disabled = disabled_builtin_skill_names(workspace_root)?;
+    if enabled {
+        disabled.remove(name);
+    } else {
+        disabled.insert(name.to_string());
+    }
+    persist_app_disabled_names(workspace_root, "skills", "disabled_builtin", &disabled).map(|_| ())
+}
+
+pub fn set_tool_enabled(workspace_root: &Path, name: &str, enabled: bool) -> Result<PathBuf> {
+    let mut disabled = disabled_tool_names(workspace_root)?;
+    if enabled {
+        disabled.remove(name);
+    } else {
+        disabled.insert(name.to_string());
+    }
+    persist_app_disabled_names(workspace_root, "tools", "disabled", &disabled)
+}
+
+fn persist_app_disabled_names(
+    workspace_root: &Path,
+    section: &str,
+    key: &str,
+    disabled: &BTreeSet<String>,
+) -> Result<PathBuf> {
     let path = workspace_root.join(super::CODE_AGENT_APP_CONFIG_PATH);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -219,36 +258,31 @@ fn persist_builtin_skill_enabled(workspace_root: &Path, name: &str, enabled: boo
             .with_context(|| format!("failed to parse {}", path.display()))?
     };
 
-    let mut disabled = disabled_builtin_skill_names(workspace_root)?;
-    if enabled {
-        disabled.remove(name);
-    } else {
-        disabled.insert(name.to_string());
-    }
-
     let root = document.as_table_mut();
-    let skills_item = root.entry("skills").or_insert(Item::Table(Table::new()));
-    if !skills_item.is_table() {
-        *skills_item = Item::Table(Table::new());
+    let section_item = root.entry(section).or_insert(Item::Table(Table::new()));
+    if !section_item.is_table() {
+        *section_item = Item::Table(Table::new());
     }
-    let skills = skills_item
+    let section_table = section_item
         .as_table_mut()
-        .expect("skills config must be a TOML table");
+        .expect("app config section must be a TOML table");
     if disabled.is_empty() {
-        skills.remove("disabled_builtin");
+        section_table.remove(key);
     } else {
         let mut items = Array::new();
         for name in disabled {
             items.push(name);
         }
-        skills["disabled_builtin"] = value(items);
+        section_table[key] = value(items);
     }
 
     let mut serialized = document.to_string();
     if !serialized.ends_with('\n') {
         serialized.push('\n');
     }
-    std::fs::write(&path, serialized).with_context(|| format!("failed to write {}", path.display()))
+    std::fs::write(&path, serialized)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(path)
 }
 
 pub fn filter_unavailable_builtin_mcp_servers(
@@ -1172,10 +1206,10 @@ mod tests {
     use super::{
         BUILTIN_CONTEXT7_SERVER, BUILTIN_PLAYWRIGHT_SERVER, add_core_mcp_server,
         add_managed_plugin, add_managed_skill, delete_core_mcp_server, delete_managed_plugin,
-        delete_managed_skill, disabled_builtin_skill_names, filter_unavailable_builtin_mcp_servers,
-        list_core_mcp_servers, list_managed_plugin_details, list_managed_skill_details,
-        materialize_builtin_skills, set_core_mcp_server_enabled, set_managed_plugin_enabled,
-        set_managed_skill_enabled,
+        delete_managed_skill, disabled_builtin_skill_names, disabled_tool_names,
+        filter_unavailable_builtin_mcp_servers, list_core_mcp_servers, list_managed_plugin_details,
+        list_managed_skill_details, materialize_builtin_skills, set_core_mcp_server_enabled,
+        set_managed_plugin_enabled, set_managed_skill_enabled, set_tool_enabled,
     };
     use agent::AgentWorkspaceLayout;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
@@ -1470,6 +1504,34 @@ mod tests {
             AgentWorkspaceLayout::new(workspace.path())
                 .skills_dir()
                 .join("frontend-skill")
+        );
+    }
+
+    #[test]
+    fn set_tool_enabled_persists_disabled_tool_names() {
+        let workspace = tempdir().unwrap();
+
+        let path = set_tool_enabled(workspace.path(), "web_search", false).unwrap();
+
+        assert!(path.ends_with(".nanoclaw/apps/code-agent.toml"));
+        assert!(
+            disabled_tool_names(workspace.path())
+                .unwrap()
+                .contains("web_search")
+        );
+    }
+
+    #[test]
+    fn enabling_tool_removes_disabled_name() {
+        let workspace = tempdir().unwrap();
+        set_tool_enabled(workspace.path(), "web_search", false).unwrap();
+
+        set_tool_enabled(workspace.path(), "web_search", true).unwrap();
+
+        assert!(
+            !disabled_tool_names(workspace.path())
+                .unwrap()
+                .contains("web_search")
         );
     }
 

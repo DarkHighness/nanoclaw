@@ -557,6 +557,8 @@ fn startup_snapshot(workspace_root: &std::path::Path) -> SessionStartupSnapshot 
         ],
         supports_image_input: false,
         tool_names: Vec::new(),
+        tool_specs: Vec::new(),
+        disabled_tool_names: Vec::new(),
         store_label: "memory".to_string(),
         store_warning: None,
         stored_session_count: 0,

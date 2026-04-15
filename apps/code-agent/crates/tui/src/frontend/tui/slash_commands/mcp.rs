@@ -17,7 +17,7 @@ impl CodeAgentTui {
             state.restore_input_draft(state::composer_draft_from_messages(&loaded.input_messages));
             state.show_main_view("Prompt", inspector);
             state.status = format!("Loaded MCP prompt {server_name}/{prompt_name} into input");
-            state.push_activity(format!("loaded mcp prompt {server_name}/{prompt_name}"));
+            state.push_activity(format!("Loaded MCP prompt {server_name}/{prompt_name}"));
         });
         Ok(())
     }
@@ -38,7 +38,7 @@ impl CodeAgentTui {
             state.restore_input_draft(state::composer_draft_from_parts(&loaded.input_parts));
             state.show_main_view("Resource", inspector);
             state.status = format!("Loaded MCP resource {server_name}:{uri} into input");
-            state.push_activity(format!("loaded mcp resource {server_name}:{uri}"));
+            state.push_activity(format!("Loaded MCP resource {server_name}:{uri}"));
         });
         Ok(())
     }
@@ -76,7 +76,7 @@ impl CodeAgentTui {
                     };
                     state.show_main_view("Prompts", lines);
                     state.status = "Listed MCP prompts".to_string();
-                    state.push_activity("listed mcp prompts");
+                    state.push_activity("Listed MCP prompts");
                 });
                 Ok(false)
             }
@@ -96,7 +96,7 @@ impl CodeAgentTui {
                     };
                     state.show_main_view("Resources", lines);
                     state.status = "Listed MCP resources".to_string();
-                    state.push_activity("listed mcp resources");
+                    state.push_activity("Listed MCP resources");
                 });
                 Ok(false)
             }
@@ -179,9 +179,9 @@ impl CodeAgentTui {
 
 fn format_managed_mcp_server_detail(summary: &ManagedMcpServerSummary) -> String {
     let connection = if summary.connected {
-        "connected"
+        "Connected"
     } else {
-        "disconnected"
+        "Disconnected"
     };
     format!(
         "{} · {} · tools={} · prompts={} · resources={}",
@@ -195,9 +195,9 @@ fn format_managed_mcp_server_detail(summary: &ManagedMcpServerSummary) -> String
 
 fn format_managed_skill_detail(summary: &ManagedSkillSummary) -> String {
     let source = if summary.builtin {
-        "built-in"
+        "Built-in"
     } else {
-        "managed"
+        "Managed"
     };
     if summary.description.trim().is_empty() {
         format!("{source} · {}", summary.path)
@@ -208,7 +208,7 @@ fn format_managed_skill_detail(summary: &ManagedSkillSummary) -> String {
 
 fn format_managed_plugin_detail(summary: &ManagedPluginSummary) -> String {
     let path = if summary.path.trim().is_empty() {
-        "path unavailable".to_string()
+        "Path unavailable".to_string()
     } else {
         summary.path.clone()
     };
@@ -229,23 +229,23 @@ pub(crate) fn managed_toggle_picker_title(kind: state::ManagedTogglePickerKind) 
 pub(crate) fn managed_toggle_picker_subject(kind: state::ManagedTogglePickerKind) -> &'static str {
     match kind {
         state::ManagedTogglePickerKind::Mcp => "MCP server",
-        state::ManagedTogglePickerKind::Skill => "skill",
-        state::ManagedTogglePickerKind::Plugin => "plugin",
+        state::ManagedTogglePickerKind::Skill => "Skill",
+        state::ManagedTogglePickerKind::Plugin => "Plugin",
     }
 }
 
 fn open_managed_toggle_picker_status(kind: state::ManagedTogglePickerKind) -> &'static str {
     match kind {
         state::ManagedTogglePickerKind::Mcp => "Opened MCP manager",
-        state::ManagedTogglePickerKind::Skill => "Opened skill manager",
-        state::ManagedTogglePickerKind::Plugin => "Opened plugin manager",
+        state::ManagedTogglePickerKind::Skill => "Opened Skill manager",
+        state::ManagedTogglePickerKind::Plugin => "Opened Plugin manager",
     }
 }
 
 fn open_managed_toggle_picker_activity(kind: state::ManagedTogglePickerKind) -> &'static str {
     match kind {
-        state::ManagedTogglePickerKind::Mcp => "opened mcp manager",
-        state::ManagedTogglePickerKind::Skill => "opened skill manager",
-        state::ManagedTogglePickerKind::Plugin => "opened plugin manager",
+        state::ManagedTogglePickerKind::Mcp => "Opened MCP manager",
+        state::ManagedTogglePickerKind::Skill => "Opened Skill manager",
+        state::ManagedTogglePickerKind::Plugin => "Opened Plugin manager",
     }
 }
