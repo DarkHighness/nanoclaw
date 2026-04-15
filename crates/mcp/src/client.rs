@@ -18,6 +18,8 @@ use sandbox::{
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::ChildStderr;
 use tools::HOST_FEATURE_HOST_PROCESS_SURFACES;
 use tracing::{debug, info};
 use types::{
@@ -412,7 +414,7 @@ async fn connect_stdio_transport(
             env: env.clone(),
             stdin: ProcessStdio::Piped,
             stdout: ProcessStdio::Piped,
-            stderr: ProcessStdio::Inherit,
+            stderr: ProcessStdio::Piped,
             kill_on_drop: true,
             origin: ExecutionOrigin::McpStdioServer {
                 server_name: server_name.clone(),
@@ -421,11 +423,42 @@ async fn connect_stdio_transport(
             sandbox_policy: options.sandbox_policy.clone(),
         })
         .map_err(|error| McpError::transport(error.to_string()))?;
-    let transport =
-        TokioChildProcess::new(process).map_err(|error| McpError::transport(error.to_string()))?;
+    // MCP stdio servers can emit launcher warnings on stderr during bootstrap.
+    // Keeping stderr inherited lets those lines tear through the interactive
+    // startup UI, while dropping stderr entirely risks deadlocking verbose
+    // processes. Pipe and drain it in the background instead.
+    let (transport, stderr) = TokioChildProcess::builder(process)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| McpError::transport(error.to_string()))?;
+    if let Some(stderr) = stderr {
+        spawn_mcp_stderr_drain(server_name.clone(), stderr);
+    }
     ().serve(transport)
         .await
         .map_err(|error| McpError::transport(error.to_string()))
+}
+
+fn spawn_mcp_stderr_drain(server_name: McpServerName, stderr: ChildStderr) {
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => debug!(
+                    server = %server_name,
+                    "MCP stdio stderr: {}",
+                    line.trim_end()
+                ),
+                Err(error) => {
+                    debug!(server = %server_name, ?error, "failed to drain MCP stdio stderr");
+                    break;
+                }
+            }
+        }
+    });
 }
 
 async fn connect_streamable_http_transport(

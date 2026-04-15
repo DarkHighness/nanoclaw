@@ -180,4 +180,5 @@ async fn stdio_server_supports_catalog_tool_prompt_and_resource_round_trips() {
     );
     assert_eq!(logged[0].program, env!("CARGO_BIN_EXE_test_stdio_server"));
     assert_eq!(logged[0].cwd.as_deref(), Some(fixture_cwd.path()));
+    assert_eq!(logged[0].stderr, tools::ProcessStdio::Piped);
 }
