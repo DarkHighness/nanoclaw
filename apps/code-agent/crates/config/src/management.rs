@@ -1,8 +1,10 @@
-use agent::AgentWorkspaceLayout;
 use agent::mcp::McpServerConfig;
-use agent::plugins::{PluginEntryConfig, PluginManifest, discover_plugins};
+use agent::plugins::{
+    PluginEntryConfig, PluginKind, PluginManifest, PluginState, discover_plugins,
+};
 use agent::skills::{SkillRoot, SkillRootKind, load_skill_from_dir};
 use agent::types::PluginId;
+use agent::{AgentWorkspaceLayout, PluginBootResolverConfig, build_plugin_activation_plan};
 use anyhow::{Context, Result, anyhow, bail};
 use nanoclaw_config::CoreConfig;
 use std::path::{Path, PathBuf};
@@ -22,6 +24,27 @@ pub struct ManagedPluginArtifact {
     pub plugin_id: PluginId,
     pub plugin_path: PathBuf,
     pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedSkillDetail {
+    pub skill_name: String,
+    pub description: String,
+    pub skill_path: PathBuf,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedPluginDetail {
+    pub plugin_id: PluginId,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub kind: String,
+    pub plugin_path: PathBuf,
+    pub enabled: bool,
+    pub reason: String,
+    pub contribution_summary: String,
 }
 
 pub fn list_core_mcp_servers(workspace_root: &Path) -> Result<Vec<McpServerConfig>> {
@@ -122,6 +145,25 @@ pub async fn list_managed_skills(workspace_root: &Path) -> Result<Vec<ManagedSki
     skills.extend(collect_skill_artifacts(&managed_root, false).await?);
     skills.sort_by(|left, right| left.skill_name.cmp(&right.skill_name));
     Ok(skills)
+}
+
+pub async fn list_managed_skill_details(workspace_root: &Path) -> Result<Vec<ManagedSkillDetail>> {
+    let managed_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
+    let artifacts = list_managed_skills(workspace_root).await?;
+    let mut details = Vec::with_capacity(artifacts.len());
+    for artifact in artifacts {
+        details.push(load_managed_skill_detail_from_artifact(&managed_root, artifact).await?);
+    }
+    Ok(details)
+}
+
+pub async fn load_managed_skill_detail(
+    workspace_root: &Path,
+    name: &str,
+) -> Result<ManagedSkillDetail> {
+    let managed_root = AgentWorkspaceLayout::new(workspace_root).skills_dir();
+    let artifact = resolve_managed_skill(&managed_root, name).await?;
+    load_managed_skill_detail_from_artifact(&managed_root, artifact).await
 }
 
 pub async fn delete_managed_skill(
@@ -232,6 +274,87 @@ pub async fn add_managed_plugin(
         plugin_path: destination,
         enabled: true,
     })
+}
+
+pub fn list_managed_plugin_details(workspace_root: &Path) -> Result<Vec<ManagedPluginDetail>> {
+    let config = load_raw_core_config(workspace_root)?;
+    let managed_root = AgentWorkspaceLayout::new(workspace_root).plugins_dir();
+    if !managed_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let resolved_roots = config.resolved_plugin_roots(workspace_root);
+    let mut discovery_roots = resolved_roots.clone();
+    if !discovery_roots
+        .iter()
+        .any(|candidate| candidate == &managed_root)
+    {
+        discovery_roots.push(managed_root.clone());
+    }
+    let discovery = discover_plugins(&discovery_roots).with_context(|| {
+        format!(
+            "failed to discover plugins under {}",
+            workspace_root.display()
+        )
+    })?;
+    let activation_plan = build_plugin_activation_plan(
+        workspace_root,
+        &PluginBootResolverConfig {
+            enabled: config.plugins.enabled,
+            roots: resolved_roots,
+            include_builtin: config.plugins.include_builtin,
+            allow: config.plugins.allow.clone(),
+            deny: config.plugins.deny.clone(),
+            entries: config.plugins.entries.clone(),
+            slots: config.plugins.slots.clone(),
+        },
+    )?;
+    let mut states = activation_plan
+        .plugin_states
+        .into_iter()
+        .map(|state| (state.plugin_id.clone(), state))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut plugins = discovery
+        .plugins
+        .into_iter()
+        .filter(|plugin| plugin.root_dir.starts_with(&managed_root))
+        .map(|plugin| {
+            let state = states.remove(&plugin.manifest.id);
+            ManagedPluginDetail {
+                plugin_id: plugin.manifest.id.clone(),
+                name: plugin.manifest.name.clone(),
+                description: plugin.manifest.description.clone(),
+                version: plugin.manifest.version.clone(),
+                kind: plugin_kind_label(plugin.manifest.kind).to_string(),
+                plugin_path: plugin.root_dir,
+                enabled: state
+                    .as_ref()
+                    .map(|state| state.enabled)
+                    .unwrap_or(plugin.manifest.enabled_by_default),
+                reason: state
+                    .as_ref()
+                    .map(|state| state.reason.clone())
+                    .unwrap_or_else(|| "not included in activation plan".to_string()),
+                contribution_summary: state
+                    .as_ref()
+                    .map(plugin_contribution_summary)
+                    .unwrap_or_default(),
+            }
+        })
+        .collect::<Vec<_>>();
+    plugins.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
+    Ok(plugins)
+}
+
+pub fn load_managed_plugin_detail(
+    workspace_root: &Path,
+    plugin_id: &str,
+) -> Result<ManagedPluginDetail> {
+    let plugin_id = PluginId::from(plugin_id);
+    list_managed_plugin_details(workspace_root)?
+        .into_iter()
+        .find(|plugin| plugin.plugin_id == plugin_id)
+        .ok_or_else(|| anyhow!("unknown managed plugin `{plugin_id}`"))
 }
 
 pub fn set_managed_plugin_enabled(
@@ -428,6 +551,32 @@ async fn collect_skill_artifacts(
     Ok(skills)
 }
 
+async fn load_managed_skill_detail_from_artifact(
+    managed_root: &Path,
+    artifact: ManagedSkillArtifact,
+) -> Result<ManagedSkillDetail> {
+    let skill = load_skill_from_dir(
+        &artifact.skill_path,
+        &SkillRoot {
+            path: managed_root.to_path_buf(),
+            kind: SkillRootKind::Managed,
+        },
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "failed to load managed skill {}",
+            artifact.skill_path.display()
+        )
+    })?;
+    Ok(ManagedSkillDetail {
+        skill_name: skill.name,
+        description: skill.description,
+        skill_path: artifact.skill_path,
+        enabled: artifact.enabled,
+    })
+}
+
 async fn copy_directory_tree(source: &Path, destination: &Path) -> Result<()> {
     if destination.exists() {
         bail!("destination already exists: {}", destination.display());
@@ -536,12 +685,47 @@ fn apply_plugin_enabled_override(config: &mut CoreConfig, plugin_id: &PluginId, 
     entry.enabled = Some(enabled);
 }
 
+fn plugin_kind_label(kind: PluginKind) -> &'static str {
+    match kind {
+        PluginKind::Bundle => "bundle",
+        PluginKind::Memory => "memory",
+    }
+}
+
+fn plugin_contribution_summary(plugin: &PluginState) -> String {
+    let contributions = &plugin.contributions;
+    let mut parts = Vec::new();
+    if contributions.instruction_count > 0 {
+        parts.push(format!("instructions={}", contributions.instruction_count));
+    }
+    if !contributions.skill_roots.is_empty() {
+        parts.push(format!("skills={}", contributions.skill_roots.len()));
+    }
+    if contributions.custom_tool_root_count > 0 {
+        parts.push(format!(
+            "custom_tools={}",
+            contributions.custom_tool_root_count
+        ));
+    }
+    if !contributions.hook_names.is_empty() {
+        parts.push(format!("hooks={}", contributions.hook_names.len()));
+    }
+    if !contributions.mcp_servers.is_empty() {
+        parts.push(format!("mcp={}", contributions.mcp_servers.len()));
+    }
+    if contributions.runtime_driver.is_some() {
+        parts.push("runtime_driver=1".to_string());
+    }
+    parts.join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         add_core_mcp_server, add_managed_plugin, add_managed_skill, delete_core_mcp_server,
-        delete_managed_plugin, delete_managed_skill, set_core_mcp_server_enabled,
-        set_managed_plugin_enabled, set_managed_skill_enabled,
+        delete_managed_plugin, delete_managed_skill, list_managed_plugin_details,
+        list_managed_skill_details, set_core_mcp_server_enabled, set_managed_plugin_enabled,
+        set_managed_skill_enabled,
     };
     use agent::AgentWorkspaceLayout;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
@@ -667,6 +851,22 @@ mod tests {
         assert!(!artifact.skill_path.exists());
     }
 
+    #[tokio::test]
+    async fn list_managed_skill_details_includes_description() {
+        let workspace = tempdir().unwrap();
+        let source_root = tempdir().unwrap();
+        let source = source_root.path().join("review");
+        write_skill_source(&source, "review");
+        add_managed_skill(workspace.path(), &source).await.unwrap();
+
+        let details = list_managed_skill_details(workspace.path()).await.unwrap();
+
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].skill_name, "review");
+        assert_eq!(details[0].description, "Demo skill");
+        assert!(details[0].enabled);
+    }
+
     fn write_plugin_source(dir: &Path, id: &str) {
         std::fs::create_dir_all(dir.join(".nanoclaw-plugin")).unwrap();
         std::fs::write(
@@ -739,5 +939,23 @@ mod tests {
         assert_eq!(artifact.plugin_id.as_str(), "review-policy");
         assert!(!artifact.plugin_path.exists());
         assert!(!config.plugins.entries.contains_key("review-policy"));
+    }
+
+    #[tokio::test]
+    async fn list_managed_plugin_details_reports_effective_enablement() {
+        let workspace = tempdir().unwrap();
+        let source_root = tempdir().unwrap();
+        let source = source_root.path().join("review-policy");
+        write_plugin_source(&source, "review-policy");
+        add_managed_plugin(workspace.path(), &source).await.unwrap();
+        set_managed_plugin_enabled(workspace.path(), "review-policy", false).unwrap();
+
+        let details = list_managed_plugin_details(workspace.path()).unwrap();
+
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].plugin_id.as_str(), "review-policy");
+        assert_eq!(details[0].kind, "bundle");
+        assert!(!details[0].enabled);
+        assert!(details[0].reason.contains("disabled"));
     }
 }

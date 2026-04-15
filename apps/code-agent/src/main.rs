@@ -14,9 +14,12 @@ use code_agent_backend::{
     inject_process_env, inspect_sandbox_preflight, message_to_text,
 };
 use code_agent_config::{
-    ManagedPluginArtifact, ManagedSkillArtifact, add_core_mcp_server, add_managed_plugin,
-    add_managed_skill, delete_core_mcp_server, delete_managed_plugin, delete_managed_skill,
-    set_core_mcp_server_enabled, set_managed_plugin_enabled, set_managed_skill_enabled,
+    ManagedPluginArtifact, ManagedPluginDetail, ManagedSkillArtifact, ManagedSkillDetail,
+    add_core_mcp_server, add_managed_plugin, add_managed_skill, delete_core_mcp_server,
+    delete_managed_plugin, delete_managed_skill, list_core_mcp_servers,
+    list_managed_plugin_details, list_managed_skill_details, load_managed_plugin_detail,
+    load_managed_skill_detail, set_core_mcp_server_enabled, set_managed_plugin_enabled,
+    set_managed_skill_enabled,
 };
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
@@ -112,6 +115,10 @@ struct McpCommandArgs {
 
 #[derive(Debug, Subcommand)]
 enum McpSubcommand {
+    /// List configured MCP servers.
+    List,
+    /// Inspect one configured MCP server.
+    Show(McpNamedArgs),
     /// Add a configured MCP server.
     Add(McpAddArgs),
     /// Delete a configured MCP server.
@@ -168,6 +175,10 @@ struct SkillCommandArgs {
 
 #[derive(Debug, Subcommand)]
 enum SkillSubcommand {
+    /// List managed skill copies.
+    List,
+    /// Inspect one managed skill copy.
+    Show(SkillNamedArgs),
     /// Copy a skill directory into the managed workspace root.
     Add(SkillAddArgs),
     /// Delete a managed skill copy.
@@ -198,6 +209,10 @@ struct PluginCommandArgs {
 
 #[derive(Debug, Subcommand)]
 enum PluginSubcommand {
+    /// List managed plugin copies.
+    List,
+    /// Inspect one managed plugin copy.
+    Show(PluginNamedArgs),
     /// Copy a plugin directory into the managed workspace root.
     Add(PluginAddArgs),
     /// Delete a managed plugin copy.
@@ -330,6 +345,8 @@ enum ManagementCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum McpManagementCommand {
+    List,
+    Show { name: String },
     Add { server: agent::mcp::McpServerConfig },
     Delete { name: String },
     SetEnabled { name: String, enabled: bool },
@@ -337,6 +354,8 @@ enum McpManagementCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SkillManagementCommand {
+    List,
+    Show { name: String },
     Add { path: String },
     Delete { name: String },
     SetEnabled { name: String, enabled: bool },
@@ -344,6 +363,8 @@ enum SkillManagementCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PluginManagementCommand {
+    List,
+    Show { id: String },
     Add { path: String },
     Delete { id: String },
     SetEnabled { id: String, enabled: bool },
@@ -656,6 +677,10 @@ impl SessionLookupArgs {
 impl McpCommandArgs {
     fn management_command(&self) -> Result<McpManagementCommand> {
         match &self.command {
+            McpSubcommand::List => Ok(McpManagementCommand::List),
+            McpSubcommand::Show(command) => Ok(McpManagementCommand::Show {
+                name: command.name.clone(),
+            }),
             McpSubcommand::Add(command) => Ok(McpManagementCommand::Add {
                 server: command.server_config()?,
             }),
@@ -677,6 +702,10 @@ impl McpCommandArgs {
 impl SkillCommandArgs {
     fn management_command(&self) -> SkillManagementCommand {
         match &self.command {
+            SkillSubcommand::List => SkillManagementCommand::List,
+            SkillSubcommand::Show(command) => SkillManagementCommand::Show {
+                name: command.name.clone(),
+            },
             SkillSubcommand::Add(command) => SkillManagementCommand::Add {
                 path: command.path.clone(),
             },
@@ -698,6 +727,10 @@ impl SkillCommandArgs {
 impl PluginCommandArgs {
     fn management_command(&self) -> PluginManagementCommand {
         match &self.command {
+            PluginSubcommand::List => PluginManagementCommand::List,
+            PluginSubcommand::Show(command) => PluginManagementCommand::Show {
+                id: command.id.clone(),
+            },
             PluginSubcommand::Add(command) => PluginManagementCommand::Add {
                 path: command.path.clone(),
             },
@@ -986,6 +1019,17 @@ async fn run_management_command(workspace_root: PathBuf, command: ManagementComm
     let mut stdout = io::stdout().lock();
     match command {
         ManagementCommand::Mcp(command) => match command {
+            McpManagementCommand::List => {
+                let servers = list_core_mcp_servers(&workspace_root)?;
+                write_mcp_server_summaries(&mut stdout, &servers)?;
+            }
+            McpManagementCommand::Show { name } => {
+                let server = list_core_mcp_servers(&workspace_root)?
+                    .into_iter()
+                    .find(|server| server.name.as_str() == name)
+                    .ok_or_else(|| anyhow!("unknown MCP server `{name}`"))?;
+                write_mcp_server_details(&mut stdout, &server)?;
+            }
             McpManagementCommand::Add { server } => {
                 let path = add_core_mcp_server(&workspace_root, server.clone())?;
                 write_mcp_management_artifact(
@@ -1012,6 +1056,14 @@ async fn run_management_command(workspace_root: PathBuf, command: ManagementComm
             }
         },
         ManagementCommand::Skill(command) => match command {
+            SkillManagementCommand::List => {
+                let skills = list_managed_skill_details(&workspace_root).await?;
+                write_managed_skill_summaries(&mut stdout, &workspace_root, &skills)?;
+            }
+            SkillManagementCommand::Show { name } => {
+                let detail = load_managed_skill_detail(&workspace_root, &name).await?;
+                write_managed_skill_details(&mut stdout, &workspace_root, &detail)?;
+            }
             SkillManagementCommand::Add { path } => {
                 let artifact = add_managed_skill(&workspace_root, Path::new(&path)).await?;
                 write_skill_management_artifact(&mut stdout, "Added", &artifact)?;
@@ -1030,6 +1082,14 @@ async fn run_management_command(workspace_root: PathBuf, command: ManagementComm
             }
         },
         ManagementCommand::Plugin(command) => match command {
+            PluginManagementCommand::List => {
+                let plugins = list_managed_plugin_details(&workspace_root)?;
+                write_managed_plugin_summaries(&mut stdout, &workspace_root, &plugins)?;
+            }
+            PluginManagementCommand::Show { id } => {
+                let detail = load_managed_plugin_detail(&workspace_root, &id)?;
+                write_managed_plugin_details(&mut stdout, &workspace_root, &detail)?;
+            }
             PluginManagementCommand::Add { path } => {
                 let artifact = add_managed_plugin(&workspace_root, Path::new(&path)).await?;
                 write_plugin_copy_artifact(&mut stdout, "Added", &artifact)?;
@@ -1722,6 +1782,198 @@ fn write_loaded_task_details(writer: &mut impl Write, loaded: &LoadedTask) -> io
     Ok(())
 }
 
+fn write_mcp_server_summaries(
+    writer: &mut impl Write,
+    servers: &[agent::mcp::McpServerConfig],
+) -> io::Result<()> {
+    if servers.is_empty() {
+        writeln!(writer, "No configured MCP servers found.")?;
+        return Ok(());
+    }
+
+    for (index, server) in servers.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(
+            writer,
+            "{}  {}",
+            server.name,
+            mcp_transport_label(&server.transport)
+        )?;
+        writeln!(writer, "  enabled={}", server.enabled)?;
+    }
+    Ok(())
+}
+
+fn write_mcp_server_details(
+    writer: &mut impl Write,
+    server: &agent::mcp::McpServerConfig,
+) -> io::Result<()> {
+    writeln!(writer, "MCP Server")?;
+    writeln!(writer, "  name: {}", server.name)?;
+    writeln!(writer, "  enabled: {}", server.enabled)?;
+    writeln!(
+        writer,
+        "  transport: {}",
+        mcp_transport_label(&server.transport)
+    )?;
+    match &server.transport {
+        agent::mcp::McpTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => {
+            writeln!(writer, "  command: {command}")?;
+            if !args.is_empty() {
+                writeln!(writer, "  args: {}", args.join(" "))?;
+            }
+            if let Some(cwd) = cwd.as_deref() {
+                writeln!(writer, "  cwd: {cwd}")?;
+            }
+            if !env.is_empty() {
+                writeln!(
+                    writer,
+                    "  env keys: {}",
+                    env.keys().cloned().collect::<Vec<_>>().join(", ")
+                )?;
+            }
+        }
+        agent::mcp::McpTransportConfig::StreamableHttp { url, headers } => {
+            writeln!(writer, "  url: {url}")?;
+            if !headers.is_empty() {
+                writeln!(
+                    writer,
+                    "  header keys: {}",
+                    headers.keys().cloned().collect::<Vec<_>>().join(", ")
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_managed_skill_summaries(
+    writer: &mut impl Write,
+    workspace_root: &Path,
+    skills: &[ManagedSkillDetail],
+) -> io::Result<()> {
+    if skills.is_empty() {
+        writeln!(writer, "No managed skills found.")?;
+        return Ok(());
+    }
+
+    for (index, skill) in skills.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(
+            writer,
+            "{}  enabled={}  path={}",
+            skill.skill_name,
+            skill.enabled,
+            display_workspace_path(workspace_root, &skill.skill_path)
+        )?;
+        if !skill.description.is_empty() {
+            writeln!(writer, "  {}", skill.description)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_managed_skill_details(
+    writer: &mut impl Write,
+    workspace_root: &Path,
+    skill: &ManagedSkillDetail,
+) -> io::Result<()> {
+    writeln!(writer, "Managed Skill")?;
+    writeln!(writer, "  name: {}", skill.skill_name)?;
+    writeln!(writer, "  enabled: {}", skill.enabled)?;
+    writeln!(
+        writer,
+        "  path: {}",
+        display_workspace_path(workspace_root, &skill.skill_path)
+    )?;
+    if !skill.description.is_empty() {
+        writeln!(writer, "  description: {}", skill.description)?;
+    }
+    Ok(())
+}
+
+fn write_managed_plugin_summaries(
+    writer: &mut impl Write,
+    workspace_root: &Path,
+    plugins: &[ManagedPluginDetail],
+) -> io::Result<()> {
+    if plugins.is_empty() {
+        writeln!(writer, "No managed plugins found.")?;
+        return Ok(());
+    }
+
+    for (index, plugin) in plugins.iter().enumerate() {
+        if index > 0 {
+            writeln!(writer)?;
+        }
+        writeln!(
+            writer,
+            "{}  kind={}  enabled={}  path={}",
+            plugin.plugin_id,
+            plugin.kind,
+            plugin.enabled,
+            display_workspace_path(workspace_root, &plugin.plugin_path)
+        )?;
+        writeln!(writer, "  reason: {}", plugin.reason)?;
+        if !plugin.contribution_summary.is_empty() {
+            writeln!(writer, "  contributes: {}", plugin.contribution_summary)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_managed_plugin_details(
+    writer: &mut impl Write,
+    workspace_root: &Path,
+    plugin: &ManagedPluginDetail,
+) -> io::Result<()> {
+    writeln!(writer, "Managed Plugin")?;
+    writeln!(writer, "  id: {}", plugin.plugin_id)?;
+    if let Some(name) = plugin.name.as_deref() {
+        writeln!(writer, "  name: {name}")?;
+    }
+    if let Some(version) = plugin.version.as_deref() {
+        writeln!(writer, "  version: {version}")?;
+    }
+    writeln!(writer, "  kind: {}", plugin.kind)?;
+    writeln!(writer, "  enabled: {}", plugin.enabled)?;
+    writeln!(writer, "  reason: {}", plugin.reason)?;
+    writeln!(
+        writer,
+        "  path: {}",
+        display_workspace_path(workspace_root, &plugin.plugin_path)
+    )?;
+    if let Some(description) = plugin.description.as_deref() {
+        writeln!(writer, "  description: {description}")?;
+    }
+    if !plugin.contribution_summary.is_empty() {
+        writeln!(writer, "  contributes: {}", plugin.contribution_summary)?;
+    }
+    Ok(())
+}
+
+fn mcp_transport_label(transport: &agent::mcp::McpTransportConfig) -> &'static str {
+    match transport {
+        agent::mcp::McpTransportConfig::Stdio { .. } => "stdio",
+        agent::mcp::McpTransportConfig::StreamableHttp { .. } => "http",
+    }
+}
+
+fn display_workspace_path(workspace_root: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace_root)
+        .map(|relative| relative.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string())
+}
+
 fn write_export_artifact(
     writer: &mut impl Write,
     artifact: &SessionExportArtifact,
@@ -2395,6 +2647,18 @@ mod tests {
     }
 
     #[test]
+    fn clap_parses_mcp_show() {
+        let cli = Cli::parse_from(["code-agent", "mcp", "show", "docs"]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Mcp(McpManagementCommand::Show {
+                name: "docs".to_string(),
+            }))
+        );
+    }
+
+    #[test]
     fn clap_parses_skill_add() {
         let cli = Cli::parse_from(["code-agent", "skill", "add", "./skills/review"]);
 
@@ -2422,6 +2686,16 @@ mod tests {
     }
 
     #[test]
+    fn clap_parses_skill_list() {
+        let cli = Cli::parse_from(["code-agent", "skill", "list"]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Skill(SkillManagementCommand::List))
+        );
+    }
+
+    #[test]
     fn clap_parses_plugin_add() {
         let cli = Cli::parse_from(["code-agent", "plugin", "add", "./plugins/review-policy"]);
 
@@ -2445,6 +2719,18 @@ mod tests {
                     enabled: true,
                 }
             ))
+        );
+    }
+
+    #[test]
+    fn clap_parses_plugin_show() {
+        let cli = Cli::parse_from(["code-agent", "plugin", "show", "review-policy"]);
+
+        assert_eq!(
+            cli.management_command().unwrap(),
+            Some(ManagementCommand::Plugin(PluginManagementCommand::Show {
+                id: "review-policy".to_string(),
+            }))
         );
     }
 

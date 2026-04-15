@@ -203,14 +203,20 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- export --last tmp/ses
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- import tmp/session-archive.json
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-events --last tmp/session.jsonl
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-transcript 019d8aae-c699-75c3-b9de-6890b6f4d21a tmp/session.txt
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp list
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp add docs --type stdio --env TOKEN=secret -- npx -y remote-mcp
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp disable docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp enable docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp delete docs
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill list
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill show review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill add ./my-skill
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill disable review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill enable review
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- skill delete review
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin list
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin show review-policy
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin add ./my-plugin
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin disable review-policy
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- plugin enable review-policy
@@ -227,10 +233,11 @@ changing the workspace package name.
 
 The store-backed `sessions`, `session`, `agent-sessions`, `agent-session`,
 `tasks`, `task`, `export`, `import`, `export-events`, `export-transcript`, and
-`mcp add|delete|enable|disable`, plus the managed `skill add|delete|enable|disable`
-and `plugin add|delete|enable|disable` commands operate directly on workspace
-state, so they do not require a provider API key just to browse, inspect,
-archive, restore, or update local configuration.
+`mcp list|show|add|delete|enable|disable`, plus the managed
+`skill list|show|add|delete|enable|disable` and
+`plugin list|show|add|delete|enable|disable` commands operate directly on
+workspace state, so they do not require a provider API key just to browse,
+inspect, archive, restore, or update local configuration.
 
 `skill` management only targets the workspace-local managed root
 `.nanoclaw/skills`. Disabling a managed skill moves it under
