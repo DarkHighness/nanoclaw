@@ -137,6 +137,32 @@ pub(crate) enum MainPaneMode {
     View,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ToolDetailVisibility {
+    #[default]
+    Hidden,
+    Expanded,
+    Full,
+}
+
+impl ToolDetailVisibility {
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Hidden => Self::Expanded,
+            Self::Expanded => Self::Full,
+            Self::Full => Self::Hidden,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Hidden => "hidden",
+            Self::Expanded => "expanded",
+            Self::Full => "full",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ComposerContextHint {
     LiveTaskFinished {
@@ -456,7 +482,7 @@ pub(crate) struct TuiState {
     pub(crate) theme: String,
     pub(crate) themes: Vec<ThemeSummary>,
     pub(crate) main_pane: MainPaneMode,
-    pub(crate) show_tool_details: bool,
+    pub(crate) tool_detail_visibility: ToolDetailVisibility,
     pub(crate) input: String,
     pub(crate) input_cursor: usize,
     pub(crate) input_vertical_column: Option<usize>,

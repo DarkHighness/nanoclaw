@@ -1,4 +1,4 @@
-use crate::preview::{PreviewCollapse, collapse_preview_text, command_output_collapse};
+use crate::preview::{PreviewCollapse, collapse_preview_text};
 use serde_json::{Map, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1853,28 +1853,27 @@ fn process_output_details(
         .and_then(Value::as_str)
         .unwrap_or_default();
 
-    let stdout_preview =
-        collapse_command_output(stdout, exit_code, timed_out, !stderr.trim().is_empty());
-    let stderr_preview = if stderr.trim().is_empty() {
+    let stdout_lines = full_detail_block_lines(stdout);
+    let stderr_lines = if stderr.trim().is_empty() {
         Vec::new()
     } else {
-        collapse_preview_text(stderr.trim_end(), 8, 120, PreviewCollapse::Tail)
+        full_detail_block_lines(stderr)
     };
-    let has_stdout_preview = !stdout_preview.is_empty();
-    let has_stderr_preview = !stderr_preview.is_empty();
+    let has_stdout_preview = !stdout_lines.is_empty();
+    let has_stderr_preview = !stderr_lines.is_empty();
 
     if has_stdout_preview {
         detail_lines.push(ToolDetail::NamedBlock {
             label: "Stdout".to_string(),
             kind: ToolDetailBlockKind::Stdout,
-            lines: stdout_preview,
+            lines: stdout_lines,
         });
     }
     if has_stderr_preview {
         detail_lines.push(ToolDetail::NamedBlock {
             label: "Stderr".to_string(),
             kind: ToolDetailBlockKind::Stderr,
-            lines: stderr_preview,
+            lines: stderr_lines,
         });
     }
 
@@ -3192,25 +3191,6 @@ fn render_code_diagnostic_line(diagnostic: &Value) -> Option<String> {
     Some(rendered)
 }
 
-fn collapse_command_output(
-    output: &str,
-    exit_code: Option<i64>,
-    timed_out: bool,
-    has_stderr: bool,
-) -> Vec<String> {
-    let trimmed = output.trim_end();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-
-    collapse_preview_text(
-        trimmed,
-        12,
-        120,
-        command_output_collapse(exit_code, timed_out, has_stderr),
-    )
-}
-
 fn generic_output_details(output_preview: &str) -> Vec<ToolDetail> {
     let trimmed = output_preview.trim();
     if trimmed.is_empty() || trimmed == "<empty>" {
@@ -3223,14 +3203,14 @@ fn generic_output_details(output_preview: &str) -> Vec<ToolDetail> {
         return details;
     }
 
-    let collapsed = collapse_preview_text(output_preview, 8, 120, PreviewCollapse::HeadTail);
-    if collapsed.len() > 1
+    let full_lines = full_detail_block_lines(output_preview);
+    if full_lines.len() > 1
         || output_preview.chars().count() > 96
         || output_preview.lines().count() > 1
     {
         return vec![ToolDetail::LabeledBlock {
             label: ToolDetailLabel::Output,
-            lines: collapsed,
+            lines: full_lines,
         }];
     }
 
@@ -3238,6 +3218,18 @@ fn generic_output_details(output_preview: &str) -> Vec<ToolDetail> {
         label: ToolDetailLabel::Output,
         value: inline_preview_text(output_preview, 96),
     }]
+}
+
+fn full_detail_block_lines(value: &str) -> Vec<String> {
+    let trimmed = value.trim_end();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    // Renderer-owned detail blocks must retain the complete body. The collapsed
+    // transcript is the preview tier; `/details` is the full-fidelity tier and
+    // should not still show synthetic omission markers such as `… +10 lines`.
+    trimmed.lines().map(str::to_string).collect()
 }
 
 fn file_mutation_output_details(
@@ -4904,6 +4896,28 @@ mod tests {
         assert!(rendered.iter().any(|line| line == "  └ Result exit 0"));
         assert!(rendered.iter().any(|line| line == "  └ Stdout"));
         assert!(rendered.iter().any(|line| line == "    ok"));
+    }
+
+    #[test]
+    fn exec_command_output_details_keep_full_multiline_blocks() {
+        let stdout = (1..=12)
+            .map(|index| format!("stdout line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered = tool_output_detail_lines(
+            "exec_command",
+            &stdout,
+            Some(&json!({
+                "session_id": "exec_123",
+                "state": "completed",
+                "exit_code": 0,
+                "stdout": {"text": stdout},
+                "stderr": {"text": ""}
+            })),
+        );
+
+        assert!(rendered.iter().any(|line| line == "    stdout line 12"));
+        assert!(rendered.iter().all(|line| !line.contains("… +")));
     }
 
     #[test]

@@ -42,7 +42,7 @@ pub(crate) fn build_startup_inspector(session: &state::SessionSummary) -> Vec<In
         command_entry("statusline", "/statusline", "Choose footer items"),
         command_entry("thinking", "/thinking [level]", "Pick or set model effort"),
         command_entry("theme", "/theme [name]", "Pick or set TUI theme"),
-        command_entry("details", "/details", "Toggle tool details"),
+        command_entry("details", "/details", "Cycle tool detail levels"),
         command_entry(
             "permissions",
             "/permissions [mode]",

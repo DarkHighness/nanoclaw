@@ -1,7 +1,7 @@
 use super::super::state::{
-    TranscriptEntry, TranscriptShellBlockKind, TranscriptShellDetail, TranscriptShellEntry,
-    TranscriptShellStatus, TranscriptToolEntry, TranscriptToolHeadlineSubjectKind,
-    TranscriptToolStatus, TuiState, preview_text,
+    ToolDetailVisibility, TranscriptEntry, TranscriptShellBlockKind, TranscriptShellDetail,
+    TranscriptShellEntry, TranscriptShellStatus, TranscriptToolEntry,
+    TranscriptToolHeadlineSubjectKind, TranscriptToolStatus, TuiState, preview_text,
 };
 use super::shared::{
     pending_control_focus_label, pending_control_kind_label, pending_control_reason_label,
@@ -21,8 +21,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const COLLAPSED_SHELL_PREVIEW_DETAIL_LINES: usize = 2;
-const SELECTED_TOOL_PREVIEW_DETAIL_LINES: usize = 5;
+const HIDDEN_SHELL_PREVIEW_DETAIL_LINES: usize = 2;
+const HIDDEN_SELECTED_TOOL_PREVIEW_DETAIL_LINES: usize = 5;
+const EXPANDED_SHELL_PREVIEW_DETAIL_LINES: usize = 8;
+const EXPANDED_SELECTED_TOOL_PREVIEW_DETAIL_LINES: usize = 14;
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct RenderedTranscriptCell {
@@ -43,18 +45,22 @@ impl RenderedTranscriptCell {
 
 pub(super) fn should_collapse_shell_details(
     entry: &TranscriptEntry,
-    show_tool_details: bool,
+    detail_visibility: ToolDetailVisibility,
 ) -> bool {
     // Keep the default transcript on a single readable timeline. Operators can
-    // opt back into the full tool payload stream via `/details`.
-    !show_tool_details && entry.is_shell_summary() && hidden_shell_detail_line_count(entry) > 0
+    // cycle between hidden, expanded, and full detail tiers via `/details`.
+    shell_preview_detail_limit(detail_visibility).is_some_and(|max_lines| {
+        entry.is_shell_summary() && hidden_shell_detail_line_count(entry, max_lines) > 0
+    })
 }
 
 pub(super) fn should_collapse_tool_details(
     entry: &TranscriptEntry,
-    show_tool_details: bool,
+    detail_visibility: ToolDetailVisibility,
+    selected: bool,
 ) -> bool {
-    !show_tool_details && hidden_tool_detail_line_count(entry) > 0
+    tool_preview_detail_limit(detail_visibility, selected)
+        .is_some_and(|max_lines| hidden_tool_detail_line_count_with_limit(entry, max_lines) > 0)
 }
 
 pub(super) fn render_collapsed_tool_entry(
@@ -64,15 +70,13 @@ pub(super) fn render_collapsed_tool_entry(
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
     selected: bool,
+    detail_visibility: ToolDetailVisibility,
 ) -> RenderedTranscriptCell {
     let tool = entry
         .tool_entry()
         .expect("collapsed tool entries require structured tool payloads");
-    let preview_line_count = if selected {
-        SELECTED_TOOL_PREVIEW_DETAIL_LINES
-    } else {
-        COLLAPSED_SHELL_PREVIEW_DETAIL_LINES
-    };
+    let preview_line_count =
+        tool_preview_detail_limit(detail_visibility, selected).unwrap_or(usize::MAX);
     let preview = tool.preview_with_detail_lines(preview_line_count);
     let hidden_line_count = hidden_tool_detail_line_count_with_limit(entry, preview_line_count);
     let mut cell = render_tool_entry_sections(&preview, marker, kind, animation_frame);
@@ -91,12 +95,14 @@ pub(super) fn render_collapsed_shell_summary(
     accent: Color,
     kind: TranscriptEntryKind,
     animation_frame: Option<u128>,
+    detail_visibility: ToolDetailVisibility,
 ) -> RenderedTranscriptCell {
     let summary = entry
         .shell_summary()
         .expect("collapsed shell summaries require structured details");
-    let preview_summary = summary.preview_with_detail_lines(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES);
-    let hidden_line_count = hidden_shell_detail_line_count(entry);
+    let preview_limit = shell_preview_detail_limit(detail_visibility).unwrap_or(usize::MAX);
+    let preview_summary = summary.preview_with_detail_lines(preview_limit);
+    let hidden_line_count = hidden_shell_detail_line_count(entry, preview_limit);
     let mut cell = render_shell_summary_sections(&preview_summary, marker, kind, animation_frame);
     if hidden_line_count > 0 {
         cell.meta
@@ -111,7 +117,7 @@ fn hidden_detail_hint_line(hidden_line_count: usize, kind: TranscriptEntryKind) 
         transcript_continuation_prefix(kind),
         Span::styled(
             format!(
-                "{} hidden line{} · /details",
+                "{} hidden line{} · /details next level",
                 hidden_line_count,
                 if hidden_line_count == 1 { "" } else { "s" }
             ),
@@ -131,16 +137,39 @@ fn hidden_tool_detail_line_count_with_limit(
         .saturating_sub(max_detail_lines)
 }
 
-fn hidden_tool_detail_line_count(entry: &TranscriptEntry) -> usize {
-    hidden_tool_detail_line_count_with_limit(entry, COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
-}
-
-fn hidden_shell_detail_line_count(entry: &TranscriptEntry) -> usize {
+fn hidden_shell_detail_line_count(entry: &TranscriptEntry, max_detail_lines: usize) -> usize {
     entry
         .shell_summary()
         .map(|summary| summary.serialized_lines().len().saturating_sub(1))
         .unwrap_or_default()
-        .saturating_sub(COLLAPSED_SHELL_PREVIEW_DETAIL_LINES)
+        .saturating_sub(max_detail_lines)
+}
+
+fn tool_preview_detail_limit(
+    detail_visibility: ToolDetailVisibility,
+    selected: bool,
+) -> Option<usize> {
+    match detail_visibility {
+        ToolDetailVisibility::Hidden => Some(if selected {
+            HIDDEN_SELECTED_TOOL_PREVIEW_DETAIL_LINES
+        } else {
+            HIDDEN_SHELL_PREVIEW_DETAIL_LINES
+        }),
+        ToolDetailVisibility::Expanded => Some(if selected {
+            EXPANDED_SELECTED_TOOL_PREVIEW_DETAIL_LINES
+        } else {
+            EXPANDED_SHELL_PREVIEW_DETAIL_LINES
+        }),
+        ToolDetailVisibility::Full => None,
+    }
+}
+
+fn shell_preview_detail_limit(detail_visibility: ToolDetailVisibility) -> Option<usize> {
+    match detail_visibility {
+        ToolDetailVisibility::Hidden => Some(HIDDEN_SHELL_PREVIEW_DETAIL_LINES),
+        ToolDetailVisibility::Expanded => Some(EXPANDED_SHELL_PREVIEW_DETAIL_LINES),
+        ToolDetailVisibility::Full => None,
+    }
 }
 
 pub(super) fn render_shell_summary_body(

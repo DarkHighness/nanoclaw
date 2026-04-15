@@ -385,7 +385,7 @@ fn command_palette_includes_help_and_clear_alias() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "/details  Toggle tool details")
+            .any(|line| line == "/details  Cycle tool detail levels")
     );
     assert!(
         lines

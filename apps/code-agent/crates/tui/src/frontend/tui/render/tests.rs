@@ -40,8 +40,8 @@ use crate::frontend::tui::state::{
     ActiveToolCell, ComposerContextHint, ComposerDraftAttachmentKind, ComposerDraftAttachmentState,
     ComposerDraftState, HistoryRollbackCandidate, InspectorAction, InspectorEntry, MainPaneMode,
     ManagedTogglePickerItem, ManagedTogglePickerKind, ManagedTogglePickerState, ProviderRetryState,
-    StatusLinePickerState, ThemePickerState, ToastTone, ToolSelectionTarget, TrackedTaskSummary,
-    TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
+    StatusLinePickerState, ThemePickerState, ToastTone, ToolDetailVisibility, ToolSelectionTarget,
+    TrackedTaskSummary, TranscriptEntry, TranscriptShellDetail, TranscriptToolStatus, TuiState,
 };
 use crate::interaction::{
     ApprovalContent, ApprovalContentKind, ApprovalOrigin, PendingControlKind, PendingControlReason,
@@ -302,7 +302,7 @@ fn transcript_collapses_tool_details_by_default() {
 fn transcript_expands_tool_details_when_enabled() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
-        show_tool_details: true,
+        tool_detail_visibility: ToolDetailVisibility::Full,
         ..TuiState::default()
     };
     state.transcript = vec![finished_tool_transcript_entry()];
@@ -319,6 +319,93 @@ fn transcript_expands_tool_details_when_enabled() {
             .iter()
             .any(|line| line_text_for(line).contains("ok"))
     );
+}
+
+#[test]
+fn transcript_cycles_hidden_expanded_and_full_tool_detail_levels() {
+    let verbose_lines = (1..=12)
+        .map(|index| format!("stdout line {index}"))
+        .collect::<Vec<_>>();
+    let entry = TranscriptEntry::tool(
+        TranscriptToolStatus::Finished,
+        "exec_command",
+        vec![
+            command_tool_detail("cargo test"),
+            ToolDetail::NamedBlock {
+                label: "Stdout".to_string(),
+                kind: ToolDetailBlockKind::Stdout,
+                lines: verbose_lines,
+            },
+        ],
+    );
+
+    let mut hidden = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        tool_detail_visibility: ToolDetailVisibility::Hidden,
+        ..TuiState::default()
+    };
+    hidden.transcript = vec![entry.clone()];
+
+    let mut expanded = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        tool_detail_visibility: ToolDetailVisibility::Expanded,
+        ..TuiState::default()
+    };
+    expanded.transcript = vec![entry.clone()];
+
+    let mut full = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        tool_detail_visibility: ToolDetailVisibility::Full,
+        ..TuiState::default()
+    };
+    full.transcript = vec![entry];
+
+    let hidden_lines = build_transcript_lines(&hidden)
+        .iter()
+        .map(line_text_for)
+        .collect::<Vec<_>>();
+    let expanded_lines = build_transcript_lines(&expanded)
+        .iter()
+        .map(line_text_for)
+        .collect::<Vec<_>>();
+    let full_lines = build_transcript_lines(&full)
+        .iter()
+        .map(line_text_for)
+        .collect::<Vec<_>>();
+
+    assert!(
+        hidden_lines
+            .iter()
+            .any(|line| line.contains("hidden line") && line.contains("/details next level"))
+    );
+    assert!(
+        !hidden_lines
+            .iter()
+            .any(|line| line.contains("stdout line 1"))
+    );
+
+    assert!(
+        expanded_lines
+            .iter()
+            .any(|line| line.contains("stdout line 6"))
+    );
+    assert!(
+        !expanded_lines
+            .iter()
+            .any(|line| line.contains("stdout line 8"))
+    );
+    assert!(
+        expanded_lines
+            .iter()
+            .any(|line| line.contains("hidden line") && line.contains("/details next level"))
+    );
+
+    assert!(
+        full_lines
+            .iter()
+            .any(|line| line.contains("stdout line 12"))
+    );
+    assert!(!full_lines.iter().any(|line| line.contains("hidden line")));
 }
 
 #[test]
@@ -2193,7 +2280,7 @@ fn transcript_preserves_span_level_syntax_highlighting_for_fenced_code() {
 fn transcript_renders_shell_text_blocks_as_markdown_sections() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
-        show_tool_details: true,
+        tool_detail_visibility: ToolDetailVisibility::Full,
         ..TuiState::default()
     };
     state.transcript = vec![TranscriptEntry::shell_summary_details(
@@ -2256,7 +2343,7 @@ fn transcript_renders_shell_text_blocks_as_markdown_sections() {
 fn transcript_renders_tool_text_blocks_as_markdown_output() {
     let mut state = TuiState {
         main_pane: MainPaneMode::Transcript,
-        show_tool_details: true,
+        tool_detail_visibility: ToolDetailVisibility::Full,
         ..TuiState::default()
     };
     state.transcript = vec![TranscriptEntry::tool(

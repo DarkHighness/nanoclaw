@@ -98,12 +98,12 @@ impl CodeAgentTui {
     ) {
         let aborted_operator_task = self.abort_operator_task();
         let previous = self.ui_state.snapshot();
-        let show_tool_details = previous.show_tool_details;
+        let tool_detail_visibility = previous.tool_detail_visibility;
         let display = previous.session.display.clone();
         let statusline = previous.session.statusline.clone();
         let motion = previous.session.motion.clone();
         let mut startup = self.startup_state_from_snapshot(&outcome.startup);
-        startup.show_tool_details = show_tool_details;
+        startup.tool_detail_visibility = tool_detail_visibility;
         startup.session.display = display;
         startup.session.statusline = statusline;
         startup.session.motion = motion;

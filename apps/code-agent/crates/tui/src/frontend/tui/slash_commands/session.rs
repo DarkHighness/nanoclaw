@@ -13,12 +13,8 @@ impl CodeAgentTui {
             }
             SlashCommand::Details => {
                 self.ui_state.mutate(|state| {
-                    state.show_tool_details = !state.show_tool_details;
-                    let visibility = if state.show_tool_details {
-                        "expanded"
-                    } else {
-                        "collapsed"
-                    };
+                    state.tool_detail_visibility = state.tool_detail_visibility.next();
+                    let visibility = state.tool_detail_visibility.label();
                     state.status = format!("Tool details {visibility}");
                     state.push_activity(format!("tool details {visibility}"));
                 });

@@ -87,7 +87,7 @@ fn startup_inspector_surfaces_backend_boot_snapshot() {
     assert!(
         lines
             .iter()
-            .any(|line| line == "/details  Toggle tool details")
+            .any(|line| line == "/details  Cycle tool detail levels")
     );
     assert!(
         lines

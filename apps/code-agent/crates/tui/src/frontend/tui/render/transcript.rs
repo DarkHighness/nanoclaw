@@ -1,6 +1,6 @@
 use super::super::state::{
-    ToolSelectionTarget, TranscriptCellMotionKind, TranscriptCellMotionState, TranscriptEntry,
-    TranscriptToolEntry, TranscriptToolStatus, TuiState, preview_text,
+    ToolDetailVisibility, ToolSelectionTarget, TranscriptCellMotionKind, TranscriptCellMotionState,
+    TranscriptEntry, TranscriptToolEntry, TranscriptToolStatus, TuiState, preview_text,
 };
 use super::transcript_markdown::render_markdown_body;
 use super::transcript_shell::{
@@ -130,7 +130,7 @@ pub(super) fn build_transcript_lines_for_width(
             }
             let cell_lines = format_transcript_cell_with_mode(
                 entry,
-                state.show_tool_details,
+                state.tool_detail_visibility,
                 (state.turn_running && index + 1 == state.transcript.len())
                     .then_some(tool_timeline_animation)
                     .flatten(),
@@ -154,7 +154,7 @@ pub(super) fn build_transcript_lines_for_width(
             );
             lines.extend(format_transcript_cell_with_mode(
                 &active_entry,
-                state.show_tool_details,
+                state.tool_detail_visibility,
                 state
                     .turn_running
                     .then_some(tool_timeline_animation)
@@ -186,7 +186,7 @@ pub(super) fn build_transcript_lines_for_width(
             let active_entry = TranscriptEntry::ShellSummary(active.entry.clone());
             lines.extend(format_transcript_cell_with_mode(
                 &active_entry,
-                state.show_tool_details,
+                state.tool_detail_visibility,
                 Some(animation_frame_ms(active.started_at, frame_time)),
                 false,
                 None,
@@ -207,7 +207,7 @@ pub(super) fn build_transcript_lines_for_width(
             }
             lines.extend(format_transcript_cell_with_mode(
                 &entry,
-                true,
+                ToolDetailVisibility::Full,
                 state
                     .turn_running
                     .then_some(tool_timeline_animation)
@@ -299,7 +299,7 @@ fn transcript_turn_starts_for_width(
 
             let cell_lines = format_transcript_cell_with_mode(
                 entry,
-                state.show_tool_details,
+                state.tool_detail_visibility,
                 (state.turn_running && index + 1 == state.transcript.len())
                     .then_some(tool_timeline_animation)
                     .flatten(),
@@ -324,7 +324,7 @@ fn transcript_turn_starts_for_width(
             );
             let cell_lines = format_transcript_cell_with_mode(
                 &active_entry,
-                state.show_tool_details,
+                state.tool_detail_visibility,
                 state
                     .turn_running
                     .then_some(tool_timeline_animation)
@@ -359,7 +359,7 @@ fn transcript_turn_starts_for_width(
             let active_entry = TranscriptEntry::ShellSummary(active.entry.clone());
             let cell_lines = format_transcript_cell_with_mode(
                 &active_entry,
-                state.show_tool_details,
+                state.tool_detail_visibility,
                 Some(animation_frame_ms(active.started_at, frame_time)),
                 false,
                 None,
@@ -382,7 +382,7 @@ fn transcript_turn_starts_for_width(
             }
             let cell_lines = format_transcript_cell_with_mode(
                 &entry,
-                true,
+                ToolDetailVisibility::Full,
                 state
                     .turn_running
                     .then_some(tool_timeline_animation)
@@ -577,12 +577,19 @@ pub(super) enum TranscriptEntryKind {
 }
 
 pub(super) fn format_transcript_cell(entry: &TranscriptEntry) -> Vec<Line<'static>> {
-    format_transcript_cell_with_mode(entry, true, None, false, None, Instant::now())
+    format_transcript_cell_with_mode(
+        entry,
+        ToolDetailVisibility::Full,
+        None,
+        false,
+        None,
+        Instant::now(),
+    )
 }
 
 fn format_transcript_cell_with_mode(
     entry: &TranscriptEntry,
-    show_tool_details: bool,
+    tool_detail_visibility: ToolDetailVisibility,
     animation_frame: Option<u128>,
     selected: bool,
     motion: Option<&TranscriptCellMotionState>,
@@ -592,18 +599,33 @@ fn format_transcript_cell_with_mode(
     let kind = entry_kind_from_cell(entry);
     let accent = entry_accent(entry, kind);
 
-    if should_collapse_tool_details(entry, show_tool_details) {
+    if should_collapse_tool_details(entry, tool_detail_visibility, selected) {
         return compose_rendered_transcript_cell(
-            render_collapsed_tool_entry(entry, marker, accent, kind, animation_frame, selected),
+            render_collapsed_tool_entry(
+                entry,
+                marker,
+                accent,
+                kind,
+                animation_frame,
+                selected,
+                tool_detail_visibility,
+            ),
             selected,
             accent,
             motion,
             now,
         );
     }
-    if should_collapse_shell_details(entry, show_tool_details) {
+    if should_collapse_shell_details(entry, tool_detail_visibility) {
         return compose_rendered_transcript_cell(
-            render_collapsed_shell_summary(entry, marker, accent, kind, animation_frame),
+            render_collapsed_shell_summary(
+                entry,
+                marker,
+                accent,
+                kind,
+                animation_frame,
+                tool_detail_visibility,
+            ),
             selected,
             accent,
             motion,

@@ -255,7 +255,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         section: "Session",
         name: "details",
         usage: "details",
-        summary: "Toggle tool details",
+        summary: "Cycle tool detail levels",
     },
     SlashCommandSpec {
         section: "Session",
