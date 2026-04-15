@@ -1,0 +1,4 @@
+interface:
+  display_name: "eBPF Performance Engineering"
+  short_description: "Design and load eBPF perf probes"
+  default_prompt: "Use $ebpf-performance-engineering to design or implement an eBPF-based performance probe and show the build, load, attach, and verification steps."

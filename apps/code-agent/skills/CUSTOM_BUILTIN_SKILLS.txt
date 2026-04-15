@@ -1,0 +1,42 @@
+Repo-authored built-in skills bundled alongside the upstream OpenAI skill set.
+
+These skills are host-authored and synthesized from the sources listed below.
+They are not copied from the upstream `openai/skills` repository.
+
+Custom built-in skills:
+- linux-performance-collection
+- linux-performance-analysis
+- ebpf-performance-engineering
+- performance-report-writing
+
+Primary sources used while authoring these skills:
+- Brendan Gregg, "The USE Method: Linux"
+  https://www.brendangregg.com/USEmethod/use-linux.html
+- Brendan Gregg, "Performance Analysis Methodology"
+  https://www.brendangregg.com/methodology.html
+- Brendan Gregg, "Active Benchmarking"
+  https://www.brendangregg.com/activebenchmarking.html
+- Brendan Gregg, "Linux Performance Analysis in 60,000 Milliseconds"
+  https://www.brendangregg.com/Articles/Netflix_Linux_Perf_Analysis_60s.pdf
+- Brendan Gregg, "Off-CPU Flame Graphs"
+  https://www.brendangregg.com/FlameGraphs/offcpuflamegraphs.html
+- sysstat official repository
+  https://github.com/sysstat/sysstat
+- Intel VTune cookbook, "Top-Down Microarchitecture Analysis Method"
+  https://www.intel.com/content/www/us/en/docs/vtune-profiler/cookbook/2023-1/top-down-microarchitecture-analysis-method.html
+- `perf-stat(1)` manual
+  https://man7.org/linux/man-pages/man1/perf-stat.1.html
+- perf wiki
+  https://perfwiki.github.io/main/top-down-analysis/
+- Arm learning path, Linux perf top-down examples
+  https://learn.arm.com/learning-paths/cross-platform/topdown-compare/2-code-examples/
+- libbpf overview
+  https://libbpf.readthedocs.io/en/latest/libbpf_overview.html
+- eBPF CO-RE docs
+  https://docs.ebpf.io/concepts/core/
+- bpftrace official site
+  https://bpftrace.org/
+- bpftrace repository
+  https://github.com/bpftrace/bpftrace
+- Oracle Linux blog, "Writing a block I/O filter using libbpf and eBPF tracing framework"
+  https://blogs.oracle.com/linux/post/writing-a-block-io-filter-using-libbpf-and-ebpf-tracing-framework

@@ -19,11 +19,11 @@ const BUILTIN_CONTEXT7_SERVER: &str = "context7";
 const BUILTIN_PLAYWRIGHT_SERVER: &str = "playwright";
 const BUILTIN_CONTEXT7_PACKAGE: &str = "@upstash/context7-mcp@latest";
 const BUILTIN_PLAYWRIGHT_PACKAGE: &str = "@playwright/mcp@latest";
-// Bundle exact upstream skill packages so built-in skills keep their companion
-// references, scripts, agents, and assets instead of flattening to SKILL.md-only
-// copies. The vendored tree is sourced from openai/skills @
-// e6afb0d74cc75d220df2faf3dd6c635c2dc6a108 and intentionally excludes official
-// skills that depend on Codex-only host integrations unavailable in nanoclaw.
+// Bundle built-in skills with their companion references, scripts, agents, and
+// assets instead of flattening them to SKILL.md-only copies. This tree contains
+// an exact vendored subset of openai/skills @
+// e6afb0d74cc75d220df2faf3dd6c635c2dc6a108 plus host-authored Linux
+// performance skills documented in skills/CUSTOM_BUILTIN_SKILLS.txt.
 static BUILTIN_SKILLS_SOURCE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../skills");
 
 #[derive(Clone, Debug, PartialEq, Eq)]

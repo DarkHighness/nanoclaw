@@ -247,13 +247,18 @@ Code-agent also materializes two built-in managed MCP entries by default:
 servers. When no supported launcher is available in `PATH`, startup warns and
 skips connecting that built-in server instead of failing the whole session.
 
-Code-agent also bundles an official upstream skill pack by default, sourced
-from `openai/skills` commit `e6afb0d74cc75d220df2faf3dd6c635c2dc6a108`.
+Code-agent also bundles a built-in skill pack by default. It includes an
+official upstream subset sourced from `openai/skills` commit
+`e6afb0d74cc75d220df2faf3dd6c635c2dc6a108`, plus repo-authored Linux
+performance skills grounded in the sources listed in
+`skills/CUSTOM_BUILTIN_SKILLS.txt`.
 The current built-in set includes:
 `skill-creator`, `cli-creator`, `doc`, `frontend-skill`,
 `gh-address-comments`, `gh-fix-ci`, `pdf`, `playwright`, `screenshot`,
-`security-best-practices`, `security-ownership-map`, and
-`security-threat-model`.
+`security-best-practices`, `security-ownership-map`,
+`security-threat-model`, `linux-performance-collection`,
+`linux-performance-analysis`, `ebpf-performance-engineering`, and
+`performance-report-writing`.
 They are materialized under the app-owned hidden bundle
 `.nanoclaw/apps/code-agent/builtin-skills`, start enabled, and show up in both
 `skill list|show` and `/skill`. Disabling a built-in skill updates

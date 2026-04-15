@@ -1,0 +1,4 @@
+interface:
+  display_name: "Linux Perf Analysis"
+  short_description: "Analyze Linux perf evidence rigorously"
+  default_prompt: "Use $linux-performance-analysis to analyze this Linux performance evidence with USE, top-down, CPI or IPC, and off-CPU methods."

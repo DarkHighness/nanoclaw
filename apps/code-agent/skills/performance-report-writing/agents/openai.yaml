@@ -1,0 +1,4 @@
+interface:
+  display_name: "Performance Report Writing"
+  short_description: "Write evidence-driven perf reports"
+  default_prompt: "Use $performance-report-writing to write a performance report that states the problem, evidence, findings, limiters, unknowns, and next experiments."

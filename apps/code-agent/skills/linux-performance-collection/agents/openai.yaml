@@ -1,0 +1,4 @@
+interface:
+  display_name: "Linux Perf Collection"
+  short_description: "Collect Linux performance evidence"
+  default_prompt: "Use $linux-performance-collection to capture a low-overhead Linux performance evidence set with perf, sysstat, and eBPF where needed."

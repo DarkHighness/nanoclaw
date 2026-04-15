@@ -715,6 +715,11 @@ mod tests {
                 .join("playwright/SKILL.md")
                 .is_file()
         );
+        assert!(
+            builtin_skill_root(dir.path())
+                .join("linux-performance-analysis/SKILL.md")
+                .is_file()
+        );
         assert!(config.disabled_builtin_skills.contains("frontend-skill"));
         assert_eq!(config.disabled_builtin_skills.len(), 1);
     }
