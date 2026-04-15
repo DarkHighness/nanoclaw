@@ -234,17 +234,30 @@ fn apply_anthropic_usage(target: &mut TokenUsage, usage: Option<&Value>) {
         return;
     };
     if let Some(input_tokens) = usage.get("input_tokens").and_then(Value::as_u64) {
+        let cache_write_tokens = usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let cache_read_tokens = usage
             .get("cache_read_input_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(target.cache_read_tokens);
-        target.input_tokens = input_tokens;
+        // Anthropic splits prompt-usage accounting into uncached input,
+        // cache-creation writes, and cache hits. The host usage ledger treats
+        // `input_tokens` as the full prefix-eligible total so downstream
+        // summaries can stay provider-agnostic.
+        target.input_tokens = input_tokens
+            .saturating_add(cache_write_tokens)
+            .saturating_add(cache_read_tokens);
         target.cache_read_tokens = cache_read_tokens;
-        target.prefill_tokens = input_tokens.saturating_sub(cache_read_tokens);
+        target.prefill_tokens = input_tokens.saturating_add(cache_write_tokens);
     }
     if let Some(output_tokens) = usage.get("output_tokens").and_then(Value::as_u64) {
         target.output_tokens = output_tokens;
         target.decode_tokens = output_tokens;
+        // Anthropic currently bills thinking blocks inside `output_tokens`
+        // without exposing a separate reasoning-token counter in the API usage
+        // object, so there is no additional field to populate here.
     }
 }
 
@@ -970,8 +983,57 @@ mod tests {
                 ..
             }) if reason == "tool_use"
                 && message_id.as_str() == "msg_1"
-                && *usage == TokenUsage::from_input_output(120, 30, 20)
-                && usage.prefix_cache_hit_rate_basis_points() == Some(1667)
+                && *usage == TokenUsage::from_input_output(140, 30, 20)
+                && usage.prefill_tokens == 120
+                && usage.prefix_cache_hit_rate_basis_points() == Some(1429)
+        ));
+    }
+
+    #[tokio::test]
+    async fn anthropic_usage_counts_cache_creation_tokens_inside_total_input() {
+        let server = MockServer::start().await;
+        let sse = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":120,\"cache_creation_input_tokens\":40,\"cache_read_input_tokens\":20}}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":30}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .and(header("accept", "text/event-stream"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw(sse, "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let stream = stream_anthropic_turn(
+            AnthropicTransport {
+                api_key: "test-key".to_string(),
+                base_url: server.uri(),
+                http_client: reqwest::Client::new(),
+            },
+            ProviderDescriptor::anthropic("claude-sonnet-4-6").model,
+            base_request(),
+            RequestOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let events = stream.collect::<Vec<_>>().await;
+        assert!(matches!(
+            &events[0],
+            Ok(ModelEvent::ResponseComplete {
+                usage: Some(usage),
+                ..
+            }) if *usage == TokenUsage::from_input_output(180, 30, 20)
+                && usage.prefill_tokens == 160
+                && usage.reasoning_tokens == 0
         ));
     }
 }
