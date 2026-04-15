@@ -4,7 +4,6 @@ use crate::backend::{
     build_plugin_activation_plan, build_system_preamble, dedup_mcp_servers,
     merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots,
 };
-use crate::provider::build_memory_reasoning_service;
 use agent::plugins::discover_plugins;
 use agent::runtime::UserMessageAugmentor;
 use agent::{SkillCatalog, ToolRegistry};
@@ -179,10 +178,6 @@ impl CodeAgentSession {
             &plugin_plan.runtime_activations,
             self.workspace_root(),
             Some(self.store.clone()),
-            Some(build_memory_reasoning_service(
-                &self.managed_surface_reload.memory_profile,
-                &self.managed_surface_reload.env_map,
-            )),
             &mut registry,
             agent::UnknownDriverPolicy::Error,
         )?;

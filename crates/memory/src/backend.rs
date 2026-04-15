@@ -14,8 +14,8 @@ pub enum MemoryScope {
     #[default]
     Semantic,
     Episodic,
+    #[serde(alias = "coordination")]
     Working,
-    Coordination,
 }
 
 impl MemoryScope {
@@ -26,7 +26,6 @@ impl MemoryScope {
             Self::Semantic => "semantic",
             Self::Episodic => "episodic",
             Self::Working => "working",
-            Self::Coordination => "coordination",
         }
     }
 }

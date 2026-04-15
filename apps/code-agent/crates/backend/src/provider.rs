@@ -1,4 +1,3 @@
-use agent::inference::LlmServiceConfig;
 use agent::provider::{
     BackendDescriptor, OpenAiResponsesOptions, OpenAiServerCompaction, ProviderBackend,
     ProviderDescriptor, RequestOptions,
@@ -13,7 +12,6 @@ use nanoclaw_config::{ProviderKind, ResolvedAgentProfile, ResolvedInternalProfil
 use serde_json::{Map, Value};
 use std::sync::{Arc, RwLock};
 
-const DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS: u64 = 30_000;
 const OPENAI_GPT5_REASONING_LEVELS: &[&str] = &["minimal", "low", "medium", "high"];
 const OPENAI_GPT51_REASONING_LEVELS: &[&str] = &["none", "low", "medium", "high"];
 const OPENAI_GPT52_PLUS_REASONING_LEVELS: &[&str] = &["none", "low", "medium", "high", "xhigh"];
@@ -204,20 +202,6 @@ pub fn build_internal_backend(
         profile.reasoning_effort.clone(),
         provider_api_key(&profile.model, env_map),
     )
-}
-
-pub fn build_memory_reasoning_service(
-    profile: &ResolvedInternalProfile,
-    env_map: &EnvMap,
-) -> LlmServiceConfig {
-    LlmServiceConfig {
-        provider: provider_name(&profile.model.provider).to_string(),
-        model: profile.model.model.clone(),
-        base_url: profile.model.base_url.clone(),
-        api_key: provider_api_key(&profile.model, env_map),
-        headers: Default::default(),
-        timeout_ms: DEFAULT_INTERNAL_MEMORY_TIMEOUT_MS,
-    }
 }
 
 pub fn agent_backend_capabilities(profile: &ResolvedAgentProfile) -> ModelBackendCapabilities {
@@ -470,13 +454,13 @@ fn provider_api_key(model: &ResolvedModel, env_map: &EnvMap) -> Option<String> {
 mod tests {
     use super::{
         MutableAgentBackend, agent_backend_capabilities, build_backend_settings,
-        build_memory_reasoning_service, default_supported_reasoning_efforts, with_reasoning_effort,
+        default_supported_reasoning_efforts, with_reasoning_effort,
     };
     use agent::runtime::ModelBackend;
     use agent_env::EnvMap;
     use nanoclaw_config::{
         AgentSandboxMode, ModelCapabilitiesConfig, ProviderKind, ResolvedAgentProfile,
-        ResolvedInternalProfile, ResolvedModel,
+        ResolvedModel,
     };
     use serde_json::json;
     use tempfile::tempdir;
@@ -511,41 +495,6 @@ mod tests {
             compact_preserve_recent_messages: 8,
             auto_compact: true,
         }
-    }
-
-    #[test]
-    fn memory_reasoning_service_falls_back_to_workspace_env_key() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join(".env"), "OPENAI_API_KEY=env-memory-key\n").unwrap();
-        let env_map = EnvMap::from_workspace_dir(dir.path()).unwrap();
-        let profile = ResolvedInternalProfile {
-            profile_name: "memory".to_string(),
-            model: ResolvedModel {
-                alias: "memory-lane".to_string(),
-                provider: ProviderKind::OpenAi,
-                model: "gpt-5.4-mini".to_string(),
-                base_url: None,
-                context_window_tokens: 400_000,
-                max_output_tokens: 32_000,
-                compact_trigger_tokens: 320_000,
-                compact_preserve_recent_messages: 8,
-                temperature: None,
-                reasoning_effort: Some("medium".to_string()),
-                supported_reasoning_efforts: Vec::new(),
-                additional_params: None,
-                capabilities: ModelCapabilitiesConfig::default(),
-            },
-            global_system_prompt: None,
-            system_prompt: None,
-            reasoning_effort: Some("medium".to_string()),
-            temperature: None,
-            max_output_tokens: 32_000,
-            additional_params: None,
-        };
-
-        let service = build_memory_reasoning_service(&profile, &env_map);
-
-        assert_eq!(service.api_key.as_deref(), Some("env-memory-key"));
     }
 
     #[test]

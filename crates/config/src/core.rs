@@ -979,7 +979,6 @@ mod tests {
                 enabled = true
 
                 [plugins.entries.memory-core.config]
-                vector_store = { kind = "sqlite", path = ".nanoclaw/memory/indexes/test.sqlite" }
             "#,
         )
         .unwrap();

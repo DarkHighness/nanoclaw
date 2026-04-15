@@ -690,9 +690,6 @@ fn build_session_with_runtime_state(
         primary_profile: core_config
             .resolve_primary_agent()
             .expect("default agent profile"),
-        memory_profile: core_config
-            .resolve_memory_profile()
-            .expect("default memory profile"),
         skill_roots: Vec::new(),
         disabled_builtin_skills: Arc::new(RwLock::new(BTreeSet::new())),
         plugins: Arc::new(RwLock::new(PluginsConfig::default())),

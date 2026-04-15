@@ -4,11 +4,10 @@
 //! driver activation should behave the same once that config has been resolved.
 
 mod background_sync;
-mod driver_env;
 mod drivers;
 mod registry;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use plugins::{
     PluginActivationPlan, PluginEntryConfig, PluginExecutableActivation, PluginResolverConfig,
     PluginSlotsConfig, build_activation_plan, discover_plugins,
@@ -76,21 +75,15 @@ pub fn activate_driver_requests(
     requests: &[PluginExecutableActivation],
     workspace_root: &Path,
     session_store: Option<Arc<dyn SessionStore>>,
-    memory_reasoning_service: Option<inference::LlmServiceConfig>,
     tools: &mut ToolRegistry,
     unknown_driver_policy: UnknownDriverPolicy,
 ) -> Result<DriverActivationOutcome> {
-    let env_map = agent_env::EnvMap::from_workspace_dir(workspace_root)
-        .context("failed to resolve environment for plugin driver activation")?;
     let registry = drivers::builtin_registry();
-    let memory_reasoning_service = memory_reasoning_service.as_ref();
     registry.activate_all(
         requests,
         &mut registry::PluginDriverContext {
             workspace_root,
-            env_map: &env_map,
             session_store,
-            memory_reasoning_service,
             tools,
         },
         unknown_driver_policy,
@@ -166,7 +159,6 @@ enabled_by_default = true
             &requests,
             dir.path(),
             None,
-            None,
             &mut tools,
             UnknownDriverPolicy::Warn,
         )
@@ -201,7 +193,6 @@ enabled_by_default = true
         let outcome = activate_driver_requests(
             &requests,
             dir.path(),
-            None,
             None,
             &mut tools,
             UnknownDriverPolicy::Error,
@@ -246,7 +237,6 @@ enabled_by_default = true
         let error = match activate_driver_requests(
             &requests,
             dir.path(),
-            None,
             None,
             &mut tools,
             UnknownDriverPolicy::Error,
@@ -315,7 +305,6 @@ args = ["driver-mcp"]
         let outcome = activate_driver_requests(
             &requests,
             dir.path(),
-            None,
             None,
             &mut tools,
             UnknownDriverPolicy::Error,

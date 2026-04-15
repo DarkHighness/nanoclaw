@@ -1,5 +1,4 @@
 use anyhow::{Result, bail};
-use inference::LlmServiceConfig;
 use mcp::McpServerConfig;
 use memory::MemoryBackend;
 use plugins::PluginExecutableActivation;
@@ -86,9 +85,7 @@ impl DriverActivationOutcome {
 
 pub struct PluginDriverContext<'a> {
     pub workspace_root: &'a std::path::Path,
-    pub env_map: &'a agent_env::EnvMap,
     pub session_store: Option<Arc<dyn SessionStore>>,
-    pub memory_reasoning_service: Option<&'a LlmServiceConfig>,
     pub tools: &'a mut ToolRegistry,
 }
 
@@ -211,6 +208,7 @@ mod tests {
             }],
             instructions: vec!["driver instruction".to_string()],
             diagnostics: Vec::new(),
+            tool_names: Vec::new(),
             primary_memory_backend: None,
         };
         let mut hooks = vec![HookRegistration {
@@ -272,6 +270,7 @@ mod tests {
             mcp_servers: Vec::new(),
             instructions: Vec::new(),
             diagnostics: vec!["first diagnostic".to_string()],
+            tool_names: Vec::new(),
             primary_memory_backend: None,
         };
 

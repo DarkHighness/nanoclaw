@@ -311,6 +311,33 @@ fn resolve_record_target(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or("agent-session");
+            if matches!(collection, "plans" | "claims" | "handoffs") {
+                let (root, layer) = match collection {
+                    "plans" => (MEMORY_COORDINATION_PLANS_RELATIVE, "coordination-plan"),
+                    "claims" => (MEMORY_COORDINATION_CLAIMS_RELATIVE, "coordination-claim"),
+                    "handoffs" => (
+                        MEMORY_COORDINATION_HANDOFFS_RELATIVE,
+                        "coordination-handoff",
+                    ),
+                    _ => unreachable!(),
+                };
+                let slug_source = request
+                    .task_id
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(&request.title);
+                let slug = slugify(slug_source);
+                if slug.is_empty() {
+                    return Err(MemoryError::invalid(
+                        "working coordination memory requires a non-empty `title` or `task_id`",
+                    ));
+                }
+                return Ok(RecordTarget {
+                    relative_path: format!("{root}/{slug}.md"),
+                    layer: layer.to_string(),
+                    document_title: request.title.trim().to_string(),
+                });
+            }
             if matches!(collection, "session" | "sessions" | "session-continuation") {
                 let session_id = session_id.ok_or_else(|| {
                     MemoryError::invalid("working session memory record requires `session_id`")
@@ -356,43 +383,6 @@ fn resolve_record_target(
                 document_title: format!("Session {}", agent_session_id.as_str()),
             })
         }
-        MemoryScope::Coordination => {
-            let collection = request
-                .layer
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("plans");
-            let (root, layer) = match collection {
-                "plans" => (MEMORY_COORDINATION_PLANS_RELATIVE, "coordination-plan"),
-                "claims" => (MEMORY_COORDINATION_CLAIMS_RELATIVE, "coordination-claim"),
-                "handoffs" => (
-                    MEMORY_COORDINATION_HANDOFFS_RELATIVE,
-                    "coordination-handoff",
-                ),
-                _ => {
-                    return Err(MemoryError::invalid(
-                        "coordination memory layer must be one of `plans`, `claims`, or `handoffs`",
-                    ));
-                }
-            };
-            let slug_source = request
-                .task_id
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(&request.title);
-            let slug = slugify(slug_source);
-            if slug.is_empty() {
-                return Err(MemoryError::invalid(
-                    "coordination memory record requires a non-empty `title` or `task_id`",
-                ));
-            }
-            Ok(RecordTarget {
-                relative_path: format!("{root}/{slug}.md"),
-                layer: layer.to_string(),
-                document_title: request.title.trim().to_string(),
-            })
-        }
         MemoryScope::Episodic => {
             let collection = request
                 .layer
@@ -421,7 +411,7 @@ fn resolve_record_target(
             }
         }
         MemoryScope::Procedural | MemoryScope::Semantic => Err(MemoryError::invalid(
-            "memory_record currently supports working, coordination, or episodic daily-log scopes",
+            "memory_record currently supports working memories (including `plans`/`claims`/`handoffs` layers) or episodic daily-log memories",
         )),
     }
 }

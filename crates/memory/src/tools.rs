@@ -390,7 +390,7 @@ impl Tool for MemoryRecordTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_record",
-            "Record working, coordination, or append-only episodic daily-log memory under .nanoclaw/memory, optionally appending or replacing the target document while tagging it with Claude-style type and description metadata.",
+            "Record working memory under .nanoclaw/memory, including specialized `plans`/`claims`/`handoffs` working layers and append-only episodic daily logs.",
             serde_json::to_value(schema_for!(MemoryRecordToolInput)).expect("memory_record schema"),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -930,8 +930,12 @@ mod tests {
     #[test]
     fn memory_scope_schema_serializes_as_kebab_case() {
         assert_eq!(
-            serde_json::to_string(&MemoryScope::Coordination).unwrap(),
-            "\"coordination\""
+            serde_json::to_string(&MemoryScope::Working).unwrap(),
+            "\"working\""
+        );
+        assert_eq!(
+            serde_json::from_str::<MemoryScope>("\"coordination\"").unwrap(),
+            MemoryScope::Working
         );
     }
 }

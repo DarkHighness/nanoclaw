@@ -35,7 +35,7 @@ use crate::backend::{
 use crate::options::AppOptions;
 use crate::provider::{
     MutableAgentBackend, agent_backend_capabilities, build_agent_backend, build_internal_backend,
-    build_memory_reasoning_service, build_mutable_agent_backend, provider_label,
+    build_mutable_agent_backend, provider_label,
 };
 use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
@@ -490,7 +490,6 @@ where
         super::session::ManagedSurfaceReloadConfig {
             env_map: options.env_map.clone(),
             primary_profile: options.primary_profile.clone(),
-            memory_profile: options.memory_profile.clone(),
             skill_roots: options.skill_roots.clone(),
             disabled_builtin_skills: Arc::new(RwLock::new(options.disabled_builtin_skills.clone())),
             plugins: Arc::new(RwLock::new(options.plugins.clone())),
@@ -728,10 +727,6 @@ where
         &plugin_plan.runtime_activations,
         workspace_root,
         Some(store.clone()),
-        Some(build_memory_reasoning_service(
-            &options.memory_profile,
-            &options.env_map,
-        )),
         &mut tools,
         agent::UnknownDriverPolicy::Error,
     )?;

@@ -33,13 +33,13 @@ pub(crate) async fn promote_memory(
     let target_root = match request.target_scope {
         MemoryScope::Procedural => ".nanoclaw/memory/procedural",
         MemoryScope::Semantic => ".nanoclaw/memory/semantic",
-        MemoryScope::Episodic | MemoryScope::Working | MemoryScope::Coordination => unreachable!(),
+        MemoryScope::Episodic | MemoryScope::Working => unreachable!(),
     };
     let target_path = format!("{target_root}/{target_slug}.md");
     let layer = request.layer.unwrap_or_else(|| match request.target_scope {
         MemoryScope::Procedural => "promoted-procedural".to_string(),
         MemoryScope::Semantic => "promoted-semantic".to_string(),
-        MemoryScope::Episodic | MemoryScope::Working | MemoryScope::Coordination => unreachable!(),
+        MemoryScope::Episodic | MemoryScope::Working => unreachable!(),
     });
     let body = if request.content.trim().is_empty() {
         source.body.clone()

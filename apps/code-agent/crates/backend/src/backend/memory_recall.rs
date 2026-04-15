@@ -16,15 +16,15 @@ use tracing::{debug, warn};
 const WORKSPACE_MEMORY_RECALL_KIND: &str = "workspace_memory_recall";
 const WORKSPACE_MEMORY_RECALL_NAME: &str = "Relevant workspace memory (verify before relying)";
 const WORKSPACE_MEMORY_RECALL_METADATA_KEY: &str = "workspace_memory_recall";
-const RECALL_TIMEOUT_MS: u64 = 200;
-const RECALL_LIMIT: usize = 3;
-const RECALL_CANDIDATE_LIMIT: usize = 6;
-const RECALL_WORKING_CANDIDATE_LIMIT: usize = 3;
+const RECALL_TIMEOUT_MS: u64 = 400;
+const RECALL_LIMIT: usize = 4;
+const RECALL_CANDIDATE_LIMIT: usize = 8;
+const RECALL_WORKING_CANDIDATE_LIMIT: usize = 4;
 const RECALL_WORKING_SESSION_PATH_PREFIX: &str = ".nanoclaw/memory/working/sessions/";
 const RECALL_MAX_SNIPPET_CHARS: usize = 220;
-const RECALL_MAX_BLOCK_CHARS: usize = 1_400;
-const RECALL_QUERY_TERM_LIMIT: usize = 5;
-const RECALL_QUERY_FALLBACK_TERM_LIMIT: usize = 3;
+const RECALL_MAX_BLOCK_CHARS: usize = 1_800;
+const RECALL_QUERY_TERM_LIMIT: usize = 6;
+const RECALL_QUERY_FALLBACK_TERM_LIMIT: usize = 4;
 const RECALL_DURABLE_LIST_LIMIT: usize = 128;
 const RECALL_DURABLE_SELECTION_LIMIT: usize = 5;
 const RECALL_DURABLE_LINE_LIMIT: usize = 40;
@@ -141,9 +141,10 @@ impl WorkspaceMemoryRecallAugmentor {
             backend_name = Some(name);
             merge_recall_hits(&mut collected, working_hits);
         }
-        if collected.is_empty() {
-            // Fall back to broader working-memory search for pre-migration
-            // agent-session files or future non-session scratchpad records.
+        if collected.len() < RECALL_LIMIT {
+            // Broader working-memory recall should still run even when the
+            // session continuation note hit once, because task or handoff notes
+            // often live beside the session note rather than inside it.
             if let Some((name, working_hits)) = self
                 .search_hits(
                     query,
@@ -155,19 +156,22 @@ impl WorkspaceMemoryRecallAugmentor {
                 )
                 .await
             {
-                backend_name = Some(name);
+                backend_name.get_or_insert(name);
                 merge_recall_hits(&mut collected, working_hits);
             }
         }
         if collected.len() < RECALL_LIMIT {
-            if let Some((name, durable_hits)) = self.select_durable_hits(query, started_at).await {
+            if let Some((name, durable_hits)) = self
+                .select_durable_hits(query, vec![MemoryScope::Procedural], started_at)
+                .await
+            {
                 backend_name.get_or_insert(name);
                 merge_recall_hits(&mut collected, durable_hits);
             } else if let Some((name, durable_hits)) = self
                 .search_hits(
                     query,
                     None,
-                    vec![MemoryScope::Procedural, MemoryScope::Semantic],
+                    vec![MemoryScope::Procedural],
                     None,
                     RECALL_CANDIDATE_LIMIT,
                     started_at,
@@ -178,16 +182,55 @@ impl WorkspaceMemoryRecallAugmentor {
                 merge_recall_hits(&mut collected, durable_hits);
             }
         }
+        if collected.len() < RECALL_LIMIT {
+            if let Some((name, durable_hits)) = self
+                .select_durable_hits(query, vec![MemoryScope::Semantic], started_at)
+                .await
+            {
+                backend_name.get_or_insert(name);
+                merge_recall_hits(&mut collected, durable_hits);
+            } else if let Some((name, durable_hits)) = self
+                .search_hits(
+                    query,
+                    None,
+                    vec![MemoryScope::Semantic],
+                    None,
+                    RECALL_CANDIDATE_LIMIT,
+                    started_at,
+                )
+                .await
+            {
+                backend_name.get_or_insert(name);
+                merge_recall_hits(&mut collected, durable_hits);
+            }
+        }
+        if collected.len() < RECALL_LIMIT {
+            if let Some((name, episodic_hits)) = self
+                .search_hits(
+                    query,
+                    None,
+                    vec![MemoryScope::Episodic],
+                    None,
+                    RECALL_CANDIDATE_LIMIT,
+                    started_at,
+                )
+                .await
+            {
+                backend_name.get_or_insert(name);
+                merge_recall_hits(&mut collected, episodic_hits);
+            }
+        }
         (!collected.is_empty()).then(|| (backend_name.unwrap_or_default(), collected))
     }
 
     async fn select_durable_hits(
         &self,
         query: &str,
+        scopes: Vec<MemoryScope>,
         started_at: std::time::Instant,
     ) -> Option<(String, Vec<MemorySearchHit>)> {
         let query_terms = durable_selector_terms(query);
-        if query_terms.len() < 2 {
+        if query_terms.is_empty() {
             return None;
         }
 
@@ -202,7 +245,7 @@ impl WorkspaceMemoryRecallAugmentor {
             self.backend.list(MemoryListRequest {
                 limit: Some(RECALL_DURABLE_LIST_LIMIT),
                 path_prefix: None,
-                scopes: Some(vec![MemoryScope::Procedural, MemoryScope::Semantic]),
+                scopes: Some(scopes),
                 types: None,
                 tags: None,
                 session_id: None,
@@ -357,12 +400,12 @@ fn merge_recall_hits(existing: &mut Vec<MemorySearchHit>, incoming: Vec<MemorySe
 }
 
 fn is_recall_candidate(query: &str) -> bool {
-    query.split_whitespace().take(2).count() >= 2
+    !tokenize_query(query).is_empty()
 }
 
 fn build_search_queries(query: &str) -> Vec<String> {
     let raw_terms = tokenize_query(query);
-    if raw_terms.len() < 2 {
+    if raw_terms.is_empty() {
         return Vec::new();
     }
 
@@ -371,7 +414,7 @@ fn build_search_queries(query: &str) -> Vec<String> {
         .filter(|term| !is_query_stop_word(term))
         .cloned()
         .collect::<Vec<_>>();
-    let primary_terms = if keyword_terms.len() >= 2 {
+    let primary_terms = if !keyword_terms.is_empty() {
         keyword_terms
     } else {
         raw_terms
@@ -390,6 +433,11 @@ fn build_search_queries(query: &str) -> Vec<String> {
         &mut queries,
         informative_terms(&primary_terms, RECALL_QUERY_FALLBACK_TERM_LIMIT),
     );
+    if primary_terms.len() == 1 {
+        for variant in single_term_variants(&primary_terms[0]) {
+            push_query(&mut queries, vec![variant]);
+        }
+    }
     queries
 }
 
@@ -422,8 +470,18 @@ fn informative_terms(terms: &[String], limit: usize) -> Vec<String> {
     in_order.into_iter().map(|(_, term)| term).collect()
 }
 
+fn single_term_variants(term: &str) -> Vec<String> {
+    let mut variants = Vec::new();
+    if term.len() >= 3 && !term.ends_with('s') {
+        variants.push(format!("{term}s"));
+    } else if term.len() >= 4 && term.ends_with('s') {
+        variants.push(term.trim_end_matches('s').to_string());
+    }
+    variants
+}
+
 fn push_query(queries: &mut Vec<String>, terms: Vec<String>) {
-    if terms.len() < 2 {
+    if terms.is_empty() {
         return;
     }
     let query = terms.join(" ");
@@ -542,7 +600,7 @@ fn format_recall_block(hits: &[MemorySearchHit]) -> Option<String> {
 
 fn durable_selector_terms(query: &str) -> Vec<String> {
     let raw_terms = tokenize_query(query);
-    if raw_terms.len() < 2 {
+    if raw_terms.is_empty() {
         return Vec::new();
     }
     let keyword_terms = raw_terms
@@ -550,7 +608,7 @@ fn durable_selector_terms(query: &str) -> Vec<String> {
         .filter(|term| !is_query_stop_word(term))
         .cloned()
         .collect::<Vec<_>>();
-    if keyword_terms.len() >= 2 {
+    if !keyword_terms.is_empty() {
         keyword_terms
     } else {
         raw_terms
@@ -628,7 +686,7 @@ fn durable_memory_candidate_score(
             || path.contains(&phrase)
             || tags.iter().any(|tag| tag.contains(&phrase))
     });
-    if unique_overlap < 2 && !phrase_match {
+    if unique_overlap < 1 && !phrase_match {
         return None;
     }
 
@@ -847,15 +905,20 @@ mod tests {
     fn recall_search_queries_strip_stopwords_from_questions() {
         assert_eq!(
             build_search_queries("Should I use a canary deploy before restart?"),
-            vec![
-                "canary deploy before restart".to_string(),
-                "canary deploy restart".to_string(),
-            ]
+            vec!["canary deploy before restart".to_string()]
+        );
+    }
+
+    #[test]
+    fn recall_search_queries_allow_single_informative_term() {
+        assert_eq!(
+            build_search_queries("deploy?"),
+            vec!["deploy".to_string(), "deploys".to_string()]
         );
     }
 
     #[tokio::test]
-    async fn augmentor_skips_short_queries() {
+    async fn augmentor_recalls_for_single_term_queries() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "# Rules\nUse canary deploys.").unwrap();
         let backend = Arc::new(MemoryCoreBackend::new(
@@ -869,7 +932,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(augmented.prefix_messages.is_empty());
+        assert_eq!(augmented.prefix_messages.len(), 1);
+        assert!(
+            augmented.prefix_messages[0]
+                .text_content()
+                .contains("AGENTS.md")
+        );
         assert_eq!(augmented.message.text_content(), "deploy?");
     }
 

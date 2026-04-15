@@ -36,8 +36,10 @@ Claude-style concept -> `nanoclaw` implementation
   - `.nanoclaw/memory/procedural/**/*.md`
   - `.nanoclaw/memory/semantic/**/*.md`
 - runtime and subagent memory
-  - remain in the existing layered tree under `.nanoclaw/memory/episodic/`,
-    `.nanoclaw/memory/working/`, and `.nanoclaw/memory/coordination/`
+  - use a four-level model: `procedural`, `semantic`, `working`, `episodic`
+  - coordination records are now treated as specialized `working` layers even
+    when they still live under the legacy `.nanoclaw/memory/coordination/`
+    tree for backward-compatible reads
 
 ## Index Semantics
 
@@ -48,8 +50,8 @@ It is intentionally concise:
 - durable procedural and semantic notes are listed explicitly
 - each durable entry is rendered as a Claude-style hook line:
   `- [Title](path) — one-line description`
-- transient episodic, working, and coordination memory is summarized instead of
-  being expanded in full
+- transient episodic and working memory is summarized instead of being
+  expanded in full
 
 That keeps the file useful as a future session-primer input while avoiding a
 second giant bucket of duplicated runtime text.
@@ -103,6 +105,9 @@ The runtime now treats query-time recall as a separate synthetic message that is
 prepended before the operator's original user message:
 
 - current-session working memory is consulted first when available
+- broader working memory, procedural memory, semantic memory, and finally
+  episodic memory are consulted in that order when earlier levels do not
+  provide enough useful recall
 - recall is best-effort and timeout-bounded
 - recall is inserted as its own transcript message
 - the operator prompt remains a separate message with unchanged bytes
@@ -118,6 +123,10 @@ augmentor shapes natural-language questions into concise content-term queries
 before searching. That keeps prompts like "Should I use a canary deploy before
 restart?" recallable without requiring the memory files to literally contain
 every conversational filler token.
+
+Single-keyword prompts may now trigger recall as long as they contain at least
+one usable content term. That intentionally biases toward higher recall
+frequency instead of waiting for multi-word questions.
 
 Durable recall now uses a more Claude-like two-stage path:
 
@@ -198,9 +207,9 @@ Claude-style session memory is not only refreshed at compaction time.
 `nanoclaw` now also performs bounded incremental updates to the structured
 session note using an internal maintenance request:
 
-- the first incremental refresh starts once the visible context reaches 10,000
+- the first incremental refresh starts once the visible context reaches 4,000
   tokens
-- later refreshes happen after another 5,000 context tokens or 3 tool calls
+- later refreshes happen after another 2,000 context tokens or 1 tool call
 - the refresh runs in a background sidecar task instead of blocking the main
   turn completion path
 - only one refresh may be in flight for a session at a time; stale in-flight

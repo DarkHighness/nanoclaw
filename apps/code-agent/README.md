@@ -105,13 +105,6 @@ cp apps/code-agent/.env.example .env
 cargo run --manifest-path apps/Cargo.toml -p code-agent
 ```
 
-The default build excludes the heavier `memory-embed` backend. Re-enable it
-when needed with:
-
-```bash
-cargo run --manifest-path apps/Cargo.toml -p code-agent --features memory-embed
-```
-
 This opens a compact `ratatui` screen with a single wide main surface for
 transcript and read-heavy command views, a Codex-style prompt line, a minimal
 context footer, centered approval/review overlays, and a more neutral dark

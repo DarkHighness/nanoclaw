@@ -690,7 +690,7 @@ fn infer_metadata_from_path(path: &str) -> MemoryDocumentMetadata {
         }
         if path.starts_with(".nanoclaw/memory/coordination/plans/") {
             return MemoryDocumentMetadata {
-                scope: MemoryScope::Coordination,
+                scope: MemoryScope::Working,
                 layer: "coordination-plan".to_string(),
                 task_id: Some(stem.to_string()),
                 ..MemoryDocumentMetadata::default()
@@ -698,7 +698,7 @@ fn infer_metadata_from_path(path: &str) -> MemoryDocumentMetadata {
         }
         if path.starts_with(".nanoclaw/memory/coordination/claims/") {
             return MemoryDocumentMetadata {
-                scope: MemoryScope::Coordination,
+                scope: MemoryScope::Working,
                 layer: "coordination-claim".to_string(),
                 task_id: Some(stem.to_string()),
                 ..MemoryDocumentMetadata::default()
@@ -706,7 +706,7 @@ fn infer_metadata_from_path(path: &str) -> MemoryDocumentMetadata {
         }
         if path.starts_with(".nanoclaw/memory/coordination/handoffs/") {
             return MemoryDocumentMetadata {
-                scope: MemoryScope::Coordination,
+                scope: MemoryScope::Working,
                 layer: "coordination-handoff".to_string(),
                 task_id: Some(stem.to_string()),
                 ..MemoryDocumentMetadata::default()

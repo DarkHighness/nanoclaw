@@ -1,4 +1,4 @@
-use crate::{MemoryError, MemoryScope, MemoryVectorStoreKind, Result};
+use crate::{MemoryError, MemoryScope, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -27,8 +27,6 @@ pub const MEMORY_RUNTIME_EXPORTS_RELATIVE: &str = MEMORY_EPISODIC_RELATIVE;
 pub const MEMORY_INDEXES_RELATIVE: &str = ".nanoclaw/memory/indexes";
 pub const MEMORY_LIFECYCLE_RELATIVE: &str = ".nanoclaw/memory/lifecycle";
 pub const MEMORY_CORE_SQLITE_INDEX_RELATIVE: &str = ".nanoclaw/memory/indexes/memory-core.sqlite";
-pub const MEMORY_EMBED_SQLITE_INDEX_RELATIVE: &str = ".nanoclaw/memory/indexes/memory-embed.sqlite";
-pub const MEMORY_EMBED_LANCEDB_DIR_RELATIVE: &str = ".nanoclaw/memory/indexes/memory-embed-lancedb";
 
 #[derive(Clone, Debug)]
 pub struct MemoryStateLayout {
@@ -56,8 +54,6 @@ pub struct MemorySidecarLifecycle {
     pub backend: String,
     #[serde(default)]
     pub status: MemorySidecarStatus,
-    #[serde(default)]
-    pub vector_store: String,
     #[serde(default)]
     pub schema_version: u32,
     #[serde(default)]
@@ -143,18 +139,6 @@ impl MemoryStateLayout {
         self.resolve_path_within_state_root(candidate)
     }
 
-    pub fn resolve_vector_store_path(
-        &self,
-        configured: Option<&Path>,
-        kind: MemoryVectorStoreKind,
-    ) -> Result<ResolvedStatePath> {
-        let default_relative = match kind {
-            MemoryVectorStoreKind::Sqlite => Path::new(MEMORY_EMBED_SQLITE_INDEX_RELATIVE),
-            MemoryVectorStoreKind::Lancedb => Path::new(MEMORY_EMBED_LANCEDB_DIR_RELATIVE),
-        };
-        self.resolve_index_path(configured, default_relative)
-    }
-
     pub fn resolve_runtime_exports_dir(&self, configured: &Path) -> Result<ResolvedStatePath> {
         self.resolve_path_within_state_root(configured)
     }
@@ -169,7 +153,6 @@ impl MemoryStateLayout {
             MemoryScope::Semantic => Path::new(MEMORY_SEMANTIC_RELATIVE),
             MemoryScope::Episodic => Path::new(MEMORY_EPISODIC_RELATIVE),
             MemoryScope::Working => Path::new(MEMORY_WORKING_RELATIVE),
-            MemoryScope::Coordination => Path::new(MEMORY_COORDINATION_RELATIVE),
         };
         self.resolve_path_within_state_root(relative)
     }
@@ -268,10 +251,7 @@ fn current_timestamp_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MEMORY_EMBED_SQLITE_INDEX_RELATIVE, MEMORY_RUNTIME_EXPORTS_RELATIVE,
-        MemorySidecarLifecycle, MemoryStateLayout,
-    };
+    use super::{MEMORY_RUNTIME_EXPORTS_RELATIVE, MemorySidecarLifecycle, MemoryStateLayout};
     use crate::MemoryError;
     use std::path::Path;
     use tempfile::tempdir;
@@ -311,41 +291,23 @@ mod tests {
     }
 
     #[test]
-    fn resolves_default_embed_sqlite_path_inside_state_root() {
-        let layout = MemoryStateLayout::new("/workspace");
-        let resolved = layout
-            .resolve_index_path(None, Path::new(MEMORY_EMBED_SQLITE_INDEX_RELATIVE))
-            .unwrap();
-        assert_eq!(
-            resolved.absolute_path(),
-            Path::new("/workspace/.nanoclaw/memory/indexes/memory-embed.sqlite")
-        );
-        assert_eq!(
-            resolved.relative_path(),
-            Path::new(".nanoclaw/memory/indexes/memory-embed.sqlite")
-        );
-    }
-
-    #[test]
     fn lifecycle_manifest_round_trips() {
         let dir = tempdir().unwrap();
         let layout = MemoryStateLayout::new(dir.path());
         let expected = MemorySidecarLifecycle {
-            backend: "memory-embed".to_string(),
-            vector_store: "sqlite".to_string(),
-            schema_version: 3,
+            backend: "memory-core".to_string(),
+            schema_version: 2,
             config_fingerprint: "abc123".to_string(),
             indexed_chunk_count: 4,
             ..MemorySidecarLifecycle::default()
         };
 
         layout
-            .write_lifecycle("memory-embed", expected.clone())
+            .write_lifecycle("memory-core", expected.clone())
             .unwrap();
 
-        let actual = layout.load_lifecycle("memory-embed").unwrap().unwrap();
+        let actual = layout.load_lifecycle("memory-core").unwrap().unwrap();
         assert_eq!(actual.backend, expected.backend);
-        assert_eq!(actual.vector_store, expected.vector_store);
         assert_eq!(actual.schema_version, expected.schema_version);
         assert_eq!(actual.config_fingerprint, expected.config_fingerprint);
         assert_eq!(actual.indexed_chunk_count, expected.indexed_chunk_count);

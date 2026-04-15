@@ -177,7 +177,7 @@ fn search_signals_on(
     now: OffsetDateTime,
 ) -> MemoryRetrievalSignals {
     MemoryRetrievalSignals {
-        scope_weight: scope_weight(metadata.scope),
+        scope_weight: scope_weight(metadata),
         recency_multiplier: recency_multiplier(path, metadata, now),
         session_match_bonus: match_bonus(
             metadata.session_id.as_ref(),
@@ -187,54 +187,54 @@ fn search_signals_on(
         agent_session_match_bonus: match_bonus(
             metadata.agent_session_id.as_ref(),
             request.agent_session_id.as_ref(),
-            agent_session_bonus(metadata.scope),
+            agent_session_bonus(metadata),
         ),
         agent_match_bonus: string_match_bonus(
             metadata.agent_name.as_deref(),
             request.agent_name.as_deref(),
-            agent_bonus(metadata.scope),
+            agent_bonus(metadata),
         ),
         task_match_bonus: string_match_bonus(
             metadata.task_id.as_deref(),
             request.task_id.as_deref(),
-            task_bonus(metadata.scope),
+            task_bonus(metadata),
         ),
         stale_penalty: stale_penalty(metadata.status),
     }
 }
 
-fn scope_weight(scope: MemoryScope) -> f64 {
-    match scope {
+fn scope_weight(metadata: &MemoryDocumentMetadata) -> f64 {
+    match metadata.scope {
         MemoryScope::Procedural => 1.30,
         MemoryScope::Semantic => 1.00,
         MemoryScope::Episodic => 0.92,
+        MemoryScope::Working if is_coordination_layer(&metadata.layer) => 0.88,
         MemoryScope::Working => 0.70,
-        MemoryScope::Coordination => 0.88,
     }
 }
 
-fn agent_session_bonus(scope: MemoryScope) -> f64 {
-    match scope {
+fn agent_session_bonus(metadata: &MemoryDocumentMetadata) -> f64 {
+    match metadata.scope {
+        MemoryScope::Working if is_coordination_layer(&metadata.layer) => 0.25,
         MemoryScope::Working => 0.75,
-        MemoryScope::Coordination => 0.25,
         MemoryScope::Episodic => 0.20,
         MemoryScope::Procedural | MemoryScope::Semantic => 0.05,
     }
 }
 
-fn agent_bonus(scope: MemoryScope) -> f64 {
-    match scope {
-        MemoryScope::Coordination => 0.35,
+fn agent_bonus(metadata: &MemoryDocumentMetadata) -> f64 {
+    match metadata.scope {
+        MemoryScope::Working if is_coordination_layer(&metadata.layer) => 0.35,
         MemoryScope::Episodic => 0.25,
         MemoryScope::Working => 0.10,
         MemoryScope::Procedural | MemoryScope::Semantic => 0.05,
     }
 }
 
-fn task_bonus(scope: MemoryScope) -> f64 {
-    match scope {
+fn task_bonus(metadata: &MemoryDocumentMetadata) -> f64 {
+    match metadata.scope {
+        MemoryScope::Working if is_coordination_layer(&metadata.layer) => 0.45,
         MemoryScope::Working => 0.65,
-        MemoryScope::Coordination => 0.45,
         MemoryScope::Episodic => 0.20,
         MemoryScope::Procedural | MemoryScope::Semantic => 0.05,
     }
@@ -281,13 +281,19 @@ fn recency_multiplier(path: &str, metadata: &MemoryDocumentMetadata, now: Offset
             }
         }
         MemoryScope::Working => {
-            timestamp_half_life_hours(metadata.updated_at_ms, now, WORKING_HALF_LIFE_HOURS)
-                .max(0.25)
-        }
-        MemoryScope::Coordination => {
-            timestamp_half_life(metadata.updated_at_ms, now, COORDINATION_HALF_LIFE_DAYS).max(0.40)
+            if is_coordination_layer(&metadata.layer) {
+                timestamp_half_life(metadata.updated_at_ms, now, COORDINATION_HALF_LIFE_DAYS)
+                    .max(0.40)
+            } else {
+                timestamp_half_life_hours(metadata.updated_at_ms, now, WORKING_HALF_LIFE_HOURS)
+                    .max(0.25)
+            }
         }
     }
+}
+
+fn is_coordination_layer(layer: &str) -> bool {
+    layer.starts_with("coordination-")
 }
 
 fn daily_log_multiplier(path: &str, today: Date) -> f64 {

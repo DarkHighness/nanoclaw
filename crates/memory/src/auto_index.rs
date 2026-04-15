@@ -151,12 +151,6 @@ fn render_auto_memory_index(entries: &[AutoMemoryIndexEntry]) -> String {
     lines.push(String::new());
     push_runtime_scope_summary(&mut lines, entries, MemoryScope::Episodic, "Episodic");
     push_runtime_scope_summary(&mut lines, entries, MemoryScope::Working, "Working");
-    push_runtime_scope_summary(
-        &mut lines,
-        entries,
-        MemoryScope::Coordination,
-        "Coordination",
-    );
     lines.push(String::new());
 
     finalize_index(lines)
@@ -221,8 +215,10 @@ fn entry_hook(entry: &AutoMemoryIndexEntry) -> String {
             MemoryScope::Procedural => "durable procedural guidance".to_string(),
             MemoryScope::Semantic => "durable project memory".to_string(),
             MemoryScope::Episodic => "runtime-derived episodic note".to_string(),
+            MemoryScope::Working if entry.metadata.layer.starts_with("coordination-") => {
+                "coordination state shared across agents".to_string()
+            }
             MemoryScope::Working => "active working note for the current task".to_string(),
-            MemoryScope::Coordination => "coordination state shared across agents".to_string(),
         },
     }
 }

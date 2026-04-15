@@ -4,30 +4,14 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
-[features]
-default = []
-memory-embed = [
-    "dep:arrow-array",
-    "dep:arrow-schema",
-    "dep:lancedb",
-    "dep:rayon",
-    "dep:sqlite-vec",
-    "dep:wide",
-]
-
 [dependencies]
-inference = { path = "../inference" }
 store = { path = "../store" }
 tools = { path = "../tools" }
 types = { path = "../types" }
-arrow-array = { workspace = true, optional = true }
-arrow-schema = { workspace = true, optional = true }
 async-trait.workspace = true
 futures.workspace = true
 globset.workspace = true
 ignore.workspace = true
-lancedb = { workspace = true, optional = true }
-rayon = { workspace = true, optional = true }
 regex.workspace = true
 rusqlite.workspace = true
 schemars.workspace = true
@@ -35,12 +19,10 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 sha2.workspace = true
-sqlite-vec = { workspace = true, optional = true }
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 toml.workspace = true
-wide = { workspace = true, optional = true }
 
 [dev-dependencies]
 nanoclaw-test-support = { path = "../test-support" }

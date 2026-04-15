@@ -1,4 +1,3 @@
-use inference::{EmbeddingConfig, QueryExpansionConfig, RerankConfig};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -105,42 +104,6 @@ impl Default for MemoryBackgroundSyncConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum MemoryVectorStoreKind {
-    #[default]
-    Sqlite,
-    #[serde(alias = "lancerdb")]
-    Lancedb,
-}
-
-impl MemoryVectorStoreKind {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Sqlite => "sqlite",
-            Self::Lancedb => "lancedb",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoryVectorStoreConfig {
-    #[serde(default)]
-    pub kind: MemoryVectorStoreKind,
-    #[serde(default)]
-    pub path: Option<PathBuf>,
-}
-
-impl Default for MemoryVectorStoreConfig {
-    fn default() -> Self {
-        Self {
-            kind: MemoryVectorStoreKind::default(),
-            path: None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryCoreConfig {
     #[serde(default)]
@@ -162,66 +125,6 @@ impl Default for MemoryCoreConfig {
             background_sync: MemoryBackgroundSyncConfig::default(),
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct HybridWeights {
-    #[serde(default = "default_vector_weight")]
-    pub vector_weight: f64,
-    #[serde(default = "default_text_weight")]
-    pub text_weight: f64,
-    #[serde(default = "default_candidate_multiplier")]
-    pub candidate_multiplier: usize,
-    #[serde(default = "default_rrf_k")]
-    pub rrf_k: usize,
-    #[serde(default = "default_top_rank_bonus_first")]
-    pub top_rank_bonus_first: f64,
-    #[serde(default = "default_top_rank_bonus_other")]
-    pub top_rank_bonus_other: f64,
-    #[serde(default = "default_rerank_top_k")]
-    pub rerank_top_k: usize,
-    #[serde(default)]
-    pub mmr_lambda: Option<f64>,
-    #[serde(default = "default_mmr_pool_k")]
-    pub mmr_pool_k: usize,
-}
-
-impl Default for HybridWeights {
-    fn default() -> Self {
-        Self {
-            vector_weight: default_vector_weight(),
-            text_weight: default_text_weight(),
-            candidate_multiplier: default_candidate_multiplier(),
-            rrf_k: default_rrf_k(),
-            top_rank_bonus_first: default_top_rank_bonus_first(),
-            top_rank_bonus_other: default_top_rank_bonus_other(),
-            rerank_top_k: default_rerank_top_k(),
-            mmr_lambda: None,
-            mmr_pool_k: default_mmr_pool_k(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
-pub struct MemoryEmbedConfig {
-    #[serde(default)]
-    pub corpus: MemoryCorpusConfig,
-    #[serde(default)]
-    pub chunking: MemoryChunkingConfig,
-    #[serde(default)]
-    pub search: MemorySearchConfig,
-    #[serde(default)]
-    pub background_sync: MemoryBackgroundSyncConfig,
-    #[serde(default)]
-    pub embedding: Option<EmbeddingConfig>,
-    #[serde(default)]
-    pub query_expansion: Option<QueryExpansionConfig>,
-    #[serde(default)]
-    pub rerank: Option<RerankConfig>,
-    #[serde(default)]
-    pub hybrid: HybridWeights,
-    #[serde(default)]
-    pub vector_store: MemoryVectorStoreConfig,
 }
 
 fn default_chunk_target_tokens() -> usize {
@@ -277,48 +180,4 @@ fn default_background_sync_run_on_start() -> bool {
 
 fn default_background_sync_interval_ms() -> u64 {
     300_000
-}
-
-fn default_vector_weight() -> f64 {
-    0.65
-}
-
-fn default_text_weight() -> f64 {
-    0.35
-}
-
-fn default_candidate_multiplier() -> usize {
-    6
-}
-
-fn default_rrf_k() -> usize {
-    60
-}
-
-fn default_top_rank_bonus_first() -> f64 {
-    0.05
-}
-
-fn default_top_rank_bonus_other() -> f64 {
-    0.02
-}
-
-fn default_rerank_top_k() -> usize {
-    30
-}
-
-fn default_mmr_pool_k() -> usize {
-    20
-}
-
-impl MemoryEmbedConfig {
-    #[must_use]
-    pub fn as_core_config(&self) -> MemoryCoreConfig {
-        MemoryCoreConfig {
-            corpus: self.corpus.clone(),
-            chunking: self.chunking.clone(),
-            search: self.search.clone(),
-            background_sync: self.background_sync.clone(),
-        }
-    }
 }

@@ -24,7 +24,7 @@ use crate::backend::{
     load_mcp_prompt, load_mcp_resource, resolve_mcp_tool_conflicts, summarize_mcp_servers,
 };
 use agent_env::EnvMap;
-use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile, ResolvedInternalProfile};
+use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile};
 mod catalog;
 mod controls;
 mod dialogs;
@@ -92,12 +92,11 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Duration, timeout};
 use tracing::{info, warn};
 
-// Keep the host-side session-note refresher aligned with Claude Code's
-// default cadence so incremental updates happen often enough to preserve
-// continuity without turning every small turn into note churn.
-const SESSION_MEMORY_MIN_TOKENS_TO_INIT: usize = 10_000;
-const SESSION_MEMORY_MIN_TOKENS_BETWEEN_UPDATES: usize = 5_000;
-const SESSION_MEMORY_TOOL_CALLS_BETWEEN_UPDATES: usize = 3;
+// Working memory should refresh early enough to preserve continuity between
+// turns instead of waiting for late compaction-sized contexts.
+const SESSION_MEMORY_MIN_TOKENS_TO_INIT: usize = 4_000;
+const SESSION_MEMORY_MIN_TOKENS_BETWEEN_UPDATES: usize = 2_000;
+const SESSION_MEMORY_TOOL_CALLS_BETWEEN_UPDATES: usize = 1;
 const SESSION_MEMORY_UPDATE_TIMEOUT_MS: u64 = 15_000;
 const SESSION_NOTE_TITLE_LOAD_CONCURRENCY_LIMIT: usize = 8;
 const WORKSPACE_MEMORY_RECALL_METADATA_KEY: &str = "workspace_memory_recall";
@@ -123,7 +122,6 @@ struct SessionPreambleConfig {
 pub(crate) struct ManagedSurfaceReloadConfig {
     pub(crate) env_map: EnvMap,
     pub(crate) primary_profile: ResolvedAgentProfile,
-    pub(crate) memory_profile: ResolvedInternalProfile,
     pub(crate) skill_roots: Vec<PathBuf>,
     pub(crate) disabled_builtin_skills: Arc<RwLock<BTreeSet<String>>>,
     pub(crate) plugins: Arc<RwLock<PluginsConfig>>,
