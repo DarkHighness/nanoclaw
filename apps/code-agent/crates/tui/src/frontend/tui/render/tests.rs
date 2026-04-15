@@ -3114,19 +3114,44 @@ fn toast_band_renders_tone_and_message_preview() {
 }
 
 #[test]
-fn error_toast_colors_interrupt_prompt_message() {
+fn error_toast_colors_message_text() {
     let mut state = TuiState::default();
-    state.show_toast(ToastTone::Error, "已中断，接下来想要 nanoclaw 做什么");
+    state.show_toast(ToastTone::Error, "Interrupted current turn");
 
     let line = format_toast_line(&state);
     let text = line_text_for(&line);
 
-    assert!(text.contains("已中断"));
+    assert!(text.contains("Interrupted current turn"));
     let message_span = line
         .spans
         .last()
         .expect("toast message span should be present");
     assert_eq!(message_span.style.fg, Some(palette().error));
+}
+
+#[test]
+fn interrupt_prompt_renders_as_transcript_error_cell() {
+    let mut state = TuiState {
+        main_pane: MainPaneMode::Transcript,
+        ..TuiState::default()
+    };
+    state.transcript = vec![TranscriptEntry::error_summary_details(
+        "Interrupted current turn",
+        vec![raw_detail("What would you like nanoclaw to do next?")],
+    )];
+
+    let rendered = build_transcript_lines(&state);
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text_for(line).contains("Interrupted current turn"))
+    );
+    assert!(
+        rendered.iter().any(|line| {
+            line_text_for(line).contains("What would you like nanoclaw to do next?")
+        })
+    );
 }
 
 #[test]

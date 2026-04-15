@@ -1,7 +1,7 @@
 use super::*;
 
 const INTERRUPT_REASON: &str = "operator interrupted current turn";
-const INTERRUPT_PROMPT: &str = "已中断，接下来想要 nanoclaw 做什么";
+const INTERRUPT_PROMPT: &str = "What would you like nanoclaw to do next?";
 
 impl CodeAgentTui {
     pub(crate) async fn start_turn(&mut self, prompt: String) {
@@ -200,11 +200,13 @@ impl CodeAgentTui {
                 state.clear_missing_live_tool_selection();
                 state.active_tool_cells.clear();
                 state.provider_retry = None;
-                state.status = INTERRUPT_PROMPT.to_string();
-                state.show_toast(state::ToastTone::Error, INTERRUPT_PROMPT);
+                state.status = "Interrupted current turn".to_string();
                 state.push_transcript(state::TranscriptEntry::error_summary_details(
                     "Interrupted current turn",
-                    Vec::new(),
+                    vec![state::TranscriptShellDetail::Raw {
+                        text: INTERRUPT_PROMPT.to_string(),
+                        continuation: false,
+                    }],
                 ));
                 state.push_activity("interrupted current turn");
             });
