@@ -619,6 +619,13 @@ where
     });
     let runtime_hooks = plugin_plan.hooks.clone();
     let plugin_mcp_servers = plugin_plan.mcp_servers.clone();
+    // Managed MCP UI should see the same core-plus-plugin catalog that a later
+    // surface refresh would operate on, even though boot only auto-connects the
+    // plugin/driver subset today.
+    let configured_mcp_server_configs = dedup_mcp_servers(resolve_mcp_servers(
+        &merge_boot_mcp_servers(options.core.mcp_servers.clone(), plugin_mcp_servers.clone()),
+        workspace_root,
+    ));
     let plugin_instructions = plugin_plan.instructions.clone();
     let model_compactor: Arc<dyn ConversationCompactor> =
         Arc::new(ModelConversationCompactor::new(summary_backend));
@@ -967,7 +974,7 @@ where
         skill_catalog,
         plugin_instructions,
         mcp_servers: connected_mcp_servers,
-        mcp_server_configs: resolved_mcp_servers,
+        mcp_server_configs: configured_mcp_server_configs,
         runtime_hook_state,
         configured_runtime_hooks,
         driver_tool_names: driver_outcome.tool_names.clone(),
@@ -1037,6 +1044,17 @@ fn filter_boot_mcp_servers(
         startup_warnings.push(warning);
     }
     retained
+}
+
+fn merge_boot_mcp_servers(
+    configured_mcp_servers: Vec<McpServerConfig>,
+    plugin_mcp_servers: Vec<McpServerConfig>,
+) -> Vec<McpServerConfig> {
+    // Boot should use the same precedence as post-startup managed-surface
+    // refreshes: operator-managed/core MCP entries first, then declarative
+    // plugin additions. Later dedup keeps the first server with a given name so
+    // explicit workspace overrides win over plugin defaults.
+    [configured_mcp_servers, plugin_mcp_servers].concat()
 }
 
 fn ensure_model_supports_registered_tools(
@@ -1147,7 +1165,9 @@ mod tests {
         SessionApprovalMode, append_disabled_tool_warnings, apply_disabled_tools,
         configure_host_prompt_tool_visibility, disabled_tool_names_from_env,
         filter_boot_mcp_servers, filter_disabled_builtin_skills, filter_runtime_hooks,
+        merge_boot_mcp_servers,
     };
+    use crate::backend::dedup_mcp_servers;
     use agent::mcp::{McpServerConfig, McpTransportConfig};
     use agent::skills::load_skill_roots;
     use agent::types::{
@@ -1228,6 +1248,58 @@ mod tests {
             retained[0].transport,
             McpTransportConfig::StreamableHttp { .. }
         ));
+    }
+
+    #[test]
+    fn boot_mcp_merge_keeps_core_entries_ahead_of_plugin_defaults() {
+        let merged = merge_boot_mcp_servers(
+            vec![McpServerConfig {
+                name: "context7".into(),
+                enabled: true,
+                transport: McpTransportConfig::Stdio {
+                    command: "core-context7".to_string(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    cwd: None,
+                },
+            }],
+            vec![
+                McpServerConfig {
+                    name: "context7".into(),
+                    enabled: true,
+                    transport: McpTransportConfig::Stdio {
+                        command: "plugin-context7".to_string(),
+                        args: Vec::new(),
+                        env: BTreeMap::new(),
+                        cwd: None,
+                    },
+                },
+                McpServerConfig {
+                    name: "plugin-docs".into(),
+                    enabled: true,
+                    transport: McpTransportConfig::StreamableHttp {
+                        url: "https://example.test/mcp".to_string(),
+                        headers: BTreeMap::new(),
+                    },
+                },
+            ],
+        );
+        let deduped = dedup_mcp_servers(merged);
+
+        assert_eq!(deduped.len(), 2);
+        let context7 = deduped
+            .iter()
+            .find(|server| server.name.as_str() == "context7")
+            .expect("context7 should be retained");
+        assert!(matches!(
+            context7.transport,
+            McpTransportConfig::Stdio { ref command, .. } if command == "core-context7"
+        ));
+        assert!(
+            deduped
+                .iter()
+                .any(|server| server.name.as_str() == "plugin-docs")
+        );
     }
 
     #[test]

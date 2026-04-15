@@ -1502,6 +1502,36 @@ async fn attaching_stdio_mcp_servers_registers_tools_and_resources() {
 }
 
 #[tokio::test]
+async fn managed_mcp_listing_includes_configured_servers_before_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(InMemorySessionStore::new());
+    let runtime = AgentRuntimeBuilder::new(Arc::new(NeverBackend), store.clone())
+        .hook_runner(Arc::new(HookRunner::default()))
+        .tool_context(ToolExecutionContext {
+            workspace_root: dir.path().to_path_buf(),
+            workspace_only: true,
+            model_visibility: ToolVisibilityContext::default(),
+            ..Default::default()
+        })
+        .build();
+    let session = build_session_with_mcp(
+        runtime,
+        Arc::new(NoopSubagentExecutor),
+        store,
+        startup_snapshot(dir.path()),
+        Vec::new(),
+        vec![local_stdio_mcp_config("fixture")],
+    );
+
+    let servers = session.list_managed_mcp_servers().await.unwrap();
+
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].name, "fixture");
+    assert!(servers[0].enabled);
+    assert!(!servers[0].connected);
+}
+
+#[tokio::test]
 async fn detaching_stdio_mcp_servers_removes_tools_and_restores_warning() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemorySessionStore::new());
