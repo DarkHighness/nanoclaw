@@ -26,10 +26,10 @@ use crate::backend::{
     NonInteractiveUserInputHandler, PermissionRequestCoordinator, SessionEventPublisher,
     SessionEventStream, SessionMonitorManager, SessionPermissionRequestHandler, SessionTaskManager,
     SessionToolApprovalHandler, SessionUserInputHandler, SessionWorktreeManager,
-    UserInputCoordinator, build_code_agent_tool_approval_policy, build_plugin_activation_plan,
-    build_sandbox_policy, build_system_preamble, build_tool_context, dedup_mcp_servers,
-    log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers, resolve_skill_roots,
-    tool_context_for_profile,
+    SharedMemoryBackendHandle, UserInputCoordinator, build_code_agent_tool_approval_policy,
+    build_plugin_activation_plan, build_sandbox_policy, build_system_preamble, build_tool_context,
+    dedup_mcp_servers, log_sandbox_status, merge_driver_host_inputs, resolve_mcp_servers,
+    resolve_skill_roots, tool_context_for_profile,
 };
 use crate::options::AppOptions;
 use crate::provider::{
@@ -67,7 +67,7 @@ use tracing::{info, warn};
 struct RuntimeBuildResult {
     runtime: AgentRuntime,
     model_backend: MutableAgentBackend,
-    memory_backend: Option<Arc<dyn agent::memory::MemoryBackend>>,
+    memory_backend: SharedMemoryBackendHandle,
     session_memory_refresh_state: SharedSessionMemoryRefreshState,
     subagent_executor: Arc<dyn SubagentExecutor>,
     monitor_manager: Arc<dyn agent::tools::MonitorManager>,
@@ -828,6 +828,11 @@ where
             tools.register(resource_tool);
         }
     }
+    let memory_backend: SharedMemoryBackendHandle =
+        Arc::new(RwLock::new(driver_outcome.primary_memory_backend.clone()));
+    tools.register_arc(Arc::new(crate::backend::MemoryUpdateSessionNoteTool::new(
+        memory_backend.clone(),
+    )));
     let disabled_tool_names = disabled_tool_names(options, &options.env_map);
     let mut disabled_tool_hits = BTreeSet::new();
     let mut tool_catalog_specs = tools.specs();
@@ -961,7 +966,6 @@ where
         &connected_mcp_servers,
         &mcp_connection_details,
     );
-    let memory_backend = driver_outcome.primary_memory_backend.clone();
     let runtime_builder = AgentRuntimeBuilder::new(backend.clone(), store.clone())
         .hook_runner(hook_runner)
         .tool_registry(tools)

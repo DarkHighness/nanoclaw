@@ -1,4 +1,12 @@
-use agent::types::MessageId;
+use crate::backend::session_memory_compaction::session_memory_note_absolute_path;
+use agent::memory::{
+    MemoryBackend, MemoryMutationResponse, MemoryRecordMode, MemoryRecordRequest, MemoryScope,
+    MemoryType,
+};
+use agent::types::{MessageId, SessionId};
+use anyhow::Result;
+use std::path::Path;
+use tokio::fs;
 
 const SESSION_MEMORY_SECTION_TOKEN_BUDGET: usize = 2_000;
 const SESSION_MEMORY_TOTAL_TOKEN_BUDGET: usize = 12_000;
@@ -72,6 +80,63 @@ pub struct SessionMemoryCompactContent {
     pub was_truncated: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionMemoryNotePatch {
+    pub session_title: Option<String>,
+    pub current_state: Option<String>,
+    pub task_specification: Option<String>,
+    pub files_and_functions: Option<String>,
+    pub workflow: Option<String>,
+    pub errors_and_corrections: Option<String>,
+    pub codebase_and_system_documentation: Option<String>,
+    pub learnings: Option<String>,
+    pub key_results: Option<String>,
+    pub worklog: Option<String>,
+}
+
+impl SessionMemoryNotePatch {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.updated_sections().is_empty()
+    }
+
+    #[must_use]
+    pub fn updated_sections(&self) -> Vec<&'static str> {
+        let mut sections = Vec::new();
+        if self.session_title.is_some() {
+            sections.push("Session Title");
+        }
+        if self.current_state.is_some() {
+            sections.push("Current State");
+        }
+        if self.task_specification.is_some() {
+            sections.push("Task specification");
+        }
+        if self.files_and_functions.is_some() {
+            sections.push("Files and Functions");
+        }
+        if self.workflow.is_some() {
+            sections.push("Workflow");
+        }
+        if self.errors_and_corrections.is_some() {
+            sections.push("Errors & Corrections");
+        }
+        if self.codebase_and_system_documentation.is_some() {
+            sections.push("Codebase and System Documentation");
+        }
+        if self.learnings.is_some() {
+            sections.push("Learnings");
+        }
+        if self.key_results.is_some() {
+            sections.push("Key results");
+        }
+        if self.worklog.is_some() {
+            sections.push("Worklog");
+        }
+        sections
+    }
+}
+
 pub fn render_session_memory_note(summary: &str) -> String {
     let mut parsed = parse_session_memory_sections(summary);
     // The host owns the session-note shape so compaction output can stay
@@ -106,19 +171,7 @@ pub fn render_session_memory_note(summary: &str) -> String {
         }
     }
 
-    let mut lines = Vec::new();
-    for section in SESSION_MEMORY_TEMPLATE {
-        lines.push(format!("# {}", section.heading));
-        lines.push(format!("_{}_", section.description));
-        let body = section_body(&parsed.sections, section.heading);
-        if !body.is_empty() {
-            lines.push(String::new());
-            lines.extend(body.lines().map(ToString::to_string));
-        }
-        lines.push(String::new());
-    }
-
-    lines.join("\n").trim_end().to_string()
+    render_session_memory_sections(&parsed.sections)
 }
 
 pub fn default_session_memory_note() -> String {
@@ -214,6 +267,114 @@ pub fn build_session_memory_update_prompt(current_note: &str, transcript_delta: 
         total_budget = SESSION_MEMORY_TOTAL_TOKEN_BUDGET,
         budget_reminders = budget_reminders,
     )
+}
+
+#[must_use]
+pub fn patch_session_memory_note(current_note: &str, patch: &SessionMemoryNotePatch) -> String {
+    let note_body = strip_memory_frontmatter(current_note).trim();
+    let base = if note_body.is_empty() {
+        default_session_memory_note()
+    } else {
+        render_session_memory_note(note_body)
+    };
+    let mut parsed = parse_session_memory_sections(&base);
+
+    apply_optional_section_patch(
+        &mut parsed.sections,
+        "Session Title",
+        patch.session_title.as_deref(),
+    );
+    apply_optional_section_patch(
+        &mut parsed.sections,
+        "Current State",
+        patch.current_state.as_deref(),
+    );
+    apply_optional_section_patch(
+        &mut parsed.sections,
+        "Task specification",
+        patch.task_specification.as_deref(),
+    );
+    apply_optional_section_patch(
+        &mut parsed.sections,
+        "Files and Functions",
+        patch.files_and_functions.as_deref(),
+    );
+    apply_optional_section_patch(&mut parsed.sections, "Workflow", patch.workflow.as_deref());
+    apply_optional_section_patch(
+        &mut parsed.sections,
+        "Errors & Corrections",
+        patch.errors_and_corrections.as_deref(),
+    );
+    apply_optional_section_patch(
+        &mut parsed.sections,
+        "Codebase and System Documentation",
+        patch.codebase_and_system_documentation.as_deref(),
+    );
+    apply_optional_section_patch(
+        &mut parsed.sections,
+        "Learnings",
+        patch.learnings.as_deref(),
+    );
+    apply_optional_section_patch(
+        &mut parsed.sections,
+        "Key results",
+        patch.key_results.as_deref(),
+    );
+    apply_optional_section_patch(&mut parsed.sections, "Worklog", patch.worklog.as_deref());
+
+    render_session_memory_sections(&parsed.sections)
+}
+
+pub async fn load_session_memory_note_snapshot(
+    workspace_root: &Path,
+    session_id: &SessionId,
+) -> Result<Option<SessionMemoryNoteSnapshot>> {
+    let path = session_memory_note_absolute_path(workspace_root, session_id);
+    match fs::read_to_string(path).await {
+        Ok(text) => Ok(Some(parse_session_memory_note_snapshot(&text))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub async fn persist_session_memory_note(
+    workspace_root: &Path,
+    memory_backend: &dyn MemoryBackend,
+    session_id: &SessionId,
+    agent_session_id: &agent::types::AgentSessionId,
+    note: String,
+    last_summarized_message_id: Option<&MessageId>,
+    tags: Vec<String>,
+) -> Result<MemoryMutationResponse> {
+    let response = memory_backend
+        .record(MemoryRecordRequest {
+            scope: MemoryScope::Working,
+            title: "Session continuation snapshot".to_string(),
+            content: note,
+            mode: MemoryRecordMode::Replace,
+            memory_type: Some(MemoryType::Project),
+            description: Some(
+                "Latest structured session note for the current runtime session.".to_string(),
+            ),
+            layer: Some("session".to_string()),
+            tags,
+            session_id: Some(session_id.clone()),
+            agent_session_id: Some(agent_session_id.clone()),
+            agent_name: None,
+            task_id: None,
+        })
+        .await?;
+    // The generic memory backend owns note file writes, but the session
+    // continuity boundary is host-specific. Patch the same file's frontmatter
+    // immediately after the managed write so resume and future compaction
+    // decisions read one durable source of truth.
+    let path = session_memory_note_absolute_path(workspace_root, session_id);
+    let text = fs::read_to_string(&path).await?;
+    let patched = upsert_session_memory_note_frontmatter(&text, last_summarized_message_id);
+    if patched != text {
+        fs::write(path, patched).await?;
+    }
+    Ok(response)
 }
 
 pub fn truncate_session_memory_for_compaction(content: &str) -> SessionMemoryCompactContent {
@@ -438,6 +599,22 @@ fn parse_template_heading(line: &str) -> Option<&'static str> {
         .map(|section| section.heading)
 }
 
+fn render_session_memory_sections(sections: &[(&'static str, String)]) -> String {
+    let mut lines = Vec::new();
+    for section in SESSION_MEMORY_TEMPLATE {
+        lines.push(format!("# {}", section.heading));
+        lines.push(format!("_{}_", section.description));
+        let body = section_body(sections, section.heading);
+        if !body.is_empty() {
+            lines.push(String::new());
+            lines.extend(body.lines().map(ToString::to_string));
+        }
+        lines.push(String::new());
+    }
+
+    lines.join("\n").trim_end().to_string()
+}
+
 fn sanitize_section_body(heading: &str, body: &str) -> String {
     let Some(template) = SESSION_MEMORY_TEMPLATE
         .iter()
@@ -479,6 +656,16 @@ fn set_section_body(sections: &mut [(&'static str, String)], heading: &'static s
     }
 }
 
+fn apply_optional_section_patch(
+    sections: &mut [(&'static str, String)],
+    heading: &'static str,
+    body: Option<&str>,
+) {
+    if let Some(body) = body {
+        set_section_body(sections, heading, body.to_string());
+    }
+}
+
 fn section_body(sections: &[(&'static str, String)], heading: &'static str) -> String {
     sections
         .iter()
@@ -491,9 +678,10 @@ fn section_body(sections: &[(&'static str, String)], heading: &'static str) -> S
 mod tests {
     use super::{
         SESSION_MEMORY_APPROX_CHARS_PER_TOKEN, SESSION_MEMORY_SECTION_TOKEN_BUDGET,
-        SESSION_MEMORY_TOTAL_TOKEN_BUDGET, build_session_memory_update_prompt,
-        default_session_memory_note, parse_session_memory_note_snapshot,
-        render_session_memory_note, session_memory_note_title, strip_memory_frontmatter,
+        SESSION_MEMORY_TOTAL_TOKEN_BUDGET, SessionMemoryNotePatch,
+        build_session_memory_update_prompt, default_session_memory_note,
+        parse_session_memory_note_snapshot, patch_session_memory_note, render_session_memory_note,
+        session_memory_note_title, strip_memory_frontmatter,
         truncate_session_memory_for_compaction, upsert_session_memory_note_frontmatter,
     };
     use agent::types::MessageId;
@@ -673,5 +861,23 @@ mod tests {
         let note = default_session_memory_note();
 
         assert_eq!(session_memory_note_title(&note), None);
+    }
+
+    #[test]
+    fn patch_session_memory_note_preserves_omitted_sections() {
+        let note = render_session_memory_note(
+            "# Current State\n\nOld state.\n\n# Files and Functions\n\n- src/lib.rs",
+        );
+        let patched = patch_session_memory_note(
+            &note,
+            &SessionMemoryNotePatch {
+                current_state: Some("New state.".to_string()),
+                ..SessionMemoryNotePatch::default()
+            },
+        );
+
+        assert!(patched.contains("New state."));
+        assert!(patched.contains("- src/lib.rs"));
+        assert!(!patched.contains("Old state."));
     }
 }

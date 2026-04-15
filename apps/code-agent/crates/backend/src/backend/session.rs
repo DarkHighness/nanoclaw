@@ -10,15 +10,16 @@ use crate::backend::session_memory_compaction::{
 };
 use crate::backend::session_memory_note::{
     build_session_memory_update_prompt, default_session_memory_note,
-    parse_session_memory_note_snapshot, render_session_memory_note, session_memory_note_title,
-    upsert_session_memory_note_frontmatter,
+    load_session_memory_note_snapshot, persist_session_memory_note, render_session_memory_note,
+    session_memory_note_title,
 };
 use crate::backend::session_resume;
 use crate::backend::task_history::{self};
 use crate::backend::{
     ApprovalCoordinator, PermissionRequestCoordinator, SessionEventObserver, SessionEventStream,
-    UserInputCoordinator, connect_and_prepare_mcp_servers, list_mcp_prompts, list_mcp_resources,
-    load_mcp_prompt, load_mcp_resource, resolve_mcp_tool_conflicts, summarize_mcp_servers,
+    SharedMemoryBackendHandle, UserInputCoordinator, connect_and_prepare_mcp_servers,
+    list_mcp_prompts, list_mcp_resources, load_mcp_prompt, load_mcp_resource,
+    resolve_mcp_tool_conflicts, summarize_mcp_servers,
 };
 use agent_env::EnvMap;
 use nanoclaw_config::{PluginsConfig, ResolvedAgentProfile};
@@ -53,9 +54,7 @@ use agent::mcp::{
     ConnectedMcpServer, McpConnectOptions, McpServerConfig, McpTransportConfig,
     catalog_resource_tools_as_registry_entries,
 };
-use agent::memory::{
-    MemoryBackend, MemoryRecordMode, MemoryRecordRequest, MemoryScope, MemoryType,
-};
+use agent::memory::MemoryBackend;
 use agent::runtime::{
     ModelBackend, PermissionGrantStore, Result as RuntimeResult, RollbackVisibleHistoryOutcome,
     RunTurnOutcome, RuntimeControlPlane, VisibleHistoryRollbackRound,
@@ -165,7 +164,7 @@ pub struct CodeAgentSession {
     default_sandbox_policy: SandboxPolicy,
     preamble: SessionPreambleConfig,
     session_memory_model_backend: Option<Arc<dyn ModelBackend>>,
-    memory_backend: Arc<RwLock<Option<Arc<dyn MemoryBackend>>>>,
+    memory_backend: SharedMemoryBackendHandle,
     session_memory_refresh: SharedSessionMemoryRefreshState,
     side_question_context: Arc<RwLock<Option<SideQuestionContextSnapshot>>>,
     runtime_turn_active: Arc<AtomicBool>,
@@ -201,7 +200,7 @@ impl CodeAgentSession {
         startup: SessionStartupSnapshot,
         skill_catalog: agent::SkillCatalog,
         plugin_instructions: Arc<RwLock<Vec<String>>>,
-        memory_backend: Option<Arc<dyn MemoryBackend>>,
+        memory_backend: SharedMemoryBackendHandle,
         session_memory_refresh: SharedSessionMemoryRefreshState,
         managed_surface_reload: ManagedSurfaceReloadConfig,
         driver_tool_names: Vec<String>,
@@ -253,7 +252,7 @@ impl CodeAgentSession {
                 plugin_instructions,
             },
             session_memory_model_backend,
-            memory_backend: Arc::new(RwLock::new(memory_backend)),
+            memory_backend,
             session_memory_refresh,
             side_question_context: Arc::new(RwLock::new(side_question_context)),
             runtime_turn_active: Arc::new(AtomicBool::new(false)),

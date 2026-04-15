@@ -138,8 +138,8 @@ resume, interruption, and follow-up turns.
 write paths:
 
 - before compaction, the model may update the note itself through
-  `memory_record(scope=working, layer=session, mode=replace)` when the task
-  state changes in a handoff-worthy way
+  `memory_update_session_note` when the task state changes in a handoff-worthy
+  way
 - at compaction time, the host still writes the latest compact summary into the
   same `.nanoclaw/memory/working/sessions/<session>.md` target as a fallback
   and reconciliation path
@@ -216,9 +216,10 @@ The current answer is prompt-driven note maintenance:
   preserving important session state
 - when the current task gains state that would matter after resume,
   interruption, or handoff, the model should update the working session note
-  itself with `memory_record(scope=working, layer=session, mode=replace)`
-- if a session note already exists, the model can read it first and preserve
-  useful sections while replacing stale content
+  itself with `memory_update_session_note`
+- `memory_update_session_note` preserves omitted sections, so the model can
+  update only the parts that actually changed instead of rewriting the full
+  note body through generic memory primitives
 - this keeps refresh policy inside the prompt contract instead of a host
   threshold policy based on token counts or tool counts
 

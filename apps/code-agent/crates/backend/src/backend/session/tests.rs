@@ -747,7 +747,7 @@ fn build_session_with_runtime_state(
         startup,
         SkillCatalog::default(),
         plugin_instructions,
-        memory_backend,
+        Arc::new(RwLock::new(memory_backend)),
         Arc::new(std::sync::Mutex::new(
             crate::backend::session_memory_compaction::SessionMemoryRefreshState::default(),
         )),

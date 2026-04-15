@@ -18,6 +18,7 @@ mod session_catalog;
 mod session_history;
 mod session_memory_compaction;
 mod session_memory_note;
+mod session_note_tool;
 mod session_resume;
 mod session_store_history;
 mod store;
@@ -74,6 +75,7 @@ pub use permission_request::{
 };
 pub use session::CodeAgentSession;
 pub use session_history::{message_to_text, preview_id};
+pub(crate) use session_note_tool::{MemoryUpdateSessionNoteTool, SharedMemoryBackendHandle};
 pub use session_store_history::{
     SessionArchiveArtifact, SessionHistoryClient, SessionImportArtifact,
 };

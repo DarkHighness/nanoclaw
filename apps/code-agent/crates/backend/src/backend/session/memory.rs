@@ -292,14 +292,12 @@ impl CodeAgentSession {
     }
 
     async fn load_session_memory_note_body(&self, session_id: &SessionId) -> Result<String> {
-        let path = session_memory_note_absolute_path(self.workspace_root(), session_id);
-        match fs::read_to_string(path).await {
-            Ok(text) => Ok(parse_session_memory_note_snapshot(&text).body),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(default_session_memory_note())
-            }
-            Err(error) => Err(error.into()),
-        }
+        Ok(
+            load_session_memory_note_snapshot(self.workspace_root(), session_id)
+                .await?
+                .map(|snapshot| snapshot.body)
+                .unwrap_or_else(default_session_memory_note),
+        )
     }
 
     async fn run_session_memory_update(
@@ -368,35 +366,16 @@ impl CodeAgentSession {
         last_summarized_message_id: Option<MessageId>,
         tags: Vec<String>,
     ) -> Result<()> {
-        memory_backend
-            .record(MemoryRecordRequest {
-                scope: MemoryScope::Working,
-                title: "Session continuation snapshot".to_string(),
-                content: note,
-                mode: MemoryRecordMode::Replace,
-                memory_type: Some(MemoryType::Project),
-                description: Some(
-                    "Latest structured session note for the current runtime session.".to_string(),
-                ),
-                layer: Some("session".to_string()),
-                tags,
-                session_id: Some(session_id.clone()),
-                agent_session_id: Some(agent_session_id.clone()),
-                agent_name: None,
-                task_id: None,
-            })
-            .await?;
-        // The generic memory backend owns note file writes, but the session
-        // continuity boundary is host-specific. Patch the same file's
-        // frontmatter immediately after the managed write so resume and future
-        // compaction decisions read one durable source of truth.
-        let path = session_memory_note_absolute_path(self.workspace_root(), session_id);
-        let text = fs::read_to_string(&path).await?;
-        let patched =
-            upsert_session_memory_note_frontmatter(&text, last_summarized_message_id.as_ref());
-        if patched != text {
-            fs::write(path, patched).await?;
-        }
+        persist_session_memory_note(
+            self.workspace_root(),
+            memory_backend,
+            session_id,
+            agent_session_id,
+            note,
+            last_summarized_message_id.as_ref(),
+            tags,
+        )
+        .await?;
         Ok(())
     }
 
@@ -463,13 +442,12 @@ impl CodeAgentSession {
         &self,
         context: &SideQuestionContextSnapshot,
     ) {
-        let note_path =
-            session_memory_note_absolute_path(self.workspace_root(), &context.session_id);
-        let note_text = fs::read_to_string(&note_path).await.ok();
-        let note_snapshot = note_text
-            .as_deref()
-            .map(parse_session_memory_note_snapshot)
-            .filter(|snapshot| !snapshot.body.is_empty());
+        let note_snapshot =
+            load_session_memory_note_snapshot(self.workspace_root(), &context.session_id)
+                .await
+                .ok()
+                .flatten()
+                .filter(|snapshot| !snapshot.body.is_empty());
         let mut state = self
             .session_memory_refresh
             .lock()

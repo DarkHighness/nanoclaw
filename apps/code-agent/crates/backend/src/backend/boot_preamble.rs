@@ -48,11 +48,11 @@ pub fn build_system_preamble(
             .to_string(),
         "Use memory_get to verify a specific memory hit before relying on it, and use memory_list when you need to browse the memory inventory before choosing what to read."
             .to_string(),
-        "Use memory_record, memory_promote, and memory_forget intentionally when the user asks to remember something or when you are preserving a verified handoff-worthy fact. Compact-triggered working-memory snapshots are host-maintained separately."
+        "Use memory_record, memory_promote, and memory_forget intentionally when the user asks to remember something or when you are preserving a verified handoff-worthy fact outside the live session note. Compact-triggered working-memory snapshots are host-maintained separately."
             .to_string(),
-        "Do not wait for host compaction before preserving important session state. When the current task gains handoff-worthy state that would matter after resume, interruption, or later follow-up, update the working session note yourself with memory_record using scope=working, layer=session, and mode=replace."
+        "Do not wait for host compaction before preserving important session state. When the current task gains handoff-worthy state that would matter after resume, interruption, or later follow-up, update the working session note with memory_update_session_note."
             .to_string(),
-        "If you are updating an existing session note, read it first when needed so you preserve the useful structure while replacing stale sections."
+        "memory_update_session_note preserves omitted sections, so use it to refresh only the parts of the session note that actually changed."
             .to_string(),
     ];
     if tool_visibility.has_feature(HOST_FEATURE_REQUEST_USER_INPUT) {
@@ -370,7 +370,7 @@ mod tests {
         assert!(preamble.contains(
             "Do not wait for host compaction before preserving important session state."
         ));
-        assert!(preamble.contains("scope=working, layer=session, and mode=replace"));
+        assert!(preamble.contains("memory_update_session_note"));
     }
 
     #[test]
