@@ -1944,29 +1944,20 @@ fn write_mcp_server_summaries(
 ) -> io::Result<()> {
     match style {
         ManagementOutputStyle::Table => {
-            write_collection_title(writer, "MCP Servers", servers.len())?;
             if servers.is_empty() {
-                writeln!(writer, "No configured MCP servers found.")?;
-                writeln!(writer)?;
-                write_titled_key_value_table(
+                return write_titled_note_box(
                     writer,
-                    "Next",
+                    format!("MCP Servers · {}", servers.len()).as_str(),
+                    "No configured MCP servers found.",
+                    Some("Next"),
                     &[
-                        (
-                            "Manage".to_string(),
-                            format!("{} manage mcp", current_program_name()),
-                        ),
-                        (
-                            "Add".to_string(),
-                            format!(
-                                "{} mcp add docs --type stdio -- npx -y remote-mcp",
-                                current_program_name()
-                            ),
+                        format!("Manage: {} manage mcp", current_program_name()),
+                        format!(
+                            "Add: {} mcp add docs --type stdio -- npx -y remote-mcp",
+                            current_program_name()
                         ),
                     ],
-                    [14, 72],
-                )?;
-                return Ok(());
+                );
             }
 
             let rows = servers
@@ -1992,27 +1983,17 @@ fn write_mcp_server_summaries(
                     ]
                 })
                 .collect::<Vec<_>>();
-            write_grid_table(
+            write_titled_grid_table(
                 writer,
+                format!("MCP Servers · {}", servers.len()).as_str(),
                 &["#", "Name", "State", "Transport", "Launch / Endpoint"],
                 &rows,
                 &[3, 20, 10, 12, 72],
-            )?;
-            writeln!(writer)?;
-            write_titled_key_value_table(
-                writer,
-                "Next",
+                Some("Next"),
                 &[
-                    (
-                        "Inspect".to_string(),
-                        format!("{} mcp show <name>", current_program_name()),
-                    ),
-                    (
-                        "Manage".to_string(),
-                        format!("{} manage mcp", current_program_name()),
-                    ),
+                    format!("Inspect: {} mcp show <name>", current_program_name()),
+                    format!("Manage: {} manage mcp", current_program_name()),
                 ],
-                [14, 72],
             )
         }
         ManagementOutputStyle::Plain => {
@@ -2213,20 +2194,14 @@ fn write_managed_skill_summaries(
 ) -> io::Result<()> {
     match style {
         ManagementOutputStyle::Table => {
-            write_collection_title(writer, "Skills", skills.len())?;
             if skills.is_empty() {
-                writeln!(writer, "No managed or built-in skills found.")?;
-                writeln!(writer)?;
-                write_titled_key_value_table(
+                return write_titled_note_box(
                     writer,
-                    "Next",
-                    &[(
-                        "Manage".to_string(),
-                        format!("{} manage skill", current_program_name()),
-                    )],
-                    [14, 72],
-                )?;
-                return Ok(());
+                    format!("Skills · {}", skills.len()).as_str(),
+                    "No managed or built-in skills found.",
+                    Some("Next"),
+                    &[format!("Manage: {} manage skill", current_program_name())],
+                );
             }
 
             let rows = skills
@@ -2247,27 +2222,17 @@ fn write_managed_skill_summaries(
                     ]
                 })
                 .collect::<Vec<_>>();
-            write_grid_table(
+            write_titled_grid_table(
                 writer,
+                format!("Skills · {}", skills.len()).as_str(),
                 &["#", "Name", "State", "Source", "Path", "About"],
                 &rows,
                 &[3, 22, 10, 10, 40, 56],
-            )?;
-            writeln!(writer)?;
-            write_titled_key_value_table(
-                writer,
-                "Next",
+                Some("Next"),
                 &[
-                    (
-                        "Inspect".to_string(),
-                        format!("{} skill show <name>", current_program_name()),
-                    ),
-                    (
-                        "Manage".to_string(),
-                        format!("{} manage skill", current_program_name()),
-                    ),
+                    format!("Inspect: {} skill show <name>", current_program_name()),
+                    format!("Manage: {} manage skill", current_program_name()),
                 ],
-                [14, 72],
             )
         }
         ManagementOutputStyle::Plain => {
@@ -2422,26 +2387,17 @@ fn write_managed_plugin_summaries(
 ) -> io::Result<()> {
     match style {
         ManagementOutputStyle::Table => {
-            write_collection_title(writer, "Plugins", plugins.len())?;
             if plugins.is_empty() {
-                writeln!(writer, "No managed plugins found.")?;
-                writeln!(writer)?;
-                write_titled_key_value_table(
+                return write_titled_note_box(
                     writer,
-                    "Next",
+                    format!("Plugins · {}", plugins.len()).as_str(),
+                    "No managed plugins found.",
+                    Some("Next"),
                     &[
-                        (
-                            "Add".to_string(),
-                            format!("{} plugin add ./my-plugin", current_program_name()),
-                        ),
-                        (
-                            "Manage".to_string(),
-                            format!("{} manage plugin", current_program_name()),
-                        ),
+                        format!("Add: {} plugin add ./my-plugin", current_program_name()),
+                        format!("Manage: {} manage plugin", current_program_name()),
                     ],
-                    [14, 72],
-                )?;
-                return Ok(());
+                );
             }
 
             let rows = plugins
@@ -2478,27 +2434,17 @@ fn write_managed_plugin_summaries(
                     ]
                 })
                 .collect::<Vec<_>>();
-            write_grid_table(
+            write_titled_grid_table(
                 writer,
+                format!("Plugins · {}", plugins.len()).as_str(),
                 &["#", "Name", "State", "Kind", "Path", "Summary"],
                 &rows,
                 &[3, 24, 10, 18, 40, 52],
-            )?;
-            writeln!(writer)?;
-            write_titled_key_value_table(
-                writer,
-                "Next",
+                Some("Next"),
                 &[
-                    (
-                        "Inspect".to_string(),
-                        format!("{} plugin show <id>", current_program_name()),
-                    ),
-                    (
-                        "Manage".to_string(),
-                        format!("{} manage plugin", current_program_name()),
-                    ),
+                    format!("Inspect: {} plugin show <id>", current_program_name()),
+                    format!("Manage: {} manage plugin", current_program_name()),
                 ],
-                [14, 72],
             )
         }
         ManagementOutputStyle::Plain => {
@@ -2704,15 +2650,14 @@ fn write_managed_plugin_details(
     }
 }
 
-fn write_collection_title(writer: &mut impl Write, title: &str, count: usize) -> io::Result<()> {
-    writeln!(writer, "{title} · {count}")
-}
-
-fn write_grid_table(
+fn write_titled_grid_table(
     writer: &mut impl Write,
+    title: &str,
     headers: &[&str],
     rows: &[Vec<String>],
     max_widths: &[usize],
+    footer_title: Option<&str>,
+    footer_lines: &[String],
 ) -> io::Result<()> {
     if headers.len() != max_widths.len() {
         return Err(io::Error::new(
@@ -2737,7 +2682,10 @@ fn write_grid_table(
                 .fold(display_width(header), usize::max)
         })
         .collect::<Vec<_>>();
-    write_table_border(writer, '┌', '┬', '┐', &widths)?;
+    let span_width = widths.iter().sum::<usize>() + widths.len().saturating_sub(1) * 3;
+    write_span_border(writer, '┌', '┐', span_width)?;
+    write_span_row(writer, title, span_width)?;
+    write_table_border(writer, '├', '┬', '┤', &widths)?;
     write_table_row(
         writer,
         &widths,
@@ -2757,47 +2705,54 @@ fn write_grid_table(
             .collect::<Vec<_>>();
         write_table_row(writer, &widths, &cells)?;
     }
-    write_table_border(writer, '└', '┴', '┘', &widths)
+    if footer_title.is_none() && footer_lines.is_empty() {
+        return write_table_border(writer, '└', '┴', '┘', &widths);
+    }
+    write_span_border(writer, '├', '┤', span_width)?;
+    if let Some(footer_title) = footer_title {
+        write_span_row(writer, footer_title, span_width)?;
+        if !footer_lines.is_empty() {
+            write_span_border(writer, '├', '┤', span_width)?;
+        }
+    }
+    for line in footer_lines {
+        write_span_row(writer, line, span_width)?;
+    }
+    write_span_border(writer, '└', '┘', span_width)
 }
 
-fn write_titled_key_value_table(
+fn write_titled_note_box(
     writer: &mut impl Write,
     title: &str,
-    rows: &[(String, String)],
-    max_widths: [usize; 2],
+    message: &str,
+    footer_title: Option<&str>,
+    footer_lines: &[String],
 ) -> io::Result<()> {
-    let cells = rows
-        .iter()
-        .map(|(label, value)| {
-            vec![
-                truncate_cell(&sanitize_cell(label), max_widths[0]),
-                truncate_cell(&sanitize_cell(value), max_widths[1]),
-            ]
-        })
-        .collect::<Vec<_>>();
-    let widths = cells.iter().fold(
-        vec![max_widths[0].min(1), max_widths[1].min(1)],
-        |mut widths, row| {
-            widths[0] = widths[0].max(display_width(&row[0]));
-            widths[1] = widths[1].max(display_width(&row[1]));
-            widths
-        },
-    );
-    // The title row merges both columns into one span, so its content width must
-    // match the rendered row width with the middle separator removed.
-    let title_width = widths.iter().sum::<usize>() + widths.len().saturating_sub(1) * 3;
-    writeln!(writer, "┌{}┐", "─".repeat(title_width + 2))?;
-    writeln!(
-        writer,
-        "│ {}{} │",
-        title,
-        " ".repeat(title_width.saturating_sub(display_width(title)))
-    )?;
-    write_table_border(writer, '├', '┬', '┤', &widths)?;
-    for row in &cells {
-        write_table_row(writer, &widths, row)?;
+    let mut span_width = display_width(title).max(display_width(message));
+    if let Some(footer_title) = footer_title {
+        span_width = span_width.max(display_width(footer_title));
     }
-    write_table_border(writer, '└', '┴', '┘', &widths)
+    for line in footer_lines {
+        span_width = span_width.max(display_width(line));
+    }
+    write_span_border(writer, '┌', '┐', span_width)?;
+    write_span_row(writer, title, span_width)?;
+    write_span_border(writer, '├', '┤', span_width)?;
+    write_span_row(writer, message, span_width)?;
+    if footer_title.is_none() && footer_lines.is_empty() {
+        return write_span_border(writer, '└', '┘', span_width);
+    }
+    write_span_border(writer, '├', '┤', span_width)?;
+    if let Some(footer_title) = footer_title {
+        write_span_row(writer, footer_title, span_width)?;
+        if !footer_lines.is_empty() {
+            write_span_border(writer, '├', '┤', span_width)?;
+        }
+    }
+    for line in footer_lines {
+        write_span_row(writer, line, span_width)?;
+    }
+    write_span_border(writer, '└', '┘', span_width)
 }
 
 fn write_sectioned_key_value_table(
@@ -3903,11 +3858,13 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.starts_with("MCP Servers · 1"));
+        assert!(output.starts_with("┌"));
+        assert!(output.contains("│ MCP Servers · 1"));
         assert!(output.contains("│ #"));
         assert!(output.contains("│ Name"));
         assert!(output.contains("docs"));
         assert!(output.contains("npx -y remote-mcp"));
+        assert!(output.contains("Inspect:"));
         assert!(output.contains("mcp show <name>"));
     }
 
@@ -3960,11 +3917,13 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.starts_with("Skills · 1"));
+        assert!(output.starts_with("┌"));
+        assert!(output.contains("│ Skills · 1"));
         assert!(output.contains("│ #"));
         assert!(output.contains("│ Name"));
         assert!(output.contains("review"));
         assert!(output.contains(".nanoclaw/skills/review"));
+        assert!(output.contains("Inspect:"));
         assert!(output.contains("skill show <name>"));
     }
 
@@ -3980,7 +3939,8 @@ mod tests {
         .unwrap();
 
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.starts_with("Plugins · 0"));
+        assert!(output.starts_with("┌"));
+        assert!(output.contains("│ Plugins · 0"));
         assert!(output.contains("No managed plugins found."));
         assert!(output.contains("│ Next"));
         assert!(output.contains("plugin add ./my-plugin"));
