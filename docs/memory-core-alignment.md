@@ -220,6 +220,12 @@ The current answer is prompt-driven note maintenance:
 - `memory_update_session_note` preserves omitted sections, so the model can
   update only the parts that actually changed instead of rewriting the full
   note body through generic memory primitives
+- good triggers are material continuity changes such as plan pivots, user
+  corrections or preferences, blockers, failed approaches with rationale, and
+  resume-critical next-step handoffs
+- non-triggers include routine tool output, small incremental progress, and
+  code edits that are already obvious from the repository state plus the recent
+  transcript
 - this keeps refresh policy inside the prompt contract instead of a host
   threshold policy based on token counts or tool counts
 

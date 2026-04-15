@@ -58,17 +58,19 @@ impl MemoryUpdateSessionNoteInput {
 fn memory_update_session_note_input_schema() -> Value {
     json!({
         "type": "object",
+        "description": "Patch the current session note by replacing only the provided sections.",
+        "minProperties": 1,
         "properties": {
-            "session_title": { "type": "string" },
-            "current_state": { "type": "string" },
-            "task_specification": { "type": "string" },
-            "files_and_functions": { "type": "string" },
-            "workflow": { "type": "string" },
-            "errors_and_corrections": { "type": "string" },
-            "codebase_and_system_documentation": { "type": "string" },
-            "learnings": { "type": "string" },
-            "key_results": { "type": "string" },
-            "worklog": { "type": "string" }
+            "session_title": { "type": "string", "description": "Replace the Session Title section." },
+            "current_state": { "type": "string", "description": "Replace the Current State section." },
+            "task_specification": { "type": "string", "description": "Replace the Task specification section." },
+            "files_and_functions": { "type": "string", "description": "Replace the Files and Functions section." },
+            "workflow": { "type": "string", "description": "Replace the Workflow section." },
+            "errors_and_corrections": { "type": "string", "description": "Replace the Errors & Corrections section." },
+            "codebase_and_system_documentation": { "type": "string", "description": "Replace the Codebase and System Documentation section." },
+            "learnings": { "type": "string", "description": "Replace the Learnings section." },
+            "key_results": { "type": "string", "description": "Replace the Key results section." },
+            "worklog": { "type": "string", "description": "Replace the Worklog section." }
         },
         "additionalProperties": false
     })
@@ -90,7 +92,7 @@ impl Tool for MemoryUpdateSessionNoteTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "memory_update_session_note",
-            "Update the current session's structured working-memory note. Use this when task state changes in a handoff-worthy way; omitted sections stay unchanged.",
+            "Update the current session's structured working-memory note after a material continuity change such as a plan pivot, blocker, user correction, or resume-critical next step. Do not use it for routine tool output or repo-obvious edits. Omitted sections stay unchanged.",
             memory_update_session_note_input_schema(),
             ToolOutputMode::Text,
             tool_approval_profile(true, false, true, false),
@@ -176,7 +178,10 @@ impl Tool for MemoryUpdateSessionNoteTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryUpdateSessionNoteTool, SharedMemoryBackendHandle};
+    use super::{
+        MemoryUpdateSessionNoteTool, SharedMemoryBackendHandle,
+        memory_update_session_note_input_schema,
+    };
     use crate::backend::session_memory_compaction::session_memory_note_absolute_path;
     use agent::memory::{MemoryBackend, MemoryCoreBackend, MemoryCoreConfig};
     use agent::tools::registry::Tool;
@@ -279,5 +284,17 @@ mod tests {
             .expect_err("empty patch should fail");
 
         assert!(error.to_string().contains("at least one section"));
+    }
+
+    #[test]
+    fn schema_requires_at_least_one_section_field() {
+        let schema = memory_update_session_note_input_schema();
+
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["minProperties"], 1);
+        assert_eq!(
+            schema["properties"]["current_state"]["description"],
+            "Replace the Current State section."
+        );
     }
 }

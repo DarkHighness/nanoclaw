@@ -54,6 +54,10 @@ pub fn build_system_preamble(
             .to_string(),
         "memory_update_session_note preserves omitted sections, so use it to refresh only the parts of the session note that actually changed."
             .to_string(),
+        "Only update the session note after a material continuity change such as a plan pivot, a user correction or preference, a blocker or failed approach with reason, or a resume-critical next-step handoff."
+            .to_string(),
+        "Do not update the session note for routine tool output, small incremental progress, or code edits that are already obvious from the current repository state and recent transcript."
+            .to_string(),
     ];
     if tool_visibility.has_feature(HOST_FEATURE_REQUEST_USER_INPUT) {
         preamble.push(
@@ -371,6 +375,10 @@ mod tests {
             "Do not wait for host compaction before preserving important session state."
         ));
         assert!(preamble.contains("memory_update_session_note"));
+        assert!(
+            preamble.contains("Only update the session note after a material continuity change")
+        );
+        assert!(preamble.contains("Do not update the session note for routine tool output"));
     }
 
     #[test]
