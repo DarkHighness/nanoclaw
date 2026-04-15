@@ -1,3 +1,5 @@
+mod management_tui;
+
 use agent::AgentWorkspaceLayout;
 use agent::runtime::{HostRuntimeLimits, build_host_tokio_runtime};
 use agent_env::EnvMap;
@@ -14,17 +16,18 @@ use code_agent_backend::{
     inject_process_env, inspect_sandbox_preflight, message_to_text,
 };
 use code_agent_config::{
-    ManagedPluginArtifact, ManagedPluginDetail, ManagedSkillArtifact, ManagedSkillDetail,
-    add_core_mcp_server, add_managed_plugin, add_managed_skill, delete_core_mcp_server,
-    delete_managed_plugin, delete_managed_skill, filter_unavailable_builtin_mcp_servers,
-    list_core_mcp_servers, list_managed_plugin_details, list_managed_skill_details,
-    load_managed_plugin_detail, load_managed_skill_detail, set_core_mcp_server_enabled,
-    set_managed_plugin_enabled, set_managed_skill_enabled,
+    CodeAgentConfig, ManagedPluginArtifact, ManagedPluginDetail, ManagedSkillArtifact,
+    ManagedSkillDetail, add_core_mcp_server, add_managed_plugin, add_managed_skill,
+    delete_core_mcp_server, delete_managed_plugin, delete_managed_skill,
+    filter_unavailable_builtin_mcp_servers, list_core_mcp_servers, list_managed_plugin_details,
+    list_managed_skill_details, load_managed_plugin_detail, load_managed_skill_detail,
+    set_core_mcp_server_enabled, set_managed_plugin_enabled, set_managed_skill_enabled,
 };
 use code_agent_tui::theme::install_theme_catalog;
 use code_agent_tui::{
     CodeAgentTui, SharedUiState, StartupLoadingScreen, confirm_unsandboxed_startup_screen,
 };
+use management_tui::{ManagementSurfaceKind, run_management_tui};
 use nanoclaw_config::CoreConfig;
 use std::collections::BTreeMap;
 use std::env;
@@ -87,6 +90,8 @@ enum CliCommand {
     Export(SessionExportArgs),
     /// Import a session archive into the local store.
     Import(SessionImportArgs),
+    /// Open the interactive manager for MCP, skills, and plugins.
+    Manage(ManageArgs),
     /// Export persisted session events as JSONL.
     #[command(name = "export-events")]
     ExportSession(SessionExportArgs),
@@ -99,6 +104,19 @@ enum CliCommand {
     Skill(SkillCommandArgs),
     /// Manage workspace-local plugins and plugin enablement.
     Plugin(PluginCommandArgs),
+}
+
+#[derive(Debug, Args)]
+struct ManageArgs {
+    #[arg(value_enum, value_name = "SURFACE")]
+    surface: Option<ManageSurfaceArg>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ManageSurfaceArg {
+    Mcp,
+    Skill,
+    Plugin,
 }
 
 #[derive(Debug, Args)]
@@ -472,6 +490,7 @@ impl Cli {
                 | CliCommand::Task(_)
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
+                | CliCommand::Manage(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Mcp(_)
@@ -498,6 +517,7 @@ impl Cli {
                 | CliCommand::Task(_)
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
+                | CliCommand::Manage(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Mcp(_)
@@ -531,10 +551,36 @@ impl Cli {
                 | CliCommand::Task(_)
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
+                | CliCommand::Manage(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_),
             )
             | None => Ok(None),
+        }
+    }
+
+    fn manage_surface(&self) -> Option<ManagementSurfaceKind> {
+        match &self.command {
+            Some(CliCommand::Manage(command)) => Some(command.surface()),
+            Some(
+                CliCommand::Exec(_)
+                | CliCommand::Resume(_)
+                | CliCommand::Fork(_)
+                | CliCommand::Sessions(_)
+                | CliCommand::Session(_)
+                | CliCommand::AgentSessions(_)
+                | CliCommand::AgentSession(_)
+                | CliCommand::Tasks(_)
+                | CliCommand::Task(_)
+                | CliCommand::Export(_)
+                | CliCommand::Import(_)
+                | CliCommand::ExportSession(_)
+                | CliCommand::ExportTranscript(_)
+                | CliCommand::Mcp(_)
+                | CliCommand::Skill(_)
+                | CliCommand::Plugin(_),
+            )
+            | None => None,
         }
     }
 
@@ -586,6 +632,7 @@ impl Cli {
             Some(
                 CliCommand::Resume(_)
                 | CliCommand::Fork(_)
+                | CliCommand::Manage(_)
                 | CliCommand::Mcp(_)
                 | CliCommand::Skill(_)
                 | CliCommand::Plugin(_),
@@ -608,6 +655,7 @@ impl Cli {
                 | CliCommand::Task(_)
                 | CliCommand::Export(_)
                 | CliCommand::Import(_)
+                | CliCommand::Manage(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
                 | CliCommand::Mcp(_)
@@ -635,10 +683,21 @@ impl Cli {
                 | CliCommand::Import(_)
                 | CliCommand::ExportSession(_)
                 | CliCommand::ExportTranscript(_)
+                | CliCommand::Manage(_)
                 | CliCommand::Skill(_)
                 | CliCommand::Plugin(_),
             )
             | None => None,
+        }
+    }
+}
+
+impl ManageArgs {
+    fn surface(&self) -> ManagementSurfaceKind {
+        match self.surface.unwrap_or(ManageSurfaceArg::Mcp) {
+            ManageSurfaceArg::Mcp => ManagementSurfaceKind::Mcp,
+            ManageSurfaceArg::Skill => ManagementSurfaceKind::Skill,
+            ManageSurfaceArg::Plugin => ManagementSurfaceKind::Plugin,
         }
     }
 }
@@ -944,6 +1003,19 @@ fn try_main() -> Result<()> {
     let env_map = EnvMap::from_workspace_dir(&workspace_root)?;
     inject_process_env(&env_map);
     let _tracing_guard = init_tracing(&workspace_root)?;
+    if let Some(surface) = cli.manage_surface() {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            bail!("`manage` requires an interactive terminal");
+        }
+        let config = CodeAgentConfig::load_from_dir(&workspace_root, &env_map)?;
+        install_theme_catalog(config.theme_catalog.clone());
+        let runtime = build_host_tokio_runtime(HostRuntimeLimits {
+            worker_threads: config.core.host.tokio_worker_threads,
+            max_blocking_threads: config.core.host.tokio_max_blocking_threads,
+        })
+        .context("failed to build tokio runtime")?;
+        return runtime.block_on(run_management_tui(workspace_root, surface));
+    }
     if let Some(command) = cli.management_command()? {
         let runtime = build_host_tokio_runtime(HostRuntimeLimits::default())
             .context("failed to build tokio runtime")?;
@@ -1812,14 +1884,14 @@ fn write_mcp_server_details(
     writer: &mut impl Write,
     server: &agent::mcp::McpServerConfig,
 ) -> io::Result<()> {
-    writeln!(writer, "MCP Server")?;
-    writeln!(writer, "  name: {}", server.name)?;
-    writeln!(writer, "  enabled: {}", server.enabled)?;
-    writeln!(
+    write_detail_header(
         writer,
-        "  transport: {}",
-        mcp_transport_label(&server.transport)
+        "MCP Server",
+        server.name.as_str(),
+        status_label(server.enabled),
     )?;
+    write_detail_section(writer, "Configuration")?;
+    write_detail_field(writer, "transport", mcp_transport_label(&server.transport))?;
     match &server.transport {
         agent::mcp::McpTransportConfig::Stdio {
             command,
@@ -1827,32 +1899,50 @@ fn write_mcp_server_details(
             env,
             cwd,
         } => {
-            writeln!(writer, "  command: {command}")?;
+            write_detail_section(writer, "Launch")?;
+            write_detail_field(writer, "command", command)?;
             if !args.is_empty() {
-                writeln!(writer, "  args: {}", args.join(" "))?;
+                write_detail_field(writer, "args", args.join(" "))?;
             }
             if let Some(cwd) = cwd.as_deref() {
-                writeln!(writer, "  cwd: {cwd}")?;
+                write_detail_field(writer, "cwd", cwd)?;
             }
             if !env.is_empty() {
-                writeln!(
+                write_detail_field(
                     writer,
-                    "  env keys: {}",
-                    env.keys().cloned().collect::<Vec<_>>().join(", ")
+                    "env keys",
+                    join_sorted_keys(env.keys().cloned().collect()),
                 )?;
             }
         }
         agent::mcp::McpTransportConfig::StreamableHttp { url, headers } => {
-            writeln!(writer, "  url: {url}")?;
+            write_detail_section(writer, "Endpoint")?;
+            write_detail_field(writer, "url", url)?;
             if !headers.is_empty() {
-                writeln!(
+                write_detail_field(
                     writer,
-                    "  header keys: {}",
-                    headers.keys().cloned().collect::<Vec<_>>().join(", ")
+                    "header keys",
+                    join_sorted_keys(headers.keys().cloned().collect()),
                 )?;
             }
         }
     }
+    write_detail_section(writer, "Next")?;
+    write_detail_field(
+        writer,
+        "manage",
+        format!("{} manage mcp", current_program_name()),
+    )?;
+    write_detail_field(
+        writer,
+        if server.enabled { "disable" } else { "enable" },
+        format!(
+            "{} mcp {} {}",
+            current_program_name(),
+            if server.enabled { "disable" } else { "enable" },
+            server.name
+        ),
+    )?;
     Ok(())
 }
 
@@ -1890,22 +1980,43 @@ fn write_managed_skill_details(
     workspace_root: &Path,
     skill: &ManagedSkillDetail,
 ) -> io::Result<()> {
-    writeln!(writer, "Skill")?;
-    writeln!(writer, "  name: {}", skill.skill_name)?;
-    writeln!(writer, "  enabled: {}", skill.enabled)?;
-    writeln!(
+    write_detail_header(
         writer,
-        "  source: {}",
-        if skill.builtin { "builtin" } else { "managed" }
+        "Skill",
+        skill.skill_name.as_str(),
+        status_label(skill.enabled),
     )?;
-    writeln!(
+    write_detail_section(writer, "State")?;
+    write_detail_field(
         writer,
-        "  path: {}",
-        display_workspace_path(workspace_root, &skill.skill_path)
+        "source",
+        if skill.builtin { "builtin" } else { "managed" },
+    )?;
+    write_detail_field(
+        writer,
+        "path",
+        display_workspace_path(workspace_root, &skill.skill_path),
     )?;
     if !skill.description.is_empty() {
-        writeln!(writer, "  description: {}", skill.description)?;
+        write_detail_section(writer, "Trigger")?;
+        write_detail_field(writer, "description", skill.description.as_str())?;
     }
+    write_detail_section(writer, "Next")?;
+    write_detail_field(
+        writer,
+        "manage",
+        format!("{} manage skill", current_program_name()),
+    )?;
+    write_detail_field(
+        writer,
+        if skill.enabled { "disable" } else { "enable" },
+        format!(
+            "{} skill {} {}",
+            current_program_name(),
+            if skill.enabled { "disable" } else { "enable" },
+            skill.skill_name
+        ),
+    )?;
     Ok(())
 }
 
@@ -1944,29 +2055,93 @@ fn write_managed_plugin_details(
     workspace_root: &Path,
     plugin: &ManagedPluginDetail,
 ) -> io::Result<()> {
-    writeln!(writer, "Managed Plugin")?;
-    writeln!(writer, "  id: {}", plugin.plugin_id)?;
+    let plugin_subject = plugin
+        .name
+        .clone()
+        .unwrap_or_else(|| plugin.plugin_id.to_string());
+    write_detail_header(
+        writer,
+        "Plugin",
+        plugin_subject.as_str(),
+        status_label(plugin.enabled),
+    )?;
+    write_detail_section(writer, "Identity")?;
+    write_detail_field(writer, "id", plugin.plugin_id.to_string())?;
     if let Some(name) = plugin.name.as_deref() {
-        writeln!(writer, "  name: {name}")?;
+        write_detail_field(writer, "name", name)?;
     }
     if let Some(version) = plugin.version.as_deref() {
-        writeln!(writer, "  version: {version}")?;
+        write_detail_field(writer, "version", version)?;
     }
-    writeln!(writer, "  kind: {}", plugin.kind)?;
-    writeln!(writer, "  enabled: {}", plugin.enabled)?;
-    writeln!(writer, "  reason: {}", plugin.reason)?;
-    writeln!(
+    write_detail_field(writer, "kind", plugin.kind.as_str())?;
+    write_detail_section(writer, "State")?;
+    write_detail_field(writer, "reason", plugin.reason.as_str())?;
+    write_detail_field(
         writer,
-        "  path: {}",
-        display_workspace_path(workspace_root, &plugin.plugin_path)
+        "path",
+        display_workspace_path(workspace_root, &plugin.plugin_path),
     )?;
     if let Some(description) = plugin.description.as_deref() {
-        writeln!(writer, "  description: {description}")?;
+        write_detail_section(writer, "Description")?;
+        write_detail_field(writer, "text", description)?;
     }
     if !plugin.contribution_summary.is_empty() {
-        writeln!(writer, "  contributes: {}", plugin.contribution_summary)?;
+        write_detail_section(writer, "Contribution")?;
+        write_detail_field(writer, "summary", plugin.contribution_summary.as_str())?;
     }
+    write_detail_section(writer, "Next")?;
+    write_detail_field(
+        writer,
+        "manage",
+        format!("{} manage plugin", current_program_name()),
+    )?;
+    write_detail_field(
+        writer,
+        if plugin.enabled { "disable" } else { "enable" },
+        format!(
+            "{} plugin {} {}",
+            current_program_name(),
+            if plugin.enabled { "disable" } else { "enable" },
+            plugin.plugin_id
+        ),
+    )?;
     Ok(())
+}
+
+fn write_detail_header(
+    writer: &mut impl Write,
+    title: &str,
+    subject: &str,
+    state: &str,
+) -> io::Result<()> {
+    writeln!(writer, "{title}: {subject}")?;
+    writeln!(writer, "{}", "=".repeat(title.len() + subject.len() + 2))?;
+    writeln!(writer, "state: {state}")?;
+    Ok(())
+}
+
+fn write_detail_section(writer: &mut impl Write, title: &str) -> io::Result<()> {
+    writeln!(writer)?;
+    writeln!(writer, "{title}")?;
+    writeln!(writer, "{}", "-".repeat(title.len()))?;
+    Ok(())
+}
+
+fn write_detail_field(
+    writer: &mut impl Write,
+    label: &str,
+    value: impl AsRef<str>,
+) -> io::Result<()> {
+    writeln!(writer, "  {label:12} {}", value.as_ref())
+}
+
+fn status_label(enabled: bool) -> &'static str {
+    if enabled { "enabled" } else { "disabled" }
+}
+
+fn join_sorted_keys(mut values: Vec<String>) -> String {
+    values.sort();
+    values.join(", ")
 }
 
 fn mcp_transport_label(transport: &agent::mcp::McpTransportConfig) -> &'static str {
@@ -2531,11 +2706,12 @@ mod diagnostic_tests {
 mod tests {
     use super::{
         Cli, ExplicitExecCommand, LaunchMode, LiveInspectCommand, ManagementCommand,
-        McpManagementCommand, PluginManagementCommand, ReadOnlyCommand, SandboxFallbackAction,
-        SessionSelector, SkillManagementCommand, active_session_is_persisted,
-        choose_sandbox_fallback_action, format_sandbox_abort_message, format_session_counts,
-        format_token_count, launch_headless_one_shot, write_exit_summary,
-        write_mcp_prompt_summaries, write_mcp_resource_summaries, write_session_search_results,
+        ManagementSurfaceKind, McpManagementCommand, PluginManagementCommand, ReadOnlyCommand,
+        SandboxFallbackAction, SessionSelector, SkillManagementCommand,
+        active_session_is_persisted, choose_sandbox_fallback_action, format_sandbox_abort_message,
+        format_session_counts, format_token_count, launch_headless_one_shot, write_exit_summary,
+        write_managed_plugin_details, write_managed_skill_details, write_mcp_prompt_summaries,
+        write_mcp_resource_summaries, write_mcp_server_details, write_session_search_results,
         write_session_summaries, write_startup_diagnostics,
     };
     use agent::DriverActivationOutcome;
@@ -2554,11 +2730,12 @@ mod tests {
         driver_host_output_lines, merge_driver_host_inputs, parse_bool_flag, resolve_mcp_servers,
         tool_context_for_profile,
     };
+    use code_agent_config::{ManagedPluginDetail, ManagedSkillDetail};
     use nanoclaw_config::{
         AgentProfileConfig, AgentSandboxMode, CoreConfig, ModelCapabilitiesConfig, ModelConfig,
     };
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, OnceLock};
     use store::SessionTokenUsageReport;
     use tempfile::tempdir;
@@ -2691,6 +2868,13 @@ mod tests {
     }
 
     #[test]
+    fn clap_parses_manage_surface() {
+        let cli = Cli::parse_from(["code-agent", "manage", "plugin"]);
+
+        assert_eq!(cli.manage_surface(), Some(ManagementSurfaceKind::Plugin));
+    }
+
+    #[test]
     fn clap_parses_skill_add() {
         let cli = Cli::parse_from(["code-agent", "skill", "add", "./skills/review"]);
 
@@ -2764,6 +2948,84 @@ mod tests {
                 id: "review-policy".to_string(),
             }))
         );
+    }
+
+    #[test]
+    fn skill_show_output_uses_sectioned_layout() {
+        let mut buffer = Vec::new();
+        write_managed_skill_details(
+            &mut buffer,
+            Path::new("/workspace"),
+            &ManagedSkillDetail {
+                skill_name: "review".to_string(),
+                description: "Review pull requests".to_string(),
+                skill_path: PathBuf::from("/workspace/.nanoclaw/skills/review"),
+                enabled: true,
+                builtin: false,
+            },
+        )
+        .unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.contains("Skill: review"));
+        assert!(output.contains("state: enabled"));
+        assert!(output.contains("\nState\n-----\n"));
+        assert!(output.contains("\nTrigger\n-------\n"));
+        assert!(output.contains("\nNext\n----\n"));
+    }
+
+    #[test]
+    fn mcp_show_output_groups_transport_details() {
+        let mut buffer = Vec::new();
+        write_mcp_server_details(
+            &mut buffer,
+            &McpServerConfig {
+                name: "docs".into(),
+                enabled: false,
+                transport: McpTransportConfig::Stdio {
+                    command: "npx".to_string(),
+                    args: vec!["-y".to_string(), "remote-mcp".to_string()],
+                    env: BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
+                    cwd: Some("/tmp".to_string()),
+                },
+            },
+        )
+        .unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.contains("MCP Server: docs"));
+        assert!(output.contains("state: disabled"));
+        assert!(output.contains("\nConfiguration\n-------------\n"));
+        assert!(output.contains("\nLaunch\n------\n"));
+        assert!(output.contains("env keys"));
+    }
+
+    #[test]
+    fn plugin_show_output_includes_identity_and_next_sections() {
+        let mut buffer = Vec::new();
+        write_managed_plugin_details(
+            &mut buffer,
+            Path::new("/workspace"),
+            &ManagedPluginDetail {
+                plugin_id: "review-policy".into(),
+                name: Some("Review Policy".to_string()),
+                description: Some("Applies review policy hooks".to_string()),
+                version: Some("1.2.3".to_string()),
+                kind: "bundle".to_string(),
+                plugin_path: PathBuf::from("/workspace/.nanoclaw/plugins/review-policy"),
+                enabled: true,
+                reason: "explicit entry override".to_string(),
+                contribution_summary: "custom_tools=2".to_string(),
+            },
+        )
+        .unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        assert!(output.contains("Plugin: Review Policy"));
+        assert!(output.contains("state: enabled"));
+        assert!(output.contains("\nIdentity\n--------\n"));
+        assert!(output.contains("\nState\n-----\n"));
+        assert!(output.contains("\nNext\n----\n"));
     }
 
     #[test]

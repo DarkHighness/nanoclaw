@@ -206,6 +206,8 @@ cargo run --manifest-path apps/Cargo.toml -p code-agent -- export-transcript 019
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp list
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show context7
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp show docs
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- manage
+cargo run --manifest-path apps/Cargo.toml -p code-agent -- manage skill
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp add docs --type stdio --env TOKEN=secret -- npx -y remote-mcp
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp disable docs
 cargo run --manifest-path apps/Cargo.toml -p code-agent -- mcp enable docs
@@ -240,6 +242,10 @@ The store-backed `sessions`, `session`, `agent-sessions`, `agent-session`,
 `plugin list|show|add|delete|enable|disable` commands operate directly on
 workspace state, so they do not require a provider API key just to browse,
 inspect, archive, restore, or update local configuration.
+
+`manage [mcp|skill|plugin]` opens a dedicated full-screen terminal manager for
+toggling those surfaces interactively. It also operates directly on workspace
+configuration and does not boot the runtime or require a provider API key.
 
 Code-agent also materializes two built-in managed MCP entries by default:
 `context7` and `playwright`. They start enabled, so `/mcp`, `mcp list`, and
