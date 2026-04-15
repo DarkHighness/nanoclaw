@@ -53,6 +53,10 @@ impl WebSearchBackend for BingRssSearchBackend {
         "bing_rss"
     }
 
+    fn backend_type(&self) -> super::super::WebSearchBackendType {
+        super::super::WebSearchBackendType::RssFeed
+    }
+
     fn retrieval_mode(&self) -> &'static str {
         "rss"
     }

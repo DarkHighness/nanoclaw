@@ -189,6 +189,7 @@ struct WebSearchToolOutput {
     source_mode: WebSearchSourceMode,
     requested_backend: String,
     backend: String,
+    backend_type: WebSearchBackendType,
     available_backends: Vec<String>,
     retrieval_mode: String,
     backend_capabilities: WebSearchBackendCapabilities,
@@ -257,6 +258,7 @@ struct SearchBackendResponse {
 #[async_trait]
 trait WebSearchBackend: Send + Sync {
     fn backend_name(&self) -> &'static str;
+    fn backend_type(&self) -> WebSearchBackendType;
     fn retrieval_mode(&self) -> &'static str;
     // The request contract is intentionally richer than the bundled RSS fallback.
     // Callers can ask for freshness/source modes today, while result metadata
@@ -538,6 +540,7 @@ impl Tool for WebSearchTool {
                     "source_mode": request.source_mode,
                     "requested_backend": requested_backend.name(),
                     "backend": backend.backend_name(),
+                    "backend_type": backend.backend_type(),
                     "available_backends": available_backends,
                     "retrieval_mode": backend.retrieval_mode(),
                     "backend_capabilities": backend_capabilities,
@@ -611,6 +614,7 @@ impl Tool for WebSearchTool {
             source_mode: request.source_mode.clone(),
             requested_backend: requested_backend.name().to_string(),
             backend: backend.backend_name().to_string(),
+            backend_type: backend.backend_type(),
             available_backends: available_backends.clone(),
             retrieval_mode: backend.retrieval_mode().to_string(),
             backend_capabilities: backend_capabilities.clone(),
@@ -651,6 +655,10 @@ impl Tool for WebSearchTool {
             format!("query> {query}"),
             format!("requested_backend> {}", requested_backend.name()),
             format!("backend> {}", backend.backend_name()),
+            format!(
+                "backend_type> {}",
+                format_backend_type(&backend.backend_type())
+            ),
             format!("retrieval_mode> {}", backend.retrieval_mode()),
             format!("locale> {}", request.locale.language),
             format!("freshness> {}", format_freshness(&request.freshness)),
@@ -716,7 +724,7 @@ impl Tool for WebSearchBackendsTool {
     fn spec(&self) -> ToolSpec {
         builtin_tool_spec(
             "web_search_backends",
-            "Inspect known web_search backends, configured availability, capability coverage, and default selection order.",
+            "Inspect known web_search backends, configured availability, integration boundary, capability coverage, and default selection order.",
             serde_json::to_value(schema_for!(WebSearchBackendsToolInput))
                 .expect("web_search_backends schema"),
             ToolOutputMode::Text,
@@ -816,7 +824,7 @@ impl Tool for WebSearchBackendsTool {
                 backend.selector_aliases.join(", ")
             ));
             sections.push(format!(
-                "type> {}",
+                "backend_type> {}",
                 format_backend_type(&backend.backend_type)
             ));
             sections.push(format!("retrieval_mode> {}", backend.retrieval_mode));
@@ -1539,6 +1547,7 @@ mod tests {
         assert!(text.contains("default_selector> auto"));
         assert!(text.contains("resolved_default_backend> exa_api"));
         assert!(text.contains("backend> exa_api"));
+        assert!(text.contains("backend_type> hosted_api"));
         assert!(text.contains("backend> tavily_api"));
         assert!(text.contains("backend> firecrawl_api"));
         assert!(text.contains("backend> brave_api"));
@@ -1555,9 +1564,11 @@ mod tests {
         assert_eq!(structured["available_backends"][0], "exa_api");
         assert_eq!(structured["available_backends"][1], "bing_rss");
         assert_eq!(structured["backends"][0]["name"], "exa_api");
+        assert_eq!(structured["backends"][0]["backend_type"], "hosted_api");
         assert_eq!(structured["backends"][0]["configured"], true);
         assert_eq!(structured["backends"][0]["selected_by_default"], true);
         assert_eq!(structured["backends"][1]["name"], "tavily_api");
+        assert_eq!(structured["backends"][1]["backend_type"], "hosted_api");
         assert_eq!(structured["backends"][1]["configured"], false);
         assert_eq!(
             structured["backends"][1]["missing_requirement"],
@@ -1690,6 +1701,7 @@ mod tests {
         let structured = result.structured_content.unwrap();
         assert_eq!(structured["requested_backend"], "brave_api");
         assert_eq!(structured["backend"], "brave_api");
+        assert_eq!(structured["backend_type"], "hosted_api");
         assert_eq!(structured["retrieval_mode"], "json_api");
         assert_eq!(structured["backend_capabilities"]["pagination"], true);
         assert_eq!(structured["backend_capabilities"]["extra_snippets"], true);
@@ -2002,6 +2014,7 @@ mod tests {
         let structured = result.structured_content.clone().unwrap();
         assert_eq!(structured["requested_backend"], "bing_rss");
         assert_eq!(structured["backend"], "bing_rss");
+        assert_eq!(structured["backend_type"], "rss_feed");
         assert_eq!(structured["available_backends"][0], "bing_rss");
         assert_eq!(structured["retrieval_mode"], "rss");
         assert_eq!(structured["locale"], "en-US");
@@ -2397,6 +2410,7 @@ mod tests {
         let structured = result.structured_content.unwrap();
         assert_eq!(structured["requested_backend"], "exa_api");
         assert_eq!(structured["backend"], "exa_api");
+        assert_eq!(structured["backend_type"], "hosted_api");
         assert_eq!(structured["available_backends"][0], "exa_api");
         assert_eq!(structured["available_backends"][1], "bing_rss");
         assert_eq!(bing_server.received_requests().await.unwrap().len(), 0);

@@ -41,6 +41,10 @@ impl WebSearchBackend for DuckDuckGoHtmlSearchBackend {
         "duckduckgo_html"
     }
 
+    fn backend_type(&self) -> super::super::WebSearchBackendType {
+        super::super::WebSearchBackendType::HtmlScrape
+    }
+
     fn retrieval_mode(&self) -> &'static str {
         "html_scrape"
     }

@@ -57,6 +57,10 @@ impl WebSearchBackend for FirecrawlApiSearchBackend {
         "firecrawl_api"
     }
 
+    fn backend_type(&self) -> super::super::WebSearchBackendType {
+        super::super::WebSearchBackendType::HostedApi
+    }
+
     fn retrieval_mode(&self) -> &'static str {
         "json_api"
     }
