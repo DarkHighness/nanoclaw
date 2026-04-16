@@ -263,6 +263,7 @@ impl SwitchableCodeIntelBackend {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn lexical_only() -> Self {
         Self {
@@ -300,6 +301,7 @@ impl SwitchableCodeIntelBackend {
         self.managed_config.is_some()
     }
 
+    #[cfg(test)]
     pub fn managed_helpers_enabled(&self) -> bool {
         self.managed_backend.read().unwrap().is_some()
     }

@@ -70,8 +70,6 @@ pub struct RuntimeSubagentExecutor {
     tool_approval_handler: Arc<dyn ToolApprovalHandler>,
     tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
     loop_detection_config: LoopDetectionConfig,
-    hooks: Arc<RwLock<Vec<HookRegistration>>>,
-    skill_catalog: SkillCatalog,
     profile_resolver: Arc<dyn SubagentProfileResolver>,
     worktree_manager: Option<Arc<dyn WorktreeManager>>,
     progress_sink: Option<Arc<dyn RuntimeProgressSink>>,
@@ -239,8 +237,6 @@ impl RuntimeSubagentExecutor {
         tool_approval_handler: Arc<dyn ToolApprovalHandler>,
         tool_approval_policy: Arc<dyn ToolApprovalPolicy>,
         loop_detection_config: LoopDetectionConfig,
-        hooks: Arc<RwLock<Vec<HookRegistration>>>,
-        skill_catalog: SkillCatalog,
         profile_resolver: Arc<dyn SubagentProfileResolver>,
         worktree_manager: Option<Arc<dyn WorktreeManager>>,
         progress_sink: Option<Arc<dyn RuntimeProgressSink>>,
@@ -253,8 +249,6 @@ impl RuntimeSubagentExecutor {
             tool_approval_handler,
             tool_approval_policy,
             loop_detection_config,
-            hooks,
-            skill_catalog,
             profile_resolver,
             worktree_manager,
             progress_sink,
@@ -2247,9 +2241,9 @@ mod tests {
         SubagentParentContext, ToolExecutionContext, ToolRegistry,
     };
     use types::{
-        AgentEnvelopeKind, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest,
-        HookRegistration, Message, MessageRole, ModelEvent, ModelRequest, SessionEventEnvelope,
-        SessionEventKind, TaskOrigin, ToolName,
+        AgentEnvelopeKind, AgentStatus, AgentTaskSpec, AgentWaitMode, AgentWaitRequest, Message,
+        MessageRole, ModelEvent, ModelRequest, SessionEventEnvelope, SessionEventKind, TaskOrigin,
+        ToolName,
     };
 
     #[derive(Clone)]
@@ -2490,8 +2484,6 @@ mod tests {
             Arc::new(AlwaysAllowToolApprovalHandler),
             Arc::new(NoopToolApprovalPolicy),
             LoopDetectionConfig::default(),
-            Arc::new(RwLock::new(Vec::<HookRegistration>::new())),
-            SkillCatalog::default(),
             Arc::new(StaticProfileResolver::new(
                 backend,
                 tool_context,
@@ -3584,8 +3576,6 @@ mod tests {
             Arc::new(AlwaysAllowToolApprovalHandler),
             Arc::new(NoopToolApprovalPolicy),
             LoopDetectionConfig::default(),
-            Arc::new(RwLock::new(Vec::<HookRegistration>::new())),
-            SkillCatalog::default(),
             Arc::new(resolver),
             None,
             None,

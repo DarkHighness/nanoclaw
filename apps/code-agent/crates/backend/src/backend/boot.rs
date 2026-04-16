@@ -996,8 +996,6 @@ where
         approval_handler.clone(),
         approval_policy.clone(),
         loop_detection_config.clone(),
-        runtime_hook_state.clone(),
-        skill_catalog.clone(),
         subagent_profile_resolver,
         Some(worktree_manager.clone()),
         Some(subagent_progress_sink),
