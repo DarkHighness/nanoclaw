@@ -1789,11 +1789,16 @@ mod tests {
         });
 
         let transcript = transcript_text(&ui_state.snapshot().transcript[0]);
+        let transcript_lines = transcript.lines().collect::<Vec<_>>();
         assert!(transcript.contains("  └ Result exit 1"));
         assert!(transcript.contains("  └ Stderr"));
-        assert!(transcript.contains("… +"));
+        assert!(
+            transcript_lines
+                .windows(2)
+                .any(|window| window == ["  └ Stderr", "    1"])
+        );
         assert!(transcript.contains("    20"));
-        assert!(!transcript.contains("    1\n"));
+        assert!(!transcript.contains("… +"));
     }
 
     #[test]

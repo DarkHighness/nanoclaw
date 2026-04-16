@@ -1,15 +1,14 @@
 use agent::{
-    AgentRuntimeBuilder, EditTool, ExecCommandTool, GlobTool, GrepTool, HookRunner,
-    InMemorySessionStore, ListTool, Message, MessageRole, ModelBackend, ModelEvent, ModelRequest,
-    PatchFilesTool, ReadTool, Skill, SkillCatalog, ToolExecutionContext, ToolRegistry,
-    WriteStdinTool, WriteTool,
+    AgentRuntimeBuilder, AgentWorkspaceLayout, EditTool, ExecCommandTool, GlobTool, GrepTool,
+    HookRunner, InMemorySessionStore, ListTool, Message, MessageRole, ModelBackend, ModelEvent,
+    ModelRequest, PatchFilesTool, ReadTool, Skill, SkillCatalog, ToolExecutionContext,
+    ToolRegistry, WriteStdinTool, WriteTool,
 };
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 use runtime::Result as RuntimeResult;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tools::ManagedPolicyProcessExecutor;
 
@@ -84,6 +83,7 @@ fn example_skill(workspace_root: &std::path::Path) -> Skill {
         provenance: agent::SkillProvenance {
             root: agent::SkillRoot::managed(AgentWorkspaceLayout::new(workspace_root).skills_dir()),
             skill_dir: workspace_root.join(".skills").join("workspace-rules"),
+            hub: None,
             shadowed_copies: Vec::new(),
         },
     }

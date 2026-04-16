@@ -531,6 +531,8 @@ mod tests {
                 task_id: task.task_id.clone(),
                 role: task.role.clone(),
                 status: AgentStatus::Running,
+                worktree_id: None,
+                worktree_root: None,
             };
             let result = AgentResultEnvelope {
                 agent_id: agent_id.clone(),
@@ -557,6 +559,8 @@ mod tests {
                     parent_agent_id: None,
                     status: types::TaskStatus::Open,
                     summary: Some(task.prompt.clone()),
+                    worktree_id: None,
+                    worktree_root: None,
                 },
                 SessionEventKind::AgentEnvelope {
                     envelope: AgentEnvelope::new(
@@ -749,6 +753,8 @@ mod tests {
                             task_id: task.task_id.clone(),
                             role: task.role.clone(),
                             status: AgentStatus::Running,
+                            worktree_id: None,
+                            worktree_root: None,
                         },
                         task,
                     },

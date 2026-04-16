@@ -508,8 +508,8 @@ mod tests {
         sandbox_backend_status_with_availability,
     };
     use crate::{
-        ExecRequest, ExecutionOrigin, FilesystemPolicy, HostEscapePolicy, NetworkPolicy,
-        ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy,
+        ExecRequest, ExecutionOrigin, FilesystemPolicy, HostEscapePolicy, NetworkAllowlist,
+        NetworkPolicy, ProcessExecutor, ProcessStdio, RuntimeScope, SandboxMode, SandboxPolicy,
     };
     use std::collections::BTreeMap;
     use std::fs;
