@@ -62,5 +62,13 @@ mod tests {
         assert_eq!(root, builtin_skill_root(dir.path()));
         assert!(root.join("linux-scheduler-triage/SKILL.md").is_file());
         assert!(root.join("sched-ext-design-loop/SKILL.md").is_file());
+        assert!(
+            root.join("linux-scheduler-triage/references/official-docs.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-ext-design-loop/references/rollout-checklist.md")
+                .is_file()
+        );
     }
 }

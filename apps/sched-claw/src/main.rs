@@ -2,10 +2,15 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use sched_claw::app_config::{CliOverrides, SchedClawConfig};
 use sched_claw::bootstrap::load_bootstrap;
-use sched_claw::daemon_client::{SchedExtDaemonClient, render_response_text};
+use sched_claw::daemon_client::SchedExtDaemonClient;
 use sched_claw::daemon_protocol::{SchedExtDaemonRequest, SchedExtDaemonResponse};
+use sched_claw::display::{
+    OutputStyle, render_daemon_response, render_skill_detail, render_skill_list,
+    render_tool_detail, render_tool_list,
+};
 use sched_claw::repl::{run_exec, run_repl};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -33,8 +38,9 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Exec(PromptArgs),
-    Repl,
+    Repl(ReplArgs),
     Tool(ToolArgs),
+    Skill(SkillArgs),
     Daemon(DaemonArgs),
 }
 
@@ -49,6 +55,18 @@ struct PromptArgs {
 }
 
 #[derive(Debug, Args)]
+struct ReplArgs {
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Clone, Args)]
+struct OutputArgs {
+    #[arg(long, value_enum, default_value_t = OutputStyle::Table)]
+    style: OutputStyle,
+}
+
+#[derive(Debug, Args)]
 struct ToolArgs {
     #[command(subcommand)]
     command: ToolCommand,
@@ -56,7 +74,36 @@ struct ToolArgs {
 
 #[derive(Debug, Subcommand)]
 enum ToolCommand {
-    List,
+    List(OutputArgs),
+    Show(ToolShowArgs),
+}
+
+#[derive(Debug, Args)]
+struct ToolShowArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct SkillArgs {
+    #[command(subcommand)]
+    command: SkillCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SkillCommand {
+    List(OutputArgs),
+    Show(SkillShowArgs),
+}
+
+#[derive(Debug, Args)]
+struct SkillShowArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[command(flatten)]
+    output: OutputArgs,
 }
 
 #[derive(Debug, Args)]
@@ -67,16 +114,10 @@ struct DaemonArgs {
 
 #[derive(Debug, Subcommand)]
 enum DaemonCommand {
-    Status,
+    Status(OutputArgs),
     Activate(DaemonActivateArgs),
-    Logs {
-        #[arg(long, value_name = "LINES")]
-        tail_lines: Option<usize>,
-    },
-    Stop {
-        #[arg(long, value_name = "MS")]
-        graceful_timeout_ms: Option<u64>,
-    },
+    Logs(DaemonLogsArgs),
+    Stop(DaemonStopArgs),
 }
 
 #[derive(Debug, Args)]
@@ -95,6 +136,24 @@ struct DaemonActivateArgs {
         trailing_var_arg = true
     )]
     argv: Vec<String>,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct DaemonLogsArgs {
+    #[arg(long, value_name = "LINES")]
+    tail_lines: Option<usize>,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct DaemonStopArgs {
+    #[arg(long, value_name = "MS")]
+    graceful_timeout_ms: Option<u64>,
+    #[command(flatten)]
+    output: OutputArgs,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -110,39 +169,10 @@ async fn main() -> Result<()> {
     };
 
     match cli.command {
-        Some(Command::Tool(ToolArgs {
-            command: ToolCommand::List,
-        })) => {
-            let bootstrap = load_bootstrap(&workspace_root, &overrides).await?;
-            for tool_name in bootstrap.tool_names() {
-                println!("{tool_name}");
-            }
-        }
+        Some(Command::Tool(args)) => run_tool_command(&workspace_root, &overrides, args).await?,
+        Some(Command::Skill(args)) => run_skill_command(&workspace_root, &overrides, args).await?,
         Some(Command::Daemon(args)) => {
-            let client = SchedExtDaemonClient::new(
-                SchedClawConfig::load_from_dir(&workspace_root, &overrides)?.daemon,
-            );
-            let request = match args.command {
-                DaemonCommand::Status => SchedExtDaemonRequest::Status {},
-                DaemonCommand::Activate(args) => SchedExtDaemonRequest::Activate {
-                    label: args.label,
-                    argv: args.argv,
-                    cwd: args.cwd,
-                    env: args.env.into_iter().collect::<BTreeMap<_, _>>(),
-                    replace_existing: args.replace_existing,
-                },
-                DaemonCommand::Logs { tail_lines } => SchedExtDaemonRequest::Logs { tail_lines },
-                DaemonCommand::Stop {
-                    graceful_timeout_ms,
-                } => SchedExtDaemonRequest::Stop {
-                    graceful_timeout_ms,
-                },
-            };
-            let response = client.send(&request).await?;
-            match response {
-                SchedExtDaemonResponse::Error { message } => anyhow::bail!(message),
-                other => println!("{}", render_response_text(&other)),
-            }
+            run_daemon_command(&workspace_root, &overrides, args).await?
         }
         Some(Command::Exec(args)) => {
             let prompt = join_prompt(args.prompt)?;
@@ -150,10 +180,10 @@ async fn main() -> Result<()> {
             let mut host = bootstrap.build_runtime().await?;
             run_exec(&mut host, prompt).await?;
         }
-        Some(Command::Repl) => {
+        Some(Command::Repl(args)) => {
             let bootstrap = load_bootstrap(&workspace_root, &overrides).await?;
             let mut host = bootstrap.build_runtime().await?;
-            run_repl(&mut host).await?;
+            run_repl(&mut host, args.output.style).await?;
         }
         None if !cli.prompt.is_empty() => {
             let bootstrap = load_bootstrap(&workspace_root, &overrides).await?;
@@ -163,10 +193,93 @@ async fn main() -> Result<()> {
         None => {
             let bootstrap = load_bootstrap(&workspace_root, &overrides).await?;
             let mut host = bootstrap.build_runtime().await?;
-            run_repl(&mut host).await?;
+            run_repl(&mut host, OutputStyle::Table).await?;
         }
     }
 
+    Ok(())
+}
+
+async fn run_tool_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: ToolArgs,
+) -> Result<()> {
+    let bootstrap = load_bootstrap(workspace_root, overrides).await?;
+    let catalog = bootstrap.startup_catalog();
+    match args.command {
+        ToolCommand::List(output) => {
+            println!("{}", render_tool_list(catalog.tool_specs(), output.style));
+        }
+        ToolCommand::Show(args) => {
+            let spec = catalog
+                .resolve_tool(&args.name)
+                .with_context(|| format!("unknown tool `{}`", args.name))?;
+            println!("{}", render_tool_detail(spec, args.output.style));
+        }
+    }
+    Ok(())
+}
+
+async fn run_skill_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: SkillArgs,
+) -> Result<()> {
+    let bootstrap = load_bootstrap(workspace_root, overrides).await?;
+    let catalog = bootstrap.startup_catalog();
+    match args.command {
+        SkillCommand::List(output) => {
+            println!("{}", render_skill_list(catalog.skills(), output.style));
+        }
+        SkillCommand::Show(args) => {
+            let skill = catalog
+                .resolve_skill(&args.name)
+                .with_context(|| format!("unknown skill `{}`", args.name))?;
+            println!("{}", render_skill_detail(skill, args.output.style));
+        }
+    }
+    Ok(())
+}
+
+async fn run_daemon_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: DaemonArgs,
+) -> Result<()> {
+    let client = SchedExtDaemonClient::new(
+        SchedClawConfig::load_from_dir(workspace_root, overrides)?.daemon,
+    );
+    let (request, style) = match args.command {
+        DaemonCommand::Status(output) => (SchedExtDaemonRequest::Status {}, output.style),
+        DaemonCommand::Activate(args) => (
+            SchedExtDaemonRequest::Activate {
+                label: args.label,
+                argv: args.argv,
+                cwd: args.cwd,
+                env: args.env.into_iter().collect::<BTreeMap<_, _>>(),
+                replace_existing: args.replace_existing,
+            },
+            args.output.style,
+        ),
+        DaemonCommand::Logs(args) => (
+            SchedExtDaemonRequest::Logs {
+                tail_lines: args.tail_lines,
+            },
+            args.output.style,
+        ),
+        DaemonCommand::Stop(args) => (
+            SchedExtDaemonRequest::Stop {
+                graceful_timeout_ms: args.graceful_timeout_ms,
+            },
+            args.output.style,
+        ),
+    };
+    let response = client.send(&request).await?;
+    match response {
+        SchedExtDaemonResponse::Error { message } => anyhow::bail!(message),
+        other => println!("{}", render_daemon_response(&other, style)),
+    }
     Ok(())
 }
 

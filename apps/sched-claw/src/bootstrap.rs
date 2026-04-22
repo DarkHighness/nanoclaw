@@ -3,6 +3,7 @@ use crate::builtin_skills::{builtin_skill_root, materialize_builtin_skills};
 use crate::daemon_client::SchedExtDaemonClient;
 use crate::daemon_tool::SchedExtDaemonTool;
 use crate::preamble::build_system_preamble;
+use crate::startup_catalog::StartupCatalog;
 use agent::tools::{
     HostEscapePolicy, ManagedPolicyProcessExecutor, NetworkPolicy, SandboxMode, WebFetchTool,
     WebSearchTool,
@@ -24,15 +25,17 @@ use tracing::warn;
 pub struct RuntimeBootstrap {
     config: SchedClawConfig,
     skill_catalog: SkillCatalog,
+    startup_catalog: StartupCatalog,
     tool_context: ToolExecutionContext,
     instructions: Vec<String>,
     tool_registry: ToolRegistry,
-    tool_names: Vec<String>,
+    daemon_client: SchedExtDaemonClient,
 }
 
 pub struct BuiltRuntime {
     pub runtime: AgentRuntime,
-    pub tool_names: Vec<String>,
+    pub startup_catalog: StartupCatalog,
+    pub daemon_client: SchedExtDaemonClient,
 }
 
 pub async fn load_bootstrap(
@@ -53,29 +56,26 @@ pub async fn load_bootstrap(
     );
     let tool_context = build_tool_context(workspace_root, &config);
     let daemon_client = SchedExtDaemonClient::new(config.daemon.clone());
-    let tool_registry = build_tool_registry(&tool_context, &skill_catalog, daemon_client);
+    let tool_registry = build_tool_registry(&tool_context, &skill_catalog, daemon_client.clone());
     apply_disabled_tools(&tool_registry, &config.disabled_tools);
-    let tool_names = tool_registry
-        .names()
-        .into_iter()
-        .map(|name| name.to_string())
-        .collect::<Vec<_>>();
+    let startup_catalog = StartupCatalog::from_parts(tool_registry.specs(), &skill_catalog);
     let instructions =
         build_system_preamble(workspace_root, &config.primary_profile, &skill_catalog);
 
     Ok(RuntimeBootstrap {
         config,
         skill_catalog,
+        startup_catalog,
         tool_context,
         instructions,
         tool_registry,
-        tool_names,
+        daemon_client,
     })
 }
 
 impl RuntimeBootstrap {
-    pub fn tool_names(&self) -> &[String] {
-        &self.tool_names
+    pub fn startup_catalog(&self) -> &StartupCatalog {
+        &self.startup_catalog
     }
 
     pub async fn build_runtime(self) -> Result<BuiltRuntime> {
@@ -95,7 +95,8 @@ impl RuntimeBootstrap {
             .build();
         Ok(BuiltRuntime {
             runtime,
-            tool_names: self.tool_names,
+            startup_catalog: self.startup_catalog,
+            daemon_client: self.daemon_client,
         })
     }
 }

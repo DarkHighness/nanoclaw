@@ -17,23 +17,43 @@ tags:
 - Turn raw `perf`, `schedstat`, PSI, or run-queue evidence into a ranked set of scheduling hypotheses.
 
 ## Workflow
-1. Define the target symptom before collecting anything.
-   - State the workload, bad outcome, affected CPUs or cgroups, and whether the run is steady-state or transient.
-2. Collect baseline evidence with existing shell tools.
-   - Prefer `uname -a`, `/proc/schedstat`, `/proc/pressure/*`, `mpstat -P ALL`, `pidstat -w`, `vmstat`, `perf stat`, and `perf sched`.
-   - Save exact commands and outputs so later comparisons against the new scheduler are reproducible.
-3. Separate scheduler evidence from generic CPU saturation.
-   - High CPU utilization alone is not enough.
-   - Look for queue growth, migration churn, wakeup delays, context-switch patterns, or load imbalance.
-4. Build hypotheses from facts.
-   - Fact: observed counters, traces, latency distributions, queue lengths.
-   - Inference: what those observations imply about wakeup placement, slice size, migration cost, or fairness.
-   - Unknown: what still needs a deeper trace or another workload phase.
-5. End with a scheduler design implication.
-   - State what the evidence suggests the next `sched-ext` policy should optimize: locality, latency, fairness, throughput, tail control, or cgroup isolation.
+1. Define the failure contract before collecting anything.
+   - State the workload entrypoint, the bad outcome, the affected CPUs or cgroups, and whether the bad phase is steady-state, bursty, or startup-only.
+   - Record the success metric that will later decide whether the new scheduler beats CFS.
+2. Establish a reproducible baseline directory.
+   - Unless the repository already has a stronger convention, create `.nanoclaw/apps/sched-claw/artifacts/<run-label>/`.
+   - Save commands, raw outputs, and short notes side by side so the later sched-ext comparison can replay the same evidence path.
+3. Capture low-overhead scheduler evidence first.
+   - Prefer `uname -a`, `lscpu`, `/proc/schedstat`, `/proc/<pid>/schedstat`, `/proc/pressure/{cpu,io,memory}`, `mpstat -P ALL`, `pidstat -w`, `vmstat`, and `perf stat`.
+   - Start with summaries that tell you whether the problem is queueing, migration, wakeup latency, or plain saturation.
+4. Escalate to scheduler traces only when the summaries justify it.
+   - Use `perf sched record`, `perf sched timehist`, `perf sched latency`, or focused tracing under `/sys/kernel/tracing` when you need wakeup chains, dispatch order, or migration churn.
+   - Keep the trace window short and aligned to the bad phase.
+5. Separate fact, inference, and unknown.
+   - Fact: direct counters, trace events, latency distributions, queue lengths, PSI windows, per-CPU imbalance.
+   - Inference: what those facts imply about wakeup placement, slice sizing, migration cost, preemption timing, or class interference.
+   - Unknown: what still needs another phase, another workload slice, or another kernel signal.
+6. Rank scheduler-specific hypotheses.
+   - Distinguish scheduler pathologies from generic CPU, memory, or IO pressure.
+   - If PSI or vmstat indicates the dominant bottleneck is not CPU scheduling, say so explicitly instead of forcing a scheduler conclusion.
+7. End with a scheduler design implication.
+   - State what the next `sched-ext` policy should optimize: locality, latency, fairness, throughput, tail control, or workload isolation.
+   - Also state what the policy should explicitly avoid making worse.
+
+## Artifact Checklist
+- `baseline.md` or equivalent short note with workload, metric, and bad phase definition
+- raw command outputs for the baseline counters
+- trace capture command lines if deeper tracing was required
+- a final hypothesis list ranked by confidence
+- one paragraph that maps the evidence to the next sched-ext policy change
 
 ## Rules
 - Do not invent a dedicated collection tool. Use normal shell commands and preserve artifacts.
 - Prefer low-overhead counters and summaries before invasive tracing.
 - If evidence is noisy or mixed, say so and lower confidence.
 - Before comparing schedulers, capture one clean CFS baseline with the same workload and command set.
+- If the repository already has a reporting convention, follow it instead of forcing the default artifact path above.
+
+## Reference Material
+- `references/official-docs.md`
+- `references/evidence-checklist.md`

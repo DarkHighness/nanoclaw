@@ -27,7 +27,12 @@ scheduler, and hand privileged rollout work to a dedicated daemon.
 - `sched-claw` provides:
   - one-shot execution: `sched-claw exec "prompt"`
   - a simple line REPL: `sched-claw repl`
-  - local inspection helpers such as `sched-claw tool list`
+  - local inspection helpers such as:
+    - `sched-claw tool list --style table`
+    - `sched-claw tool show sched_ext_daemon --style plain`
+    - `sched-claw skill list --style table`
+    - `sched-claw skill show linux-scheduler-triage --style plain`
+    - `sched-claw daemon status --style table`
 - `sched-claw-daemon` is a separate binary intended to run with elevated
   privileges. It manages one active sched-ext deployment at a time, captures the
   child process logs, and exposes:
@@ -50,6 +55,42 @@ They cover:
 The model is expected to load those skills with `skill_view` before inventing
 new measurement recipes.
 
+Each builtin skill now ships with reference material under its own
+`references/` directory so the host and operator can inspect the workflow
+outside the model runtime as well.
+
+## Local inspection UI
+
+Even without a TUI, `sched-claw` now exposes two consistent operator-facing
+output styles inspired by the management surfaces in `code-agent`:
+
+- `--style table`
+  - default for local inspection commands
+  - optimized for quick scanning of tools, skills, daemon status, and logs
+- `--style plain`
+  - optimized for piping, logs, and copying into notes or issue trackers
+
+The style switch applies to:
+
+- `sched-claw tool list`
+- `sched-claw tool show <name>`
+- `sched-claw skill list`
+- `sched-claw skill show <name>`
+- `sched-claw daemon status`
+- `sched-claw daemon activate ...`
+- `sched-claw daemon logs`
+- `sched-claw daemon stop`
+
+The REPL also supports local inspection commands:
+
+- `:format <table|plain>`
+- `:tools`
+- `:tool <name>`
+- `:skills`
+- `:skill <name>`
+- `:daemon status`
+- `:daemon logs [N]`
+
 ## Daemon startup
 
 Start the daemon from the workspace root:
@@ -68,6 +109,11 @@ apps/sched-claw/scripts/start-root-daemon.sh
 That script builds the daemon as the current user, re-execs it under `sudo`,
 and passes `--client-uid/--client-gid` automatically so the socket becomes
 usable from the non-root `sched-claw` client.
+
+For agent execution, provider credentials are still loaded from the workspace
+root `.env` or the parent shell environment. The file
+[`apps/sched-claw/.env.example`](./.env.example) is only a template and should
+be copied or mirrored to the workspace root before running `sched-claw exec`.
 
 By default the daemon listens on:
 
@@ -101,6 +147,12 @@ Automated validation currently includes:
     child exits on its own
 - `apps/sched-claw/scripts/smoke-daemon-e2e.sh`
   - manual protocol-level smoke check using the built binaries
+
+Recent additions also have unit coverage for:
+
+- REPL command parsing
+- startup catalog alias resolution
+- table/plain rendering for tool, skill, and daemon inspection views
 
 The root-required path still depends on a host that can actually run `sudo`
 interactively or through a service manager. The repository now includes the

@@ -1,5 +1,6 @@
-use crate::daemon_client::{SchedExtDaemonClient, render_response_text};
+use crate::daemon_client::SchedExtDaemonClient;
 use crate::daemon_protocol::{SchedExtDaemonRequest, SchedExtDaemonResponse};
+use crate::display::{OutputStyle, render_daemon_response};
 use agent::tools::Tool;
 use agent::types::{ToolApprovalProfile, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
 use agent::{ToolCallId, ToolExecutionContext, ToolResult};
@@ -66,7 +67,7 @@ impl Tool for SchedExtDaemonTool {
                 ));
             }
         };
-        let rendered = render_response_text(&response);
+        let rendered = render_daemon_response(&response, OutputStyle::Plain);
         match &response {
             SchedExtDaemonResponse::Error { .. } => {
                 Ok(
