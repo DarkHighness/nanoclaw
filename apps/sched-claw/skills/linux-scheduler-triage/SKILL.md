@@ -17,11 +17,14 @@ tags:
 - Turn raw `perf`, `schedstat`, PSI, or run-queue evidence into a ranked set of scheduling hypotheses.
 
 ## Workflow
+This SOP guides the loop, but the host should not hard-code it. Use only the
+steps that match the current evidence and question.
+
 1. Define the failure contract before collecting anything.
    - State the workload entrypoint, the bad outcome, the affected CPUs or cgroups, and whether the bad phase is steady-state, bursty, or startup-only.
    - Record the success metric that will later decide whether the new scheduler beats CFS.
 2. Establish a reproducible baseline directory.
-   - If the local host is running `sched-claw`, prefer creating or updating a structured experiment manifest first with `sched-claw experiment init ...`.
+   - If the local host is running `sched-claw`, use the experiment substrate when it helps keep the workload contract and metric trail durable: `sched-claw experiment init ...`, `record-baseline ...`, `score ...`.
    - Unless the repository already has a stronger convention, create `.nanoclaw/apps/sched-claw/artifacts/<run-label>/`.
    - Save commands, raw outputs, and short notes side by side so the later sched-ext comparison can replay the same evidence path.
 3. Capture low-overhead scheduler evidence first.
@@ -40,6 +43,7 @@ tags:
 7. End with a scheduler design implication.
    - State what the next `sched-ext` policy should optimize: locality, latency, fairness, throughput, tail control, or workload isolation.
    - Also state what the policy should explicitly avoid making worse.
+   - If the next step needs concrete code scaffolding, inspect `sched-claw template list` or `sched-claw template show <name>` and let the active design skill decide which template, if any, to materialize.
 
 ## Artifact Checklist
 - `baseline.md` or equivalent short note with workload, metric, and bad phase definition

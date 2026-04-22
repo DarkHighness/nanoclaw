@@ -1,0 +1,48 @@
+/*
+ * Materialized by sched-claw from the cgroup_lane template.
+ * Candidate: {{candidate_id}}
+ * Experiment: {{experiment_id}}
+ */
+
+#include "scx/common.bpf.h"
+
+char _license[] SEC("license") = "GPL";
+
+const volatile u32 slice_us = {{slice_us}};
+const volatile u32 interactive_boost = {{interactive_boost}};
+const volatile u32 background_weight = {{background_weight}};
+const volatile u32 cgroup_slice_floor_us = {{cgroup_slice_floor_us}};
+
+static u64 lane_slice(struct task_struct *p)
+{
+    u64 slice_ns = slice_us * 1000ULL;
+
+    if (task_nice(p) < 0)
+        slice_ns += interactive_boost * 1000ULL;
+
+    if (slice_ns < cgroup_slice_floor_us * 1000ULL)
+        slice_ns = cgroup_slice_floor_us * 1000ULL;
+
+    return slice_ns;
+}
+
+void BPF_STRUCT_OPS(claw_enqueue, struct task_struct *p, u64 enq_flags)
+{
+    /*
+     * The follow-up tuning loop can redirect by cgroup id or workload class and
+     * reinterpret background_weight as either virtual time scaling or queue
+     * bandwidth control.
+     */
+    scx_bpf_dsq_insert_vtime(p, SCX_DSQ_GLOBAL, lane_slice(p), enq_flags);
+}
+
+void BPF_STRUCT_OPS(claw_dispatch, s32 cpu, struct task_struct *prev)
+{
+    scx_bpf_dispatch_from_dsq(cpu, SCX_DSQ_GLOBAL, slice_us * 1000ULL, 0);
+}
+
+SCX_OPS_DEFINE(claw_ops,
+    .name           = "sched_claw_cgroup_lane",
+    .enqueue        = (void *)claw_enqueue,
+    .dispatch       = (void *)claw_dispatch,
+);

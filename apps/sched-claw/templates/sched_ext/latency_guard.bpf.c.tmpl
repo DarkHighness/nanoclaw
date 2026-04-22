@@ -1,0 +1,44 @@
+/*
+ * Materialized by sched-claw from the latency_guard template.
+ * Candidate: {{candidate_id}}
+ * Experiment: {{experiment_id}}
+ */
+
+#include "scx/common.bpf.h"
+
+char _license[] SEC("license") = "GPL";
+
+const volatile u32 slice_us = {{slice_us}};
+const volatile u32 preempt_wakeup = {{preempt_wakeup}};
+const volatile u32 idle_pull = {{idle_pull}};
+const volatile u32 short_task_ns = {{short_task_ns}};
+
+s32 BPF_STRUCT_OPS(claw_select_cpu, struct task_struct *p, s32 prev_cpu, u64 wake_flags)
+{
+    if (preempt_wakeup && prev_cpu >= 0)
+        return prev_cpu;
+
+    return scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, idle_pull ? 2 : 0);
+}
+
+void BPF_STRUCT_OPS(claw_enqueue, struct task_struct *p, u64 enq_flags)
+{
+    u64 slice_ns = slice_us * 1000ULL;
+
+    if (p->se.sum_exec_runtime < short_task_ns)
+        slice_ns /= 2;
+
+    scx_bpf_dsq_insert_vtime(p, SCX_DSQ_GLOBAL, slice_ns, enq_flags);
+}
+
+void BPF_STRUCT_OPS(claw_dispatch, s32 cpu, struct task_struct *prev)
+{
+    scx_bpf_dispatch_from_dsq(cpu, SCX_DSQ_GLOBAL, slice_us * 1000ULL, 0);
+}
+
+SCX_OPS_DEFINE(claw_ops,
+    .name           = "sched_claw_latency_guard",
+    .select_cpu     = (void *)claw_select_cpu,
+    .enqueue        = (void *)claw_enqueue,
+    .dispatch       = (void *)claw_dispatch,
+);

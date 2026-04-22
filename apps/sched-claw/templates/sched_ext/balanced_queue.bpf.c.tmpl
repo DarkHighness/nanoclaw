@@ -1,0 +1,54 @@
+/*
+ * Materialized by sched-claw from the balanced_queue template.
+ * Candidate: {{candidate_id}}
+ * Experiment: {{experiment_id}}
+ */
+
+#include "scx/common.bpf.h"
+
+char _license[] SEC("license") = "GPL";
+
+const volatile u32 slice_us = {{slice_us}};
+const volatile u32 queue_steal = {{queue_steal}};
+const volatile u32 rebalance_interval_ms = {{rebalance_interval_ms}};
+const volatile u32 shared_dsq_depth = {{shared_dsq_depth}};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} rebalance_epoch SEC(".maps");
+
+void BPF_STRUCT_OPS(claw_enqueue, struct task_struct *p, u64 enq_flags)
+{
+    scx_bpf_dsq_insert_vtime(p, SCX_DSQ_GLOBAL, slice_us * 1000ULL, enq_flags);
+}
+
+void BPF_STRUCT_OPS(claw_dispatch, s32 cpu, struct task_struct *prev)
+{
+    /*
+     * The shared queue is the main tuning surface here. Later AI-driven passes
+     * can split by CPU class, LLC, or NUMA node while keeping the same basic
+     * dispatch contract.
+     */
+    scx_bpf_dispatch_from_dsq(cpu, SCX_DSQ_GLOBAL, slice_us * 1000ULL, 0);
+}
+
+void BPF_STRUCT_OPS(claw_tick, struct task_struct *p)
+{
+    if (!queue_steal)
+        return;
+
+    /*
+     * A later revision can use rebalance_interval_ms and shared_dsq_depth to
+     * decide when to steal, split, or drain shared queues.
+     */
+}
+
+SCX_OPS_DEFINE(claw_ops,
+    .name           = "sched_claw_balanced_queue",
+    .enqueue        = (void *)claw_enqueue,
+    .dispatch       = (void *)claw_dispatch,
+    .tick           = (void *)claw_tick,
+);

@@ -25,13 +25,17 @@ pub fn build_system_preamble(
             .to_string(),
         "Before collecting or interpreting Linux performance data, inspect the skill index below and load the relevant skill with skill_view. Err on the side of loading."
             .to_string(),
-        "When a task is workload-driven, initialize or inspect a sched-claw experiment manifest first so workload contract, baseline runs, candidates, and scores stay structured instead of living only in transcript text."
+        "Keep workflows skill-driven, not host-driven. Use the active skill SOP to decide which experiment, template, build, and rollout steps matter for the current workload."
+            .to_string(),
+        "When a task is workload-driven, use the sched-claw experiment substrate whenever it helps keep workload contracts, candidates, baseline runs, deployments, and scores structured instead of living only in transcript text."
+            .to_string(),
+        "Use the local template catalog and materialization commands when you need concrete sched-ext source scaffolding, but do not treat template selection as a fixed workflow."
             .to_string(),
         "Use sched_ext_daemon only for status, activate, stop, and logs. Do not use it as a generic privileged execution escape hatch."
             .to_string(),
         "When you generate a new sched-ext scheduler, keep the rollout loop explicit: baseline evidence, code change, privileged activation, verification, and rollback criteria."
             .to_string(),
-        "Prefer the local experiment substrate for sched-ext tuning loops: experiment init, add-candidate, record-baseline, record-candidate, and score."
+        "The host provides generic local commands such as experiment materialize, experiment deploy, template list/show, and experiment score. Choose among them based on the current evidence and skill guidance."
             .to_string(),
     ];
     if let Some(system_prompt) = profile

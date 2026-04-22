@@ -5,6 +5,10 @@ removes the heavy management and TUI surfaces and narrows the runtime around one
 job: investigate Linux scheduling behavior, generate a new `sched-ext`
 scheduler, and hand privileged rollout work to a dedicated daemon.
 
+The host intentionally does not hard-code a scheduler workflow. Skills define
+the SOP; the host only provides generic local capabilities for experiment state,
+template materialization, scoring, and privileged rollout.
+
 ## Design constraints
 
 - Keep the host thin. Reuse `core`, `runtime`, `config`, and `store` instead of
@@ -27,13 +31,19 @@ scheduler, and hand privileged rollout work to a dedicated daemon.
 - `sched-claw` provides:
   - one-shot execution: `sched-claw exec "prompt"`
   - a simple line REPL: `sched-claw repl`
+  - a local template catalog for sched-ext source scaffolding:
+    - `sched-claw template list --style table`
+    - `sched-claw template show latency_guard --style plain`
   - a local experiment substrate for workload contracts, baselines, candidates, and scoring:
     - `sched-claw experiment list --style table`
     - `sched-claw experiment init --id demo --workload-name bench --primary-metric latency_ms --primary-goal minimize`
     - `sched-claw experiment add-candidate demo --candidate-id locality-v1 --template dsq_local`
+    - `sched-claw experiment set-candidate demo --candidate-id locality-v1 --template dsq_local --daemon-arg loader --daemon-arg {source}`
+    - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
     - `sched-claw experiment record-baseline demo --label cfs-baseline --artifact-dir artifacts/baseline --metric latency_ms=12.4`
     - `sched-claw experiment record-candidate demo --candidate-id locality-v1 --label run-a --artifact-dir artifacts/cand-a --metric latency_ms=9.1`
     - `sched-claw experiment score demo --style table`
+    - `sched-claw experiment deploy demo --candidate-id locality-v1 --style table`
   - local inspection and audit helpers such as:
     - `sched-claw tool list --style table`
     - `sched-claw tool show sched_ext_daemon --style plain`
@@ -90,6 +100,8 @@ output styles inspired by the management surfaces in `code-agent`:
 
 The style switch applies to:
 
+- `sched-claw template list`
+- `sched-claw template show <name>`
 - `sched-claw experiment list`
 - `sched-claw experiment show <id>`
 - `sched-claw experiment score <id>`
@@ -110,6 +122,8 @@ The REPL also supports local inspection commands:
 - `:experiments`
 - `:experiment <id>`
 - `:score <id>`
+- `:templates`
+- `:template <name>`
 - `:tools`
 - `:tool <name>`
 - `:skills`
@@ -149,22 +163,50 @@ Workload-driven sched-ext tuning should not rely on transcript prose alone.
 
 - `.nanoclaw/apps/sched-claw/experiments/<id>/experiment.toml`
 
-The intended loop is:
+The substrate is generic on purpose. Typical commands include:
 
-1. `experiment init`
-   - define the workload contract, primary metric, and guardrails
-2. `experiment add-candidate`
-   - register the candidate policy template, source path, build command, daemon argv, and knobs
-3. `experiment record-baseline`
-   - store one or more CFS baseline runs with artifact paths and measured metrics
-4. `experiment record-candidate`
-   - store one or more sched-ext runs for a specific candidate
-5. `experiment score`
-   - compare candidate medians against the baseline and classify each candidate as `promote`, `revise`, `blocked`, or `incomplete`
+- `experiment init`
+  - define the workload contract, primary metric, and guardrails
+- `experiment add-candidate` / `experiment set-candidate`
+  - persist candidate metadata, daemon argv, build commands, and knobs
+- `experiment materialize`
+  - turn a named sched-ext template plus knob values into concrete source under the experiment directory
+- `experiment record-baseline`
+  - store one or more CFS baseline runs with artifact paths and measured metrics
+- `experiment record-candidate`
+  - store one or more sched-ext runs for a specific candidate
+- `experiment score`
+  - compare candidate medians against the baseline and classify each candidate as `promote`, `revise`, `blocked`, or `incomplete`
+- `experiment deploy`
+  - activate a chosen candidate through the daemon and persist the deployment record back into the manifest
 
 This is intentionally a host-local substrate, not a new model-visible tool.
 Agents are expected to call these commands through the existing shell tool so
 the visible tool surface stays minimal.
+
+Which commands to use, and in what order, is not host policy. The active skill
+SOP should decide the loop; the host only makes the state durable and reusable.
+
+## Template catalog
+
+The local sched-ext template catalog lives under:
+
+- `apps/sched-claw/templates/sched_ext/`
+
+Current built-in starting points are:
+
+- `dsq_locality`
+  - locality-biased wakeup and migration controls
+- `latency_guard`
+  - short-slice, wakeup-sensitive interactive controls
+- `balanced_queue`
+  - shared-queue throughput controls
+- `cgroup_lane`
+  - cgroup-aware class and lane controls
+
+`experiment materialize` writes concrete `.bpf.c` source files under the
+experiment state directory by default and records the resulting source path,
+build command, knobs, and optional daemon argv back into the candidate spec.
 
 ## Daemon startup
 

@@ -4,12 +4,13 @@ use std::io::{self, Write};
 
 use crate::app_config::CliOverrides;
 use crate::bootstrap::BuiltRuntime;
+use crate::candidate_templates::{find_template, template_specs};
 use crate::daemon_protocol::SchedExtDaemonRequest;
 use crate::display::{
     OutputStyle, render_daemon_response, render_experiment_detail, render_experiment_list,
     render_experiment_score, render_session_detail, render_session_list,
-    render_session_search_results, render_skill_detail, render_skill_list, render_tool_detail,
-    render_tool_list,
+    render_session_search_results, render_skill_detail, render_skill_list, render_template_detail,
+    render_template_list, render_tool_detail, render_tool_list,
 };
 use crate::experiment::ExperimentCatalog;
 use crate::history::SessionHistory;
@@ -17,7 +18,7 @@ use crate::history::SessionHistory;
 pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) -> Result<()> {
     println!("sched-claw repl");
     println!(
-        "Commands: :help, :format <table|plain>, :experiments, :experiment <id>, :score <id>, :tools, :tool <name>, :skills, :skill <name>, :sessions [query], :session <id>, :resume <id>, :daemon status, :daemon logs [N], :quit"
+        "Commands: :help, :format <table|plain>, :experiments, :experiment <id>, :score <id>, :templates, :template <name>, :tools, :tool <name>, :skills, :skill <name>, :sessions [query], :session <id>, :resume <id>, :daemon status, :daemon logs [N], :quit"
     );
     let stdin = io::stdin();
     let mut line = String::new();
@@ -37,6 +38,8 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
                 println!(":experiments           list experiment manifests");
                 println!(":experiment <id>       inspect one experiment manifest");
                 println!(":score <id>            score one experiment manifest");
+                println!(":templates             list sched-ext templates");
+                println!(":template <name>       inspect one sched-ext template");
                 println!(":tools                 show the startup tool surface");
                 println!(":tool <name>           inspect one tool from the startup catalog");
                 println!(":skills                show available skills");
@@ -66,6 +69,14 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
                 let catalog = open_experiments(host)?;
                 let report = catalog.score(&experiment_ref)?;
                 println!("{}", render_experiment_score(&report, output_style));
+            }
+            ReplCommand::Templates => {
+                println!("{}", render_template_list(template_specs(), output_style));
+            }
+            ReplCommand::TemplateShow(name) => {
+                let template = find_template(&name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown template `{name}`"))?;
+                println!("{}", render_template_detail(template, output_style));
             }
             ReplCommand::Tools => {
                 println!(
@@ -165,6 +176,8 @@ enum ReplCommand {
     Experiments,
     ExperimentShow(String),
     ExperimentScore(String),
+    Templates,
+    TemplateShow(String),
     Tools,
     ToolShow(String),
     Skills,
@@ -192,6 +205,7 @@ fn parse_repl_command(input: &str) -> Result<ReplCommand> {
         ":quit" | ":exit" => Ok(ReplCommand::Quit),
         ":help" => Ok(ReplCommand::Help),
         ":experiments" => Ok(ReplCommand::Experiments),
+        ":templates" => Ok(ReplCommand::Templates),
         ":tools" => Ok(ReplCommand::Tools),
         ":skills" => Ok(ReplCommand::Skills),
         ":sessions" => Ok(ReplCommand::Sessions {
@@ -238,6 +252,12 @@ fn parse_repl_command(input: &str) -> Result<ReplCommand> {
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("usage: :score <id|last|path>"))?;
             Ok(ReplCommand::ExperimentScore(experiment_ref.to_string()))
+        }
+        ":template" => {
+            let template_name = parts
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("usage: :template <name>"))?;
+            Ok(ReplCommand::TemplateShow(template_name.to_string()))
         }
         ":session" => {
             let session_ref = parts
@@ -362,6 +382,14 @@ mod tests {
         assert_eq!(
             parse_repl_command(":score last").unwrap(),
             ReplCommand::ExperimentScore("last".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_template_show_command() {
+        assert_eq!(
+            parse_repl_command(":template latency_guard").unwrap(),
+            ReplCommand::TemplateShow("latency_guard".to_string())
         );
     }
 

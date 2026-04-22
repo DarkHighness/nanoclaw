@@ -1,0 +1,69 @@
+/*
+ * Materialized by sched-claw from the dsq_locality template.
+ * Candidate: {{candidate_id}}
+ * Experiment: {{experiment_id}}
+ *
+ * This source is a starting point for AI-guided iteration. The host provides
+ * the template and knob plumbing, while policy refinement stays in the prompt
+ * loop and the active skill SOP.
+ */
+
+#include "scx/common.bpf.h"
+
+char _license[] SEC("license") = "GPL";
+
+const volatile u32 slice_us = {{slice_us}};
+const volatile u32 wakeup_locality_bias = {{wakeup_locality_bias}};
+const volatile u32 idle_scan_budget = {{idle_scan_budget}};
+const volatile u32 migration_penalty = {{migration_penalty}};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64);
+} local_dispatches SEC(".maps");
+
+s32 BPF_STRUCT_OPS(claw_select_cpu, struct task_struct *p, s32 prev_cpu, u64 wake_flags)
+{
+    if (prev_cpu >= 0 && wakeup_locality_bias >= 50)
+        return prev_cpu;
+
+    return scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, idle_scan_budget);
+}
+
+void BPF_STRUCT_OPS(claw_enqueue, struct task_struct *p, u64 enq_flags)
+{
+    /*
+     * Keep the default DSQ path intact for now. The intent is to bias the
+     * decision before migration rather than fully replace queueing behavior.
+     */
+    scx_bpf_dsq_insert_vtime(p, SCX_DSQ_GLOBAL, slice_us * 1000ULL, enq_flags);
+}
+
+void BPF_STRUCT_OPS(claw_dispatch, s32 cpu, struct task_struct *prev)
+{
+    u32 key = 0;
+    u64 *dispatches = bpf_map_lookup_elem(&local_dispatches, &key);
+
+    if (dispatches)
+        __sync_fetch_and_add(dispatches, 1);
+
+    scx_bpf_dispatch_from_dsq(cpu, SCX_DSQ_GLOBAL, slice_us * 1000ULL, 0);
+}
+
+void BPF_STRUCT_OPS(claw_running, struct task_struct *p)
+{
+    /*
+     * Later revisions can compare p->wake_cpu, llc domain, or NUMA node and
+     * apply migration_penalty through custom virtual time accounting.
+     */
+}
+
+SCX_OPS_DEFINE(claw_ops,
+    .name           = "sched_claw_dsq_locality",
+    .select_cpu     = (void *)claw_select_cpu,
+    .enqueue        = (void *)claw_enqueue,
+    .dispatch       = (void *)claw_dispatch,
+    .running        = (void *)claw_running,
+);

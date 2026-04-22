@@ -25,6 +25,8 @@ pub struct ExperimentManifest {
     pub baseline_runs: Vec<RecordedRun>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<CandidateRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deployments: Vec<DeploymentRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,6 +46,10 @@ pub struct CandidateSpec {
     pub build_command: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub daemon_argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub daemon_env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub knobs: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +66,24 @@ pub struct RecordedRun {
     pub metrics: MetricMap,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentRecord {
+    pub candidate_id: String,
+    pub requested_at_unix_ms: u64,
+    pub label: String,
+    pub daemon_pid: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub replace_existing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -96,6 +120,7 @@ pub struct ExperimentSummary {
     pub primary_metric_name: String,
     pub baseline_run_count: usize,
     pub candidate_count: usize,
+    pub deployment_count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -109,6 +134,7 @@ pub struct ExperimentArtifact {
     pub action: &'static str,
     pub experiment_id: String,
     pub manifest_path: PathBuf,
+    pub details: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -217,6 +243,7 @@ impl ExperimentCatalog {
                 primary_metric_name: manifest.primary_metric.name.clone(),
                 baseline_run_count: manifest.baseline_runs.len(),
                 candidate_count: manifest.candidates.len(),
+                deployment_count: manifest.deployments.len(),
             });
         }
         summaries.sort_by(|left, right| {
@@ -250,6 +277,7 @@ impl ExperimentCatalog {
             guardrails: spec.guardrails,
             baseline_runs: Vec::new(),
             candidates: Vec::new(),
+            deployments: Vec::new(),
         };
         write_manifest(&manifest_path, &manifest)?;
         std::fs::create_dir_all(self.artifacts_dir_for_id(&spec.experiment_id)).with_context(
@@ -264,6 +292,7 @@ impl ExperimentCatalog {
             action: "initialized",
             experiment_id: spec.experiment_id,
             manifest_path,
+            details: Vec::new(),
         })
     }
 
@@ -298,12 +327,49 @@ impl ExperimentCatalog {
             spec,
             runs: Vec::new(),
         });
+        let candidate_id = candidate_id(&loaded.manifest).to_string();
         touch_manifest(&mut loaded.manifest);
         write_manifest(&loaded.manifest_path, &loaded.manifest)?;
         Ok(ExperimentArtifact {
             action: "added candidate",
             experiment_id: loaded.manifest.experiment_id,
             manifest_path: loaded.manifest_path,
+            details: vec![("candidate".to_string(), candidate_id)],
+        })
+    }
+
+    pub fn set_candidate(
+        &self,
+        reference: &str,
+        spec: CandidateSpec,
+    ) -> Result<ExperimentArtifact> {
+        validate_identifier("candidate id", &spec.candidate_id)?;
+        let mut loaded = self.load(reference)?;
+        let action = if let Some(existing) = loaded
+            .manifest
+            .candidates
+            .iter_mut()
+            .find(|candidate| candidate.spec.candidate_id == spec.candidate_id)
+        {
+            existing.spec = spec.clone();
+            "updated candidate"
+        } else {
+            loaded.manifest.candidates.push(CandidateRecord {
+                spec: spec.clone(),
+                runs: Vec::new(),
+            });
+            "added candidate"
+        };
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action,
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details: vec![
+                ("candidate".to_string(), spec.candidate_id),
+                ("template".to_string(), spec.template),
+            ],
         })
     }
 
@@ -316,6 +382,7 @@ impl ExperimentCatalog {
             action: "recorded baseline",
             experiment_id: loaded.manifest.experiment_id,
             manifest_path: loaded.manifest_path,
+            details: Vec::new(),
         })
     }
 
@@ -345,6 +412,28 @@ impl ExperimentCatalog {
             action: "recorded candidate",
             experiment_id: loaded.manifest.experiment_id,
             manifest_path: loaded.manifest_path,
+            details: vec![("candidate".to_string(), candidate_id.to_string())],
+        })
+    }
+
+    pub fn record_deployment(
+        &self,
+        reference: &str,
+        record: DeploymentRecord,
+    ) -> Result<ExperimentArtifact> {
+        let mut loaded = self.load(reference)?;
+        loaded.manifest.deployments.push(record.clone());
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "recorded deployment",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details: vec![
+                ("candidate".to_string(), record.candidate_id),
+                ("label".to_string(), record.label),
+                ("daemon_pid".to_string(), record.daemon_pid.to_string()),
+            ],
         })
     }
 
@@ -423,6 +512,14 @@ impl ExperimentCatalog {
         }
         bail!("unknown experiment id or manifest path: {reference}");
     }
+}
+
+fn candidate_id(manifest: &ExperimentManifest) -> &str {
+    manifest
+        .candidates
+        .last()
+        .map(|candidate| candidate.spec.candidate_id.as_str())
+        .unwrap_or("<unknown>")
 }
 
 pub fn experiments_dir(workspace_root: &Path) -> PathBuf {
@@ -563,8 +660,8 @@ fn score_guardrail(
 #[cfg(test)]
 mod tests {
     use super::{
-        CandidateDecision, CandidateRecord, CandidateSpec, ExperimentCatalog, ExperimentInitSpec,
-        RecordedRun, SchedulerKind, experiments_dir,
+        CandidateDecision, CandidateRecord, CandidateSpec, DeploymentRecord, ExperimentCatalog,
+        ExperimentInitSpec, RecordedRun, SchedulerKind, experiments_dir,
     };
     use crate::metrics::{Guardrail, MetricGoal, MetricMap, MetricTarget};
     use crate::workload::WorkloadContract;
@@ -651,6 +748,8 @@ mod tests {
                 source_path: None,
                 build_command: None,
                 daemon_argv: Vec::new(),
+                daemon_cwd: None,
+                daemon_env: BTreeMap::new(),
                 knobs: BTreeMap::new(),
                 notes: None,
             },
@@ -671,5 +770,107 @@ mod tests {
         let report = catalog.score("score-demo").unwrap();
         assert_eq!(report.entries.len(), 1);
         assert_eq!(report.entries[0].decision, CandidateDecision::Blocked);
+    }
+
+    #[test]
+    fn set_candidate_replaces_existing_spec() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .set_candidate(
+                "demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "latency_guard".to_string(),
+                    source_path: Some("sources/a.bpf.c".to_string()),
+                    build_command: None,
+                    daemon_argv: vec!["loader".to_string()],
+                    daemon_cwd: None,
+                    daemon_env: BTreeMap::new(),
+                    knobs: BTreeMap::from([("slice_us".to_string(), "1000".to_string())]),
+                    notes: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .set_candidate(
+                "demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "dsq_locality".to_string(),
+                    source_path: Some("sources/b.bpf.c".to_string()),
+                    build_command: Some("clang ...".to_string()),
+                    daemon_argv: vec!["loader".to_string(), "sources/b.bpf.c".to_string()],
+                    daemon_cwd: Some("/tmp".to_string()),
+                    daemon_env: BTreeMap::from([("MODE".to_string(), "candidate".to_string())]),
+                    knobs: BTreeMap::new(),
+                    notes: Some("updated".to_string()),
+                },
+            )
+            .unwrap();
+        let loaded = catalog.load("demo").unwrap();
+        assert_eq!(loaded.manifest.candidates.len(), 1);
+        assert_eq!(loaded.manifest.candidates[0].spec.template, "dsq_locality");
+        assert_eq!(
+            loaded.manifest.candidates[0].spec.source_path.as_deref(),
+            Some("sources/b.bpf.c")
+        );
+    }
+
+    #[test]
+    fn records_deployment_history() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .record_deployment(
+                "demo",
+                DeploymentRecord {
+                    candidate_id: "cand-a".to_string(),
+                    requested_at_unix_ms: 42,
+                    label: "demo:cand-a".to_string(),
+                    daemon_pid: 1001,
+                    argv: vec!["loader".to_string()],
+                    cwd: Some("/tmp".to_string()),
+                    env: BTreeMap::new(),
+                    source_path: Some("sources/cand-a.bpf.c".to_string()),
+                    replace_existing: false,
+                },
+            )
+            .unwrap();
+        let loaded = catalog.load("demo").unwrap();
+        assert_eq!(loaded.manifest.deployments.len(), 1);
+        assert_eq!(loaded.manifest.deployments[0].daemon_pid, 1001);
     }
 }

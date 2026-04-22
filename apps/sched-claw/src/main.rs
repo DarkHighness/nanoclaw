@@ -2,16 +2,22 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use sched_claw::app_config::{CliOverrides, SchedClawConfig};
 use sched_claw::bootstrap::load_bootstrap;
+use sched_claw::candidate_templates::{
+    find_template, materialize_template, render_build_command, template_specs,
+};
 use sched_claw::daemon_client::SchedExtDaemonClient;
 use sched_claw::daemon_protocol::{SchedExtDaemonRequest, SchedExtDaemonResponse};
+use sched_claw::deployment::{DeployOverrides, build_activation_plan};
 use sched_claw::display::{
     OutputStyle, render_daemon_response, render_experiment_artifact, render_experiment_detail,
     render_experiment_list, render_experiment_score, render_session_detail,
     render_session_export_artifact, render_session_list, render_session_search_results,
-    render_skill_detail, render_skill_list, render_tool_detail, render_tool_list,
+    render_skill_detail, render_skill_list, render_template_detail, render_template_list,
+    render_tool_detail, render_tool_list,
 };
 use sched_claw::experiment::{
-    CandidateSpec, ExperimentCatalog, ExperimentInitSpec, RecordedRun, SchedulerKind,
+    CandidateSpec, DeploymentRecord, ExperimentCatalog, ExperimentInitSpec, RecordedRun,
+    SchedulerKind,
 };
 use sched_claw::history::SessionHistory;
 use sched_claw::metrics::{MetricGoal, MetricTarget, parse_guardrail, parse_metric_assignment};
@@ -53,6 +59,7 @@ enum Command {
     ExportTranscript(ExportArgs),
     ExportEvents(ExportArgs),
     Experiment(ExperimentArgs),
+    Template(TemplateArgs),
     Tool(ToolArgs),
     Skill(SkillArgs),
     Daemon(DaemonArgs),
@@ -124,9 +131,12 @@ enum ExperimentCommand {
     Init(ExperimentInitArgs),
     Show(ExperimentShowArgs),
     AddCandidate(ExperimentAddCandidateArgs),
+    SetCandidate(ExperimentAddCandidateArgs),
+    Materialize(ExperimentMaterializeArgs),
     RecordBaseline(ExperimentRecordBaselineArgs),
     RecordCandidate(ExperimentRecordCandidateArgs),
     Score(ExperimentShowArgs),
+    Deploy(ExperimentDeployArgs),
 }
 
 #[derive(Debug, Args)]
@@ -181,8 +191,38 @@ struct ExperimentAddCandidateArgs {
     build_command: Option<String>,
     #[arg(long = "daemon-arg", value_name = "ARG", allow_hyphen_values = true)]
     daemon_args: Vec<String>,
+    #[arg(long = "daemon-cwd", value_name = "PATH")]
+    daemon_cwd: Option<String>,
+    #[arg(long = "daemon-env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    daemon_env: Vec<(String, String)>,
     #[arg(long = "knob", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
     knobs: Vec<(String, String)>,
+    #[arg(long, value_name = "TEXT")]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentMaterializeArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "NAME")]
+    template: Option<String>,
+    #[arg(long = "knob", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    knobs: Vec<(String, String)>,
+    #[arg(long, value_name = "PATH")]
+    output: Option<String>,
+    #[arg(long, value_name = "TEXT")]
+    build_command: Option<String>,
+    #[arg(long, value_name = "PATH")]
+    loader: Option<String>,
+    #[arg(long = "loader-arg", value_name = "ARG", allow_hyphen_values = true)]
+    loader_args: Vec<String>,
+    #[arg(long = "daemon-cwd", value_name = "PATH")]
+    daemon_cwd: Option<String>,
+    #[arg(long = "daemon-env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    daemon_env: Vec<(String, String)>,
     #[arg(long, value_name = "TEXT")]
     notes: Option<String>,
 }
@@ -215,6 +255,48 @@ struct ExperimentRecordCandidateArgs {
     metrics: Vec<(String, f64)>,
     #[arg(long, value_name = "TEXT")]
     notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentDeployArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "TEXT")]
+    label: Option<String>,
+    #[arg(long, value_name = "PATH")]
+    loader: Option<String>,
+    #[arg(long = "loader-arg", value_name = "ARG", allow_hyphen_values = true)]
+    loader_args: Vec<String>,
+    #[arg(long, value_name = "PATH")]
+    cwd: Option<String>,
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    env: Vec<(String, String)>,
+    #[arg(long)]
+    replace_existing: bool,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct TemplateArgs {
+    #[command(subcommand)]
+    command: TemplateCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum TemplateCommand {
+    List(OutputArgs),
+    Show(TemplateShowArgs),
+}
+
+#[derive(Debug, Args)]
+struct TemplateShowArgs {
+    #[arg(value_name = "NAME")]
+    name: String,
+    #[command(flatten)]
+    output: OutputArgs,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -341,7 +423,10 @@ async fn main() -> Result<()> {
         Some(Command::ExportEvents(args)) => {
             run_export_events_command(&workspace_root, &overrides, args).await?
         }
-        Some(Command::Experiment(args)) => run_experiment_command(&workspace_root, args).await?,
+        Some(Command::Experiment(args)) => {
+            run_experiment_command(&workspace_root, &overrides, args).await?
+        }
+        Some(Command::Template(args)) => run_template_command(args).await?,
         Some(Command::Tool(args)) => run_tool_command(&workspace_root, &overrides, args).await?,
         Some(Command::Skill(args)) => run_skill_command(&workspace_root, &overrides, args).await?,
         Some(Command::Daemon(args)) => {
@@ -373,7 +458,11 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_experiment_command(workspace_root: &Path, args: ExperimentArgs) -> Result<()> {
+async fn run_experiment_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: ExperimentArgs,
+) -> Result<()> {
     let catalog = ExperimentCatalog::open(workspace_root)?;
     match args.command {
         ExperimentCommand::List(output) => {
@@ -419,10 +508,120 @@ async fn run_experiment_command(workspace_root: &Path, args: ExperimentArgs) -> 
                     source_path: args.source_path,
                     build_command: args.build_command,
                     daemon_argv: args.daemon_args,
+                    daemon_cwd: args.daemon_cwd,
+                    daemon_env: args.daemon_env.into_iter().collect(),
                     knobs: args.knobs.into_iter().collect(),
                     notes: args.notes,
                 },
             )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::SetCandidate(args) => {
+            let artifact = catalog.set_candidate(
+                &args.experiment_ref,
+                CandidateSpec {
+                    candidate_id: args.candidate_id,
+                    template: args.template,
+                    source_path: args.source_path,
+                    build_command: args.build_command,
+                    daemon_argv: args.daemon_args,
+                    daemon_cwd: args.daemon_cwd,
+                    daemon_env: args.daemon_env.into_iter().collect(),
+                    knobs: args.knobs.into_iter().collect(),
+                    notes: args.notes,
+                },
+            )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::Materialize(args) => {
+            if !args.loader_args.is_empty() && args.loader.is_none() {
+                anyhow::bail!("--loader-arg requires --loader");
+            }
+            let existing = catalog
+                .load(&args.experiment_ref)?
+                .manifest
+                .candidates
+                .into_iter()
+                .find(|candidate| candidate.spec.candidate_id == args.candidate_id)
+                .map(|candidate| candidate.spec);
+            let template_name = args
+                .template
+                .clone()
+                .or_else(|| existing.as_ref().map(|candidate| candidate.template.clone()))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "candidate {} does not exist yet; pass --template to materialize a new candidate",
+                        args.candidate_id
+                    )
+                })?;
+            let template = find_template(&template_name)
+                .with_context(|| format!("unknown template `{template_name}`"))?;
+            let mut knobs = existing
+                .as_ref()
+                .map(|candidate| candidate.knobs.clone())
+                .unwrap_or_default();
+            knobs.extend(args.knobs.into_iter());
+            let materialized = materialize_template(
+                workspace_root,
+                &catalog.load(&args.experiment_ref)?.manifest.experiment_id,
+                &args.candidate_id,
+                template,
+                &knobs,
+                args.output.as_deref(),
+            )?;
+            let mut candidate = existing.unwrap_or(CandidateSpec {
+                candidate_id: args.candidate_id.clone(),
+                template: template.name.to_string(),
+                source_path: None,
+                build_command: None,
+                daemon_argv: Vec::new(),
+                daemon_cwd: None,
+                daemon_env: BTreeMap::new(),
+                knobs: BTreeMap::new(),
+                notes: None,
+            });
+            candidate.template = template.name.to_string();
+            candidate.source_path = Some(materialized.relative_source_path.clone());
+            candidate.knobs = materialized.applied_knobs.clone();
+            candidate.build_command = Some(args.build_command.unwrap_or_else(|| {
+                render_build_command(
+                    template,
+                    &materialized.relative_source_path,
+                    &materialized.relative_object_path,
+                )
+            }));
+            if let Some(notes) = args.notes {
+                candidate.notes = Some(notes);
+            }
+            if let Some(daemon_cwd) = args.daemon_cwd {
+                candidate.daemon_cwd = Some(daemon_cwd);
+            }
+            if !args.daemon_env.is_empty() {
+                candidate.daemon_env.extend(args.daemon_env.into_iter());
+            }
+            if args.loader.is_some() {
+                let plan = build_activation_plan(
+                    &catalog.load(&args.experiment_ref)?.manifest.experiment_id,
+                    &candidate,
+                    &DeployOverrides {
+                        loader: args.loader,
+                        loader_args: args.loader_args,
+                        cwd: candidate.daemon_cwd.clone(),
+                        env: candidate.daemon_env.clone(),
+                        ..DeployOverrides::default()
+                    },
+                )?;
+                candidate.daemon_argv = plan.argv;
+                candidate.daemon_cwd = plan.cwd;
+                candidate.daemon_env = plan.env;
+            }
+            let mut artifact = catalog.set_candidate(&args.experiment_ref, candidate)?;
+            artifact
+                .details
+                .push(("source".to_string(), materialized.relative_source_path));
+            artifact
+                .details
+                .push(("object".to_string(), materialized.relative_object_path));
             println!("{}", render_experiment_artifact(&artifact));
         }
         ExperimentCommand::RecordBaseline(args) => {
@@ -457,6 +656,88 @@ async fn run_experiment_command(workspace_root: &Path, args: ExperimentArgs) -> 
         ExperimentCommand::Score(args) => {
             let report = catalog.score(&args.experiment_ref)?;
             println!("{}", render_experiment_score(&report, args.output.style));
+        }
+        ExperimentCommand::Deploy(args) => {
+            let experiment = catalog.load(&args.experiment_ref)?;
+            let candidate = experiment
+                .manifest
+                .candidates
+                .iter()
+                .find(|candidate| candidate.spec.candidate_id == args.candidate_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown candidate {} in experiment {}",
+                        args.candidate_id,
+                        experiment.manifest.experiment_id
+                    )
+                })?;
+            let plan = build_activation_plan(
+                &experiment.manifest.experiment_id,
+                &candidate.spec,
+                &DeployOverrides {
+                    label: args.label,
+                    loader: args.loader,
+                    loader_args: args.loader_args,
+                    cwd: args.cwd,
+                    env: args.env.into_iter().collect(),
+                    replace_existing: args.replace_existing,
+                },
+            )?;
+            let client = SchedExtDaemonClient::new(
+                SchedClawConfig::load_from_dir(workspace_root, overrides)?.daemon,
+            );
+            let response = client
+                .send(&SchedExtDaemonRequest::Activate {
+                    label: Some(plan.label.clone()),
+                    argv: plan.argv.clone(),
+                    cwd: plan.cwd.clone(),
+                    env: plan.env.clone(),
+                    replace_existing: plan.replace_existing,
+                })
+                .await?;
+            if let SchedExtDaemonResponse::Error { message } = &response {
+                anyhow::bail!(message.clone());
+            }
+            match &response {
+                SchedExtDaemonResponse::Ack { snapshot, .. } => {
+                    let active = snapshot.active.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "daemon acknowledged activation without an active deployment snapshot"
+                        )
+                    })?;
+                    let artifact = catalog.record_deployment(
+                        &args.experiment_ref,
+                        DeploymentRecord {
+                            candidate_id: candidate.spec.candidate_id.clone(),
+                            requested_at_unix_ms: sched_claw::experiment::now_unix_ms(),
+                            label: active.label.clone(),
+                            daemon_pid: active.pid,
+                            argv: active.argv.clone(),
+                            cwd: Some(active.cwd.clone()),
+                            env: plan.env,
+                            source_path: plan.source_path,
+                            replace_existing: plan.replace_existing,
+                        },
+                    )?;
+                    println!("{}", render_experiment_artifact(&artifact));
+                    println!("{}", render_daemon_response(&response, args.output.style));
+                }
+                other => anyhow::bail!("daemon returned unexpected response for deploy: {other:?}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_template_command(args: TemplateArgs) -> Result<()> {
+    match args.command {
+        TemplateCommand::List(output) => {
+            println!("{}", render_template_list(template_specs(), output.style));
+        }
+        TemplateCommand::Show(args) => {
+            let template = find_template(&args.name)
+                .with_context(|| format!("unknown template `{}`", args.name))?;
+            println!("{}", render_template_detail(template, args.output.style));
         }
     }
     Ok(())
@@ -722,6 +1003,40 @@ mod tests {
         match cli.command {
             Some(Command::Experiment(_)) => {}
             other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_materialize_loader_arg_that_starts_with_dash() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "materialize",
+            "demo",
+            "--candidate-id",
+            "cand-a",
+            "--template",
+            "latency_guard",
+            "--loader",
+            "/tmp/mock-loader",
+            "--loader-arg",
+            "--sched-ext",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(_)) => {}
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_template_show_command() {
+        let cli = Cli::try_parse_from(["sched-claw", "template", "show", "latency_guard"]).unwrap();
+
+        match cli.command {
+            Some(Command::Template(_)) => {}
+            other => panic!("expected template command, got {other:?}"),
         }
     }
 }

@@ -17,6 +17,10 @@ tags:
 - Activate or stop the scheduler through the daemon after code changes are built.
 
 ## Workflow
+This SOP decides the loop. The host only exposes generic local commands such as
+template inspection, candidate persistence, source materialization, scoring, and
+deployment.
+
 1. Start from the workload contract.
    - Name the optimization target: latency, fairness, locality, throughput, tail behavior, or isolation.
    - Record what CFS is currently doing wrong and what evidence supports that claim.
@@ -31,7 +35,8 @@ tags:
    - Which source files or scheduler examples you are borrowing from
    - What state lives in BPF maps, DSQs, or per-task/per-cpu storage
    - What invariant should hold after each scheduling decision
-   - Add or update a candidate entry with `sched-claw experiment add-candidate ...` so the policy template, build command, daemon argv, and knobs are durable
+   - Persist the candidate state with `sched-claw experiment add-candidate ...` or `sched-claw experiment set-candidate ...` so the template, build command, daemon argv, and knobs are durable
+   - When a template is useful, inspect it with `sched-claw template show <name>` and materialize it with `sched-claw experiment materialize ...`
 4. Keep the implementation loop explicit.
    - Edit code with normal file tools.
    - Build with normal shell tools.
@@ -42,7 +47,7 @@ tags:
    - State the maximum time you are willing to leave the experimental scheduler active.
 6. Run the controlled activation loop.
    - Confirm daemon `status`.
-   - `activate` the scheduler with a human-readable label.
+   - Activate through `sched_ext_daemon` or `sched-claw experiment deploy ...` with a human-readable label.
    - Inspect `logs` immediately for startup failures or debug dumps.
    - Run the target workload with the exact same command set used for the CFS baseline.
    - `stop` the scheduler as soon as the verification window ends or a rollback trigger fires.

@@ -1,10 +1,12 @@
 pub mod app_config;
 pub mod bootstrap;
 pub mod builtin_skills;
+pub mod candidate_templates;
 pub mod daemon_client;
 pub mod daemon_protocol;
 pub mod daemon_server;
 pub mod daemon_tool;
+pub mod deployment;
 pub mod display;
 pub mod experiment;
 pub mod history;

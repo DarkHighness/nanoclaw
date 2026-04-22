@@ -1,3 +1,4 @@
+use crate::candidate_templates::TemplateSpec;
 use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot,
     SchedExtDaemonResponse,
@@ -510,6 +511,7 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
                 "Primary Metric",
                 "Baselines",
                 "Candidates",
+                "Deployments",
                 "Updated (ms)",
             ],
             &summaries
@@ -523,6 +525,7 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
                         summary.primary_metric_name.clone(),
                         summary.baseline_run_count.to_string(),
                         summary.candidate_count.to_string(),
+                        summary.deployment_count.to_string(),
                         summary.updated_at_unix_ms.to_string(),
                     ]
                 })
@@ -534,17 +537,99 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
             for summary in summaries {
                 let _ = writeln!(
                     &mut out,
-                    "- {} workload={} primary_metric={} baselines={} candidates={}",
+                    "- {} workload={} primary_metric={} baselines={} candidates={} deployments={}",
                     summary.experiment_id,
                     summary.workload_name,
                     summary.primary_metric_name,
                     summary.baseline_run_count,
-                    summary.candidate_count
+                    summary.candidate_count,
+                    summary.deployment_count
                 );
             }
             out.trim_end().to_string()
         }
     }
+}
+
+pub fn render_template_list(templates: &[TemplateSpec], style: OutputStyle) -> String {
+    match style {
+        OutputStyle::Table => render_grid(
+            Some(format!("Templates · {}", templates.len())),
+            &["#", "Name", "Summary", "Knobs", "Build Command"],
+            &templates
+                .iter()
+                .enumerate()
+                .map(|(index, template)| {
+                    vec![
+                        (index + 1).to_string(),
+                        template.name.to_string(),
+                        template.summary.to_string(),
+                        template.knob_specs.len().to_string(),
+                        template.build_command_template.to_string(),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        OutputStyle::Plain => {
+            let mut out = String::new();
+            let _ = writeln!(&mut out, "Templates ({})", templates.len());
+            for template in templates {
+                let _ = writeln!(
+                    &mut out,
+                    "- {} [{} knobs]",
+                    template.name,
+                    template.knob_specs.len()
+                );
+                let _ = writeln!(&mut out, "  {}", template.summary);
+                let _ = writeln!(&mut out, "  build: {}", template.build_command_template);
+            }
+            out.trim_end().to_string()
+        }
+    }
+}
+
+pub fn render_template_detail(template: &TemplateSpec, style: OutputStyle) -> String {
+    let sections = vec![
+        (
+            "Overview",
+            vec![
+                ("Name".to_string(), template.name.to_string()),
+                ("Summary".to_string(), template.summary.to_string()),
+                ("Description".to_string(), template.description.to_string()),
+                (
+                    "Build Command".to_string(),
+                    template.build_command_template.to_string(),
+                ),
+            ],
+        ),
+        (
+            "Knobs",
+            vec![(
+                "Defaults".to_string(),
+                if template.knob_specs.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    template
+                        .knob_specs
+                        .iter()
+                        .map(|knob| {
+                            format!(
+                                "{}={} ({})",
+                                knob.name, knob.default_value, knob.description
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
+            )],
+        ),
+    ];
+    render_sections(
+        &format!("Template · {}", template.name),
+        &sections,
+        style,
+        None,
+    )
 }
 
 pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyle) -> String {
@@ -660,6 +745,10 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
                     manifest.candidates.len().to_string(),
                 ),
                 (
+                    "Deployments".to_string(),
+                    manifest.deployments.len().to_string(),
+                ),
+                (
                     "Host Kernel".to_string(),
                     manifest
                         .host
@@ -680,11 +769,13 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
     ];
 
     let appendix = format!(
-        "Baseline Labels\n{}\n{}\n\nCandidates\n{}\n{}",
+        "Baseline Labels\n{}\n{}\n\nCandidates\n{}\n{}\n\nDeployments\n{}\n{}",
         "-".repeat("Baseline Labels".len()),
         list_run_labels(&manifest.baseline_runs),
         "-".repeat("Candidates".len()),
-        list_candidate_summaries(manifest)
+        list_candidate_summaries(manifest),
+        "-".repeat("Deployments".len()),
+        list_deployment_summaries(manifest)
     );
     render_sections(
         &format!("Experiment · {}", manifest.experiment_id),
@@ -792,12 +883,22 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
 }
 
 pub fn render_experiment_artifact(artifact: &ExperimentArtifact) -> String {
-    format!(
+    let mut line = format!(
         "{} experiment {} at {}",
         artifact.action,
         artifact.experiment_id,
         artifact.manifest_path.display()
-    )
+    );
+    if !artifact.details.is_empty() {
+        let details = artifact
+            .details
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let _ = write!(&mut line, " [{details}]");
+    }
+    line
 }
 
 pub fn render_daemon_status(snapshot: &DaemonStatusSnapshot, style: OutputStyle) -> String {
@@ -1161,10 +1262,20 @@ fn list_candidate_summaries(manifest: &crate::experiment::ExperimentManifest) ->
             .iter()
             .map(|candidate| {
                 format!(
-                    "{} [{}] runs={} knobs={}",
+                    "{} [{}] runs={} source={} daemon={} knobs={}",
                     candidate.spec.candidate_id,
                     candidate.spec.template,
                     candidate.runs.len(),
+                    candidate
+                        .spec
+                        .source_path
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    if candidate.spec.daemon_argv.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        candidate.spec.daemon_argv.join(" ")
+                    },
                     if candidate.spec.knobs.is_empty() {
                         "<none>".to_string()
                     } else {
@@ -1175,6 +1286,31 @@ fn list_candidate_summaries(manifest: &crate::experiment::ExperimentManifest) ->
                             .map(|(key, value)| format!("{key}={value}"))
                             .collect::<Vec<_>>()
                             .join(", ")
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn list_deployment_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
+    if manifest.deployments.is_empty() {
+        "<none>".to_string()
+    } else {
+        manifest
+            .deployments
+            .iter()
+            .map(|deployment| {
+                format!(
+                    "{} candidate={} pid={} argv={}",
+                    deployment.label,
+                    deployment.candidate_id,
+                    deployment.daemon_pid,
+                    if deployment.argv.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        deployment.argv.join(" ")
                     }
                 )
             })
@@ -1246,8 +1382,9 @@ mod tests {
     use super::{
         OutputStyle, render_daemon_status, render_experiment_artifact, render_experiment_list,
         render_experiment_score, render_session_export_artifact, render_session_list,
-        render_skill_list, render_tool_list,
+        render_skill_list, render_template_list, render_tool_list,
     };
+    use crate::candidate_templates::template_specs;
     use crate::daemon_protocol::DaemonStatusSnapshot;
     use crate::experiment::{
         CandidateDecision, CandidateScore, ExperimentArtifact, ExperimentScoreReport,
@@ -1369,11 +1506,13 @@ mod tests {
                 primary_metric_name: "latency_ms".to_string(),
                 baseline_run_count: 1,
                 candidate_count: 2,
+                deployment_count: 1,
             }],
             OutputStyle::Plain,
         );
         assert!(rendered.contains("Experiments (1)"));
         assert!(rendered.contains("latency_ms"));
+        assert!(rendered.contains("deployments=1"));
     }
 
     #[test]
@@ -1413,7 +1552,16 @@ mod tests {
             action: "initialized",
             experiment_id: "demo".to_string(),
             manifest_path: PathBuf::from("/tmp/demo/experiment.toml"),
+            details: vec![("candidate".to_string(), "cand-a".to_string())],
         });
         assert!(rendered.contains("initialized experiment demo"));
+        assert!(rendered.contains("candidate=cand-a"));
+    }
+
+    #[test]
+    fn renders_template_list_plain_view() {
+        let rendered = render_template_list(template_specs(), OutputStyle::Plain);
+        assert!(rendered.contains("Templates"));
+        assert!(rendered.contains("dsq_locality"));
     }
 }
