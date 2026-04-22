@@ -19,7 +19,8 @@ use sched_claw::display::{
 };
 use sched_claw::doctor::collect_doctor_report;
 use sched_claw::experiment::{
-    CandidateRecord, CandidateSpec, CommandStatus, DeploymentRecord, EvaluationPolicy,
+    AnalysisConfidence, AnalysisRecord, CandidateRecord, CandidateSpec, CommandStatus,
+    DeploymentRecord, DesignRecord, EvaluationPolicy, EvidenceKind, EvidenceRecord,
     ExperimentCatalog, ExperimentInitSpec, RecordedRun, SchedulerKind,
 };
 use sched_claw::history::SessionHistory;
@@ -141,6 +142,9 @@ enum ExperimentCommand {
     Init(ExperimentInitArgs),
     Show(ExperimentShowArgs),
     SetEvaluationPolicy(ExperimentSetEvaluationPolicyArgs),
+    RecordEvidence(ExperimentRecordEvidenceArgs),
+    RecordAnalysis(ExperimentRecordAnalysisArgs),
+    RecordDesign(ExperimentRecordDesignArgs),
     AddCandidate(ExperimentAddCandidateArgs),
     SetCandidate(ExperimentAddCandidateArgs),
     Materialize(ExperimentMaterializeArgs),
@@ -226,6 +230,86 @@ struct ExperimentSetEvaluationPolicyArgs {
     min_primary_improvement_pct: Option<f64>,
     #[arg(long, value_name = "PCT")]
     max_primary_relative_spread_pct: Option<f64>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentRecordEvidenceArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    evidence_id: String,
+    #[arg(long, value_name = "KIND", value_parser = parse_evidence_kind_arg)]
+    kind: EvidenceKind,
+    #[arg(long, value_name = "TEXT")]
+    collector: Option<String>,
+    #[arg(long, value_name = "TEXT")]
+    focus: Option<String>,
+    #[arg(long, value_name = "TEXT")]
+    phase: Option<String>,
+    #[arg(long, value_name = "KIND", value_parser = parse_scheduler_kind_arg)]
+    scheduler: Option<SchedulerKind>,
+    #[arg(long, value_name = "ID")]
+    candidate_id: Option<String>,
+    #[arg(long = "artifact", value_name = "PATH")]
+    artifact_paths: Vec<String>,
+    #[arg(long = "metric", value_name = "NAME=VALUE", value_parser = parse_metric_assignment_arg)]
+    metrics: Vec<(String, f64)>,
+    #[arg(long, value_name = "TEXT")]
+    summary: Option<String>,
+    #[arg(long = "note", value_name = "TEXT")]
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentRecordAnalysisArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    analysis_id: String,
+    #[arg(long, value_name = "TEXT")]
+    title: String,
+    #[arg(long, value_name = "LEVEL", value_parser = parse_analysis_confidence_arg)]
+    confidence: AnalysisConfidence,
+    #[arg(long = "evidence-id", value_name = "ID")]
+    evidence_ids: Vec<String>,
+    #[arg(long = "fact", value_name = "TEXT")]
+    facts: Vec<String>,
+    #[arg(long = "inference", value_name = "TEXT")]
+    inferences: Vec<String>,
+    #[arg(long = "unknown", value_name = "TEXT")]
+    unknowns: Vec<String>,
+    #[arg(long = "recommendation", value_name = "TEXT")]
+    recommendations: Vec<String>,
+    #[arg(long, value_name = "TEXT")]
+    summary: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentRecordDesignArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    design_id: String,
+    #[arg(long, value_name = "TEXT")]
+    title: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: Option<String>,
+    #[arg(long = "evidence-id", value_name = "ID")]
+    evidence_ids: Vec<String>,
+    #[arg(long = "analysis-id", value_name = "ID")]
+    analysis_ids: Vec<String>,
+    #[arg(long = "lever", value_name = "TEXT")]
+    policy_levers: Vec<String>,
+    #[arg(long = "invariant", value_name = "TEXT")]
+    invariants: Vec<String>,
+    #[arg(long = "code-target", value_name = "TEXT")]
+    code_targets: Vec<String>,
+    #[arg(long = "risk", value_name = "TEXT")]
+    risks: Vec<String>,
+    #[arg(long = "fallback", value_name = "TEXT")]
+    fallback_criteria: Vec<String>,
+    #[arg(long, value_name = "TEXT")]
+    summary: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -648,6 +732,64 @@ async fn run_experiment_command(
                 policy.max_primary_relative_spread_pct = Some(value);
             }
             let artifact = catalog.set_evaluation_policy(&args.experiment_ref, policy)?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::RecordEvidence(args) => {
+            let artifact = catalog.record_evidence(
+                &args.experiment_ref,
+                EvidenceRecord {
+                    evidence_id: args.evidence_id,
+                    recorded_at_unix_ms: sched_claw::experiment::now_unix_ms(),
+                    kind: args.kind,
+                    collector: args.collector,
+                    focus: args.focus,
+                    phase: args.phase,
+                    scheduler: args.scheduler,
+                    candidate_id: args.candidate_id,
+                    artifact_paths: args.artifact_paths,
+                    metrics: args.metrics.into_iter().collect(),
+                    summary: args.summary,
+                    notes: args.notes,
+                },
+            )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::RecordAnalysis(args) => {
+            let artifact = catalog.record_analysis(
+                &args.experiment_ref,
+                AnalysisRecord {
+                    analysis_id: args.analysis_id,
+                    recorded_at_unix_ms: sched_claw::experiment::now_unix_ms(),
+                    title: args.title,
+                    confidence: args.confidence,
+                    evidence_ids: args.evidence_ids,
+                    facts: args.facts,
+                    inferences: args.inferences,
+                    unknowns: args.unknowns,
+                    recommendations: args.recommendations,
+                    summary: args.summary,
+                },
+            )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::RecordDesign(args) => {
+            let artifact = catalog.record_design(
+                &args.experiment_ref,
+                DesignRecord {
+                    design_id: args.design_id,
+                    recorded_at_unix_ms: sched_claw::experiment::now_unix_ms(),
+                    title: args.title,
+                    candidate_id: args.candidate_id,
+                    evidence_ids: args.evidence_ids,
+                    analysis_ids: args.analysis_ids,
+                    policy_levers: args.policy_levers,
+                    invariants: args.invariants,
+                    code_targets: args.code_targets,
+                    risks: args.risks,
+                    fallback_criteria: args.fallback_criteria,
+                    summary: args.summary,
+                },
+            )?;
             println!("{}", render_experiment_artifact(&artifact));
         }
         ExperimentCommand::AddCandidate(args) => {
@@ -1389,6 +1531,38 @@ fn parse_measurement_basis_arg(value: &str) -> Result<MeasurementBasis> {
     value.parse::<MeasurementBasis>()
 }
 
+fn parse_evidence_kind_arg(value: &str) -> Result<EvidenceKind> {
+    match value {
+        "perf_stat" => Ok(EvidenceKind::PerfStat),
+        "perf_sched" => Ok(EvidenceKind::PerfSched),
+        "perf_record" => Ok(EvidenceKind::PerfRecord),
+        "psi" => Ok(EvidenceKind::Psi),
+        "schedstat" => Ok(EvidenceKind::Schedstat),
+        "bpf_trace" => Ok(EvidenceKind::BpfTrace),
+        "custom" => Ok(EvidenceKind::Custom),
+        other => anyhow::bail!(
+            "unsupported evidence kind `{other}`; expected perf_stat, perf_sched, perf_record, psi, schedstat, bpf_trace, or custom"
+        ),
+    }
+}
+
+fn parse_scheduler_kind_arg(value: &str) -> Result<SchedulerKind> {
+    match value {
+        "cfs" => Ok(SchedulerKind::Cfs),
+        "sched_ext" => Ok(SchedulerKind::SchedExt),
+        other => anyhow::bail!("unsupported scheduler kind `{other}`; expected cfs or sched_ext"),
+    }
+}
+
+fn parse_analysis_confidence_arg(value: &str) -> Result<AnalysisConfidence> {
+    match value {
+        "low" => Ok(AnalysisConfidence::Low),
+        "medium" => Ok(AnalysisConfidence::Medium),
+        "high" => Ok(AnalysisConfidence::High),
+        other => anyhow::bail!("unsupported confidence `{other}`; expected low, medium, or high"),
+    }
+}
+
 fn parse_guardrail_arg(value: &str) -> Result<sched_claw::metrics::Guardrail> {
     parse_guardrail(value)
 }
@@ -1420,8 +1594,8 @@ mod tests {
     };
     use clap::Parser;
     use sched_claw::experiment::{
-        CandidateBuildRecord, CandidateRecord, CandidateSpec, CommandStatus, StepCommandRecord,
-        VerifierBackend, VerifierCommandRecord,
+        AnalysisConfidence, CandidateBuildRecord, CandidateRecord, CandidateSpec, CommandStatus,
+        EvidenceKind, StepCommandRecord, VerifierBackend, VerifierCommandRecord,
     };
     use sched_claw::metrics::{MeasurementBasis, MetricGoal, MetricTarget, PerformancePreference};
     use std::collections::BTreeMap;
@@ -1573,6 +1747,109 @@ mod tests {
                     assert_eq!(args.min_primary_improvement_pct, Some(2.5));
                 }
                 other => panic!("expected set-evaluation-policy command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_record_evidence_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "record-evidence",
+            "demo",
+            "--evidence-id",
+            "perf-a",
+            "--kind",
+            "perf_stat",
+            "--scheduler",
+            "cfs",
+            "--metric",
+            "ipc=1.23",
+            "--artifact",
+            "artifacts/evidence/perf-a.txt",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::RecordEvidence(args) => {
+                    assert_eq!(args.evidence_id, "perf-a");
+                    assert_eq!(args.kind, EvidenceKind::PerfStat);
+                    assert_eq!(
+                        args.scheduler,
+                        Some(sched_claw::experiment::SchedulerKind::Cfs)
+                    );
+                    assert_eq!(args.metrics.len(), 1);
+                }
+                other => panic!("expected record-evidence command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_record_analysis_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "record-analysis",
+            "demo",
+            "--analysis-id",
+            "analysis-a",
+            "--title",
+            "Wakeup diagnosis",
+            "--confidence",
+            "medium",
+            "--evidence-id",
+            "perf-a",
+            "--fact",
+            "ipc dipped",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::RecordAnalysis(args) => {
+                    assert_eq!(args.analysis_id, "analysis-a");
+                    assert_eq!(args.confidence, AnalysisConfidence::Medium);
+                    assert_eq!(args.evidence_ids, vec!["perf-a".to_string()]);
+                }
+                other => panic!("expected record-analysis command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_record_design_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "record-design",
+            "demo",
+            "--design-id",
+            "design-a",
+            "--title",
+            "Locality candidate",
+            "--candidate-id",
+            "cand-a",
+            "--analysis-id",
+            "analysis-a",
+            "--lever",
+            "prefer same-cpu wakeups",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::RecordDesign(args) => {
+                    assert_eq!(args.design_id, "design-a");
+                    assert_eq!(args.candidate_id.as_deref(), Some("cand-a"));
+                    assert_eq!(args.analysis_ids, vec!["analysis-a".to_string()]);
+                }
+                other => panic!("expected record-design command, got {other:?}"),
             },
             other => panic!("expected experiment command, got {other:?}"),
         }

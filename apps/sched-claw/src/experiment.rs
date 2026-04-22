@@ -29,6 +29,14 @@ pub struct ExperimentManifest {
     pub guardrails: Vec<Guardrail>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub baseline_runs: Vec<RecordedRun>,
+    // Keep collection artifacts, analysis conclusions, and codegen intent durable
+    // outside transcript text so later turns and operator tooling can reuse them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<EvidenceRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analyses: Vec<AnalysisRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub designs: Vec<DesignRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<CandidateRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -154,6 +162,122 @@ pub struct RecordedRun {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EvidenceRecord {
+    pub evidence_id: String,
+    pub recorded_at_unix_ms: u64,
+    pub kind: EvidenceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collector: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler: Option<SchedulerKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metrics: MetricMap,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceKind {
+    PerfStat,
+    PerfSched,
+    PerfRecord,
+    Psi,
+    Schedstat,
+    BpfTrace,
+    Custom,
+}
+
+impl EvidenceKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PerfStat => "perf_stat",
+            Self::PerfSched => "perf_sched",
+            Self::PerfRecord => "perf_record",
+            Self::Psi => "psi",
+            Self::Schedstat => "schedstat",
+            Self::BpfTrace => "bpf_trace",
+            Self::Custom => "custom",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AnalysisRecord {
+    pub analysis_id: String,
+    pub recorded_at_unix_ms: u64,
+    pub title: String,
+    pub confidence: AnalysisConfidence,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inferences: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknowns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recommendations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+impl AnalysisConfidence {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DesignRecord {
+    pub design_id: String,
+    pub recorded_at_unix_ms: u64,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analysis_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_levers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invariants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub code_targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub risks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_criteria: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentRecord {
     pub candidate_id: String,
     pub requested_at_unix_ms: u64,
@@ -268,6 +392,9 @@ pub struct ExperimentSummary {
     pub workload_name: String,
     pub primary_metric_name: String,
     pub baseline_run_count: usize,
+    pub evidence_count: usize,
+    pub analysis_count: usize,
+    pub design_count: usize,
     pub candidate_count: usize,
     pub deployment_count: usize,
 }
@@ -395,6 +522,9 @@ impl ExperimentCatalog {
                 workload_name: manifest.workload.name.clone(),
                 primary_metric_name: manifest.primary_metric.name.clone(),
                 baseline_run_count: manifest.baseline_runs.len(),
+                evidence_count: manifest.evidence.len(),
+                analysis_count: manifest.analyses.len(),
+                design_count: manifest.designs.len(),
                 candidate_count: manifest.candidates.len(),
                 deployment_count: manifest.deployments.len(),
             });
@@ -433,6 +563,9 @@ impl ExperimentCatalog {
             evaluation_policy: spec.evaluation_policy,
             guardrails: spec.guardrails,
             baseline_runs: Vec::new(),
+            evidence: Vec::new(),
+            analyses: Vec::new(),
+            designs: Vec::new(),
             candidates: Vec::new(),
             deployments: Vec::new(),
         };
@@ -542,6 +675,144 @@ impl ExperimentCatalog {
             experiment_id: loaded.manifest.experiment_id,
             manifest_path: loaded.manifest_path,
             details: Vec::new(),
+        })
+    }
+
+    pub fn record_evidence(
+        &self,
+        reference: &str,
+        record: EvidenceRecord,
+    ) -> Result<ExperimentArtifact> {
+        validate_identifier("evidence id", &record.evidence_id)?;
+        let mut loaded = self.load(reference)?;
+        if loaded
+            .manifest
+            .evidence
+            .iter()
+            .any(|entry| entry.evidence_id == record.evidence_id)
+        {
+            bail!(
+                "evidence {} already exists in experiment {}",
+                record.evidence_id,
+                loaded.manifest.experiment_id
+            );
+        }
+        if let Some(candidate_id) = record.candidate_id.as_deref() {
+            require_candidate(&loaded.manifest, candidate_id)?;
+        }
+        let details = vec![
+            ("evidence".to_string(), record.evidence_id.clone()),
+            ("kind".to_string(), record.kind.as_str().to_string()),
+            (
+                "artifacts".to_string(),
+                record.artifact_paths.len().to_string(),
+            ),
+        ];
+        loaded.manifest.evidence.push(record);
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "recorded evidence",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details,
+        })
+    }
+
+    pub fn record_analysis(
+        &self,
+        reference: &str,
+        record: AnalysisRecord,
+    ) -> Result<ExperimentArtifact> {
+        validate_identifier("analysis id", &record.analysis_id)?;
+        let mut loaded = self.load(reference)?;
+        if loaded
+            .manifest
+            .analyses
+            .iter()
+            .any(|entry| entry.analysis_id == record.analysis_id)
+        {
+            bail!(
+                "analysis {} already exists in experiment {}",
+                record.analysis_id,
+                loaded.manifest.experiment_id
+            );
+        }
+        for evidence_id in &record.evidence_ids {
+            require_evidence(&loaded.manifest, evidence_id)?;
+        }
+        let details = vec![
+            ("analysis".to_string(), record.analysis_id.clone()),
+            (
+                "confidence".to_string(),
+                record.confidence.as_str().to_string(),
+            ),
+            (
+                "evidence_refs".to_string(),
+                record.evidence_ids.len().to_string(),
+            ),
+        ];
+        loaded.manifest.analyses.push(record);
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "recorded analysis",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details,
+        })
+    }
+
+    pub fn record_design(
+        &self,
+        reference: &str,
+        record: DesignRecord,
+    ) -> Result<ExperimentArtifact> {
+        validate_identifier("design id", &record.design_id)?;
+        let mut loaded = self.load(reference)?;
+        if loaded
+            .manifest
+            .designs
+            .iter()
+            .any(|entry| entry.design_id == record.design_id)
+        {
+            bail!(
+                "design {} already exists in experiment {}",
+                record.design_id,
+                loaded.manifest.experiment_id
+            );
+        }
+        if let Some(candidate_id) = record.candidate_id.as_deref() {
+            require_candidate(&loaded.manifest, candidate_id)?;
+        }
+        for evidence_id in &record.evidence_ids {
+            require_evidence(&loaded.manifest, evidence_id)?;
+        }
+        for analysis_id in &record.analysis_ids {
+            require_analysis(&loaded.manifest, analysis_id)?;
+        }
+        let details = vec![
+            ("design".to_string(), record.design_id.clone()),
+            (
+                "candidate".to_string(),
+                record
+                    .candidate_id
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+            (
+                "policy_levers".to_string(),
+                record.policy_levers.len().to_string(),
+            ),
+        ];
+        loaded.manifest.designs.push(record);
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "recorded design",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details,
         })
     }
 
@@ -742,6 +1013,56 @@ fn candidate_id(manifest: &ExperimentManifest) -> &str {
         .last()
         .map(|candidate| candidate.spec.candidate_id.as_str())
         .unwrap_or("<unknown>")
+}
+
+fn require_candidate(manifest: &ExperimentManifest, candidate_id: &str) -> Result<()> {
+    if manifest
+        .candidates
+        .iter()
+        .any(|candidate| candidate.spec.candidate_id == candidate_id)
+    {
+        Ok(())
+    } else {
+        bail!(
+            "unknown candidate {} in experiment {}",
+            candidate_id,
+            manifest.experiment_id
+        )
+    }
+}
+
+fn require_evidence(manifest: &ExperimentManifest, evidence_id: &str) -> Result<()> {
+    // Cross-record references stay local to one experiment manifest so the host
+    // can validate them synchronously without inventing a second index layer.
+    if manifest
+        .evidence
+        .iter()
+        .any(|evidence| evidence.evidence_id == evidence_id)
+    {
+        Ok(())
+    } else {
+        bail!(
+            "unknown evidence {} in experiment {}",
+            evidence_id,
+            manifest.experiment_id
+        )
+    }
+}
+
+fn require_analysis(manifest: &ExperimentManifest, analysis_id: &str) -> Result<()> {
+    if manifest
+        .analyses
+        .iter()
+        .any(|analysis| analysis.analysis_id == analysis_id)
+    {
+        Ok(())
+    } else {
+        bail!(
+            "unknown analysis {} in experiment {}",
+            analysis_id,
+            manifest.experiment_id
+        )
+    }
 }
 
 fn default_min_run_count() -> usize {
@@ -977,9 +1298,11 @@ fn score_guardrail(
 #[cfg(test)]
 mod tests {
     use super::{
-        CandidateBuildRecord, CandidateDecision, CandidateRecord, CandidateSpec, CommandStatus,
-        DeploymentRecord, EvaluationPolicy, ExperimentCatalog, ExperimentInitSpec, RecordedRun,
-        SchedulerKind, StepCommandRecord, VerifierBackend, VerifierCommandRecord, experiments_dir,
+        AnalysisConfidence, AnalysisRecord, CandidateBuildRecord, CandidateDecision,
+        CandidateRecord, CandidateSpec, CommandStatus, DeploymentRecord, DesignRecord,
+        EvaluationPolicy, EvidenceKind, EvidenceRecord, ExperimentCatalog, ExperimentInitSpec,
+        RecordedRun, SchedulerKind, StepCommandRecord, VerifierBackend, VerifierCommandRecord,
+        experiments_dir,
     };
     use crate::metrics::{Guardrail, MetricGoal, MetricMap, MetricTarget, PerformancePolicy};
     use crate::workload::WorkloadContract;
@@ -1286,6 +1609,111 @@ mod tests {
         assert_eq!(
             loaded.manifest.candidates[0].builds[0].verifier.backend,
             VerifierBackend::BpftoolProgLoadall
+        );
+    }
+
+    #[test]
+    fn records_evidence_analysis_and_design_history() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .set_candidate(
+                "demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "latency_guard".to_string(),
+                    source_path: Some("sources/cand-a.bpf.c".to_string()),
+                    object_path: Some("sources/cand-a.bpf.o".to_string()),
+                    build_command: Some("clang ...".to_string()),
+                    daemon_argv: Vec::new(),
+                    daemon_cwd: None,
+                    daemon_env: BTreeMap::new(),
+                    knobs: BTreeMap::new(),
+                    notes: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .record_evidence(
+                "demo",
+                EvidenceRecord {
+                    evidence_id: "perf-a".to_string(),
+                    recorded_at_unix_ms: 1,
+                    kind: EvidenceKind::PerfStat,
+                    collector: Some("perf stat -d -d".to_string()),
+                    focus: Some("retiring efficiency".to_string()),
+                    phase: Some("baseline".to_string()),
+                    scheduler: Some(SchedulerKind::Cfs),
+                    candidate_id: None,
+                    artifact_paths: vec!["artifacts/evidence/perf-a.txt".to_string()],
+                    metrics: MetricMap::from([("ipc".to_string(), 1.2)]),
+                    summary: Some("ipc stayed below 1.3".to_string()),
+                    notes: vec!["noisy host".to_string()],
+                },
+            )
+            .unwrap();
+        catalog
+            .record_analysis(
+                "demo",
+                AnalysisRecord {
+                    analysis_id: "analysis-a".to_string(),
+                    recorded_at_unix_ms: 2,
+                    title: "Baseline locality diagnosis".to_string(),
+                    confidence: AnalysisConfidence::Medium,
+                    evidence_ids: vec!["perf-a".to_string()],
+                    facts: vec!["ipc is lower than expected".to_string()],
+                    inferences: vec!["cross-cpu migration may be too eager".to_string()],
+                    unknowns: vec!["llc miss attribution is missing".to_string()],
+                    recommendations: vec!["strengthen locality bias".to_string()],
+                    summary: Some("locality is a plausible lever".to_string()),
+                },
+            )
+            .unwrap();
+        catalog
+            .record_design(
+                "demo",
+                DesignRecord {
+                    design_id: "design-a".to_string(),
+                    recorded_at_unix_ms: 3,
+                    title: "Locality-first candidate".to_string(),
+                    candidate_id: Some("cand-a".to_string()),
+                    evidence_ids: vec!["perf-a".to_string()],
+                    analysis_ids: vec!["analysis-a".to_string()],
+                    policy_levers: vec!["prefer same-cpu wakeups".to_string()],
+                    invariants: vec!["do not starve remote tasks".to_string()],
+                    code_targets: vec!["pick_idle_cpu".to_string()],
+                    risks: vec!["can reduce throughput".to_string()],
+                    fallback_criteria: vec!["rollback if throughput regresses >5%".to_string()],
+                    summary: Some("first design pass".to_string()),
+                },
+            )
+            .unwrap();
+
+        let loaded = catalog.load("demo").unwrap();
+        assert_eq!(loaded.manifest.evidence.len(), 1);
+        assert_eq!(loaded.manifest.analyses.len(), 1);
+        assert_eq!(loaded.manifest.designs.len(), 1);
+        assert_eq!(
+            loaded.manifest.designs[0].candidate_id.as_deref(),
+            Some("cand-a")
         );
     }
 

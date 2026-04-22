@@ -598,6 +598,9 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
                 "Workload",
                 "Primary Metric",
                 "Baselines",
+                "Evidence",
+                "Analyses",
+                "Designs",
                 "Candidates",
                 "Deployments",
                 "Updated (ms)",
@@ -612,6 +615,9 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
                         summary.workload_name.clone(),
                         summary.primary_metric_name.clone(),
                         summary.baseline_run_count.to_string(),
+                        summary.evidence_count.to_string(),
+                        summary.analysis_count.to_string(),
+                        summary.design_count.to_string(),
                         summary.candidate_count.to_string(),
                         summary.deployment_count.to_string(),
                         summary.updated_at_unix_ms.to_string(),
@@ -625,11 +631,14 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
             for summary in summaries {
                 let _ = writeln!(
                     &mut out,
-                    "- {} workload={} primary_metric={} baselines={} candidates={} deployments={}",
+                    "- {} workload={} primary_metric={} baselines={} evidence={} analyses={} designs={} candidates={} deployments={}",
                     summary.experiment_id,
                     summary.workload_name,
                     summary.primary_metric_name,
                     summary.baseline_run_count,
+                    summary.evidence_count,
+                    summary.analysis_count,
+                    summary.design_count,
                     summary.candidate_count,
                     summary.deployment_count
                 );
@@ -853,6 +862,15 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
                     manifest.candidates.len().to_string(),
                 ),
                 (
+                    "Evidence Records".to_string(),
+                    manifest.evidence.len().to_string(),
+                ),
+                ("Analyses".to_string(), manifest.analyses.len().to_string()),
+                (
+                    "Design Notes".to_string(),
+                    manifest.designs.len().to_string(),
+                ),
+                (
                     "Deployments".to_string(),
                     manifest.deployments.len().to_string(),
                 ),
@@ -881,9 +899,15 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
     ];
 
     let appendix = format!(
-        "Baseline Labels\n{}\n{}\n\nCandidates\n{}\n{}\n\nBuild Attempts\n{}\n{}\n\nDeployments\n{}\n{}",
+        "Baseline Labels\n{}\n{}\n\nEvidence\n{}\n{}\n\nAnalyses\n{}\n{}\n\nDesign Notes\n{}\n{}\n\nCandidates\n{}\n{}\n\nBuild Attempts\n{}\n{}\n\nDeployments\n{}\n{}",
         "-".repeat("Baseline Labels".len()),
         list_run_labels(&manifest.baseline_runs),
+        "-".repeat("Evidence".len()),
+        list_evidence_summaries(manifest),
+        "-".repeat("Analyses".len()),
+        list_analysis_summaries(manifest),
+        "-".repeat("Design Notes".len()),
+        list_design_summaries(manifest),
         "-".repeat("Candidates".len()),
         list_candidate_summaries(manifest),
         "-".repeat("Build Attempts".len()),
@@ -1615,6 +1639,118 @@ fn list_run_labels(runs: &[crate::experiment::RecordedRun]) -> String {
     }
 }
 
+fn list_evidence_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
+    if manifest.evidence.is_empty() {
+        "<none>".to_string()
+    } else {
+        manifest
+            .evidence
+            .iter()
+            .map(|evidence| {
+                format!(
+                    "{} [{}] scheduler={} candidate={} collector={} focus={} artifacts={} metrics={} summary={}",
+                    evidence.evidence_id,
+                    evidence.kind.as_str(),
+                    evidence
+                        .scheduler
+                        .map(|scheduler| scheduler.as_str().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    evidence
+                        .candidate_id
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    evidence
+                        .collector
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    evidence
+                        .focus
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    join_or_none(evidence.artifact_paths.clone()),
+                    if evidence.metrics.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        evidence
+                            .metrics
+                            .iter()
+                            .map(|(name, value)| format!("{name}={}", format_float(*value)))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    },
+                    evidence
+                        .summary
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn list_analysis_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
+    if manifest.analyses.is_empty() {
+        "<none>".to_string()
+    } else {
+        manifest
+            .analyses
+            .iter()
+            .map(|analysis| {
+                format!(
+                    "{} [{}] title={} evidence={} facts={} inferences={} unknowns={} recommendations={} summary={}",
+                    analysis.analysis_id,
+                    analysis.confidence.as_str(),
+                    analysis.title,
+                    join_or_none(analysis.evidence_ids.clone()),
+                    analysis.facts.len(),
+                    analysis.inferences.len(),
+                    analysis.unknowns.len(),
+                    analysis.recommendations.len(),
+                    analysis
+                        .summary
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn list_design_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
+    if manifest.designs.is_empty() {
+        "<none>".to_string()
+    } else {
+        manifest
+            .designs
+            .iter()
+            .map(|design| {
+                format!(
+                    "{} candidate={} levers={} invariants={} code_targets={} risks={} fallback={} refs=evidence:{} analysis:{} summary={}",
+                    design.design_id,
+                    design
+                        .candidate_id
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    design.policy_levers.len(),
+                    design.invariants.len(),
+                    design.code_targets.len(),
+                    design.risks.len(),
+                    design.fallback_criteria.len(),
+                    join_or_none(design.evidence_ids.clone()),
+                    join_or_none(design.analysis_ids.clone()),
+                    design
+                        .summary
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 fn list_candidate_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
     if manifest.candidates.is_empty() {
         "<none>".to_string()
@@ -1798,17 +1934,18 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 mod tests {
     use super::{
         OutputStyle, render_candidate_build_capture, render_daemon_status, render_doctor_report,
-        render_experiment_artifact, render_experiment_list, render_experiment_score,
-        render_session_export_artifact, render_session_list, render_skill_list,
-        render_template_list, render_tool_list, render_workload_run_capture,
+        render_experiment_artifact, render_experiment_detail, render_experiment_list,
+        render_experiment_score, render_session_export_artifact, render_session_list,
+        render_skill_list, render_template_list, render_tool_list, render_workload_run_capture,
     };
     use crate::candidate_templates::template_specs;
     use crate::daemon_protocol::DaemonStatusSnapshot;
     use crate::doctor::{DoctorCheck, DoctorReport, DoctorStatus};
     use crate::experiment::{
-        CandidateBuildRecord, CandidateDecision, CandidateScore, CommandStatus, EvaluationPolicy,
-        ExperimentArtifact, ExperimentScoreReport, ExperimentSummary, StepCommandRecord,
-        VerifierBackend, VerifierCommandRecord,
+        AnalysisConfidence, AnalysisRecord, CandidateBuildRecord, CandidateDecision,
+        CandidateScore, CommandStatus, DesignRecord, EvaluationPolicy, EvidenceKind,
+        EvidenceRecord, ExperimentArtifact, ExperimentScoreReport, ExperimentSummary,
+        StepCommandRecord, VerifierBackend, VerifierCommandRecord,
     };
     use crate::history::{SessionExportArtifact, SessionExportKind};
     use crate::metrics::{MetricGoal, MetricTarget};
@@ -1962,6 +2099,9 @@ mod tests {
                 workload_name: "bench".to_string(),
                 primary_metric_name: "latency_ms".to_string(),
                 baseline_run_count: 1,
+                evidence_count: 1,
+                analysis_count: 1,
+                design_count: 1,
                 candidate_count: 2,
                 deployment_count: 1,
             }],
@@ -2005,6 +2145,83 @@ mod tests {
         assert!(rendered.contains("Experiment Score · demo"));
         assert!(rendered.contains("cand-a"));
         assert!(rendered.contains("20.00%"));
+    }
+
+    #[test]
+    fn renders_experiment_detail_with_evidence_sections() {
+        let rendered = render_experiment_detail(
+            &crate::experiment::LoadedExperiment {
+                manifest_path: PathBuf::from("/tmp/demo/experiment.toml"),
+                manifest: crate::experiment::ExperimentManifest {
+                    version: 1,
+                    experiment_id: "demo".to_string(),
+                    created_at_unix_ms: 1,
+                    updated_at_unix_ms: 2,
+                    host: crate::workload::HostFingerprint::capture(),
+                    workload: crate::workload::WorkloadContract {
+                        name: "bench".to_string(),
+                        ..Default::default()
+                    },
+                    primary_metric: MetricTarget {
+                        name: "latency_ms".to_string(),
+                        goal: MetricGoal::Minimize,
+                        unit: Some("ms".to_string()),
+                        notes: None,
+                    },
+                    performance_policy: Default::default(),
+                    evaluation_policy: EvaluationPolicy::default(),
+                    guardrails: Vec::new(),
+                    baseline_runs: Vec::new(),
+                    evidence: vec![EvidenceRecord {
+                        evidence_id: "perf-a".to_string(),
+                        recorded_at_unix_ms: 1,
+                        kind: EvidenceKind::PerfStat,
+                        collector: Some("perf stat -d -d".to_string()),
+                        focus: Some("ipc".to_string()),
+                        phase: Some("baseline".to_string()),
+                        scheduler: Some(crate::experiment::SchedulerKind::Cfs),
+                        candidate_id: None,
+                        artifact_paths: vec!["artifacts/evidence/perf-a.txt".to_string()],
+                        metrics: BTreeMap::from([("ipc".to_string(), 1.1)]),
+                        summary: Some("ipc remained low".to_string()),
+                        notes: Vec::new(),
+                    }],
+                    analyses: vec![AnalysisRecord {
+                        analysis_id: "analysis-a".to_string(),
+                        recorded_at_unix_ms: 2,
+                        title: "Baseline diagnosis".to_string(),
+                        confidence: AnalysisConfidence::Medium,
+                        evidence_ids: vec!["perf-a".to_string()],
+                        facts: vec!["ipc stayed low".to_string()],
+                        inferences: vec!["migration pressure is plausible".to_string()],
+                        unknowns: vec!["llc misses missing".to_string()],
+                        recommendations: vec!["increase locality bias".to_string()],
+                        summary: Some("locality is a likely lever".to_string()),
+                    }],
+                    designs: vec![DesignRecord {
+                        design_id: "design-a".to_string(),
+                        recorded_at_unix_ms: 3,
+                        title: "Locality candidate".to_string(),
+                        candidate_id: Some("cand-a".to_string()),
+                        evidence_ids: vec!["perf-a".to_string()],
+                        analysis_ids: vec!["analysis-a".to_string()],
+                        policy_levers: vec!["prefer same-cpu wakeups".to_string()],
+                        invariants: vec!["do not starve remote tasks".to_string()],
+                        code_targets: vec!["pick_idle_cpu".to_string()],
+                        risks: vec!["throughput can drop".to_string()],
+                        fallback_criteria: vec!["rollback on throughput loss".to_string()],
+                        summary: Some("first design pass".to_string()),
+                    }],
+                    candidates: Vec::new(),
+                    deployments: Vec::new(),
+                },
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Evidence Records"));
+        assert!(rendered.contains("perf-a [perf_stat]"));
+        assert!(rendered.contains("analysis-a [medium]"));
+        assert!(rendered.contains("design-a candidate=cand-a"));
     }
 
     #[test]

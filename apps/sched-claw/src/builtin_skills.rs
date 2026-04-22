@@ -64,10 +64,13 @@ mod tests {
         assert!(root.join("llvm-clang-build-tuning/SKILL.md").is_file());
         assert!(root.join("mysql-sysbench-tuning/SKILL.md").is_file());
         assert!(root.join("sched-claw-product-readiness/SKILL.md").is_file());
+        assert!(root.join("sched-ext-codegen/SKILL.md").is_file());
         assert!(root.join("sched-ext-build-verify/SKILL.md").is_file());
         assert!(root.join("sched-ext-design-loop/SKILL.md").is_file());
         assert!(root.join("sched-ext-rollout-safety/SKILL.md").is_file());
         assert!(root.join("sched-ext-run-evaluation/SKILL.md").is_file());
+        assert!(root.join("sched-perf-analysis/SKILL.md").is_file());
+        assert!(root.join("sched-perf-collection/SKILL.md").is_file());
         assert!(root.join("sched-workload-contract/SKILL.md").is_file());
         assert!(
             root.join("linux-scheduler-triage/references/official-docs.md")
@@ -86,6 +89,10 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("sched-ext-codegen/references/codegen-levers.md")
+                .is_file()
+        );
+        assert!(
             root.join("sched-ext-build-verify/references/build-and-verifier-checklist.md")
                 .is_file()
         );
@@ -99,6 +106,14 @@ mod tests {
         );
         assert!(
             root.join("sched-ext-run-evaluation/references/repetition-and-scoring.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-analysis/references/analysis-patterns.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-collection/references/collection-matrix.md")
                 .is_file()
         );
         assert!(

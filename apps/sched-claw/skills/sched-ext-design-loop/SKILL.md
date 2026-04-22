@@ -37,6 +37,7 @@ deployment.
    - Which source files or scheduler examples you are borrowing from
    - What state lives in BPF maps, DSQs, or per-task/per-cpu storage
    - What invariant should hold after each scheduling decision
+   - Persist the evidence-to-design bridge with `sched-claw experiment record-design ...` when the design intent, risks, or fallback criteria matter beyond one turn
    - Persist the candidate state with `sched-claw experiment add-candidate ...` or `sched-claw experiment set-candidate ...` so the template, build command, daemon argv, and knobs are durable
    - When a template is useful, inspect it with `sched-claw template show <name>` and materialize it with `sched-claw experiment materialize ...`
 4. Keep the implementation loop explicit.
@@ -60,6 +61,7 @@ deployment.
 
 ## Output Checklist
 - policy summary with explicit mapping from evidence to scheduler behavior
+- if available, the design record id and the evidence or analysis ids it cites
 - changed source files and build command
 - activation label and daemon command arguments
 - startup log excerpt and stop status

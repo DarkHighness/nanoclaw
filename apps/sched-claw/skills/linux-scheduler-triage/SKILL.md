@@ -25,7 +25,7 @@ steps that match the current evidence and question.
    - Record the success metric that will later decide whether the new scheduler beats CFS.
    - If the workload target is already known, persist it structurally as a script, pid, uid, gid, or cgroup target instead of leaving it only in prose.
 2. Establish a reproducible baseline directory.
-   - If the local host is running `sched-claw`, use the experiment substrate when it helps keep the workload contract and metric trail durable: `sched-claw experiment init ...`, `record-baseline ...`, `score ...`.
+   - If the local host is running `sched-claw`, use the experiment substrate when it helps keep the workload contract and metric trail durable: `sched-claw experiment init ...`, `record-evidence ...`, `record-analysis ...`, `record-baseline ...`, `score ...`.
    - Unless the repository already has a stronger convention, create `.nanoclaw/apps/sched-claw/artifacts/<run-label>/`.
    - Save commands, raw outputs, and short notes side by side so the later sched-ext comparison can replay the same evidence path.
 3. Capture low-overhead scheduler evidence first.
@@ -38,6 +38,7 @@ steps that match the current evidence and question.
    - Fact: direct counters, trace events, latency distributions, queue lengths, PSI windows, per-CPU imbalance.
    - Inference: what those facts imply about wakeup placement, slice sizing, migration cost, preemption timing, or class interference.
    - Unknown: what still needs another phase, another workload slice, or another kernel signal.
+   - When the experiment substrate is available, persist those conclusions with `sched-claw experiment record-analysis ...` instead of leaving them only in free-form notes.
 6. Rank scheduler-specific hypotheses.
    - Distinguish scheduler pathologies from generic CPU, memory, or IO pressure.
    - If PSI or vmstat indicates the dominant bottleneck is not CPU scheduling, say so explicitly instead of forcing a scheduler conclusion.
@@ -53,6 +54,7 @@ steps that match the current evidence and question.
 - trace capture command lines if deeper tracing was required
 - a final hypothesis list ranked by confidence
 - one paragraph that maps the evidence to the next sched-ext policy change
+- if available, one `sched-claw experiment record-evidence ...` entry per evidence family that mattered
 - if available, one `sched-claw experiment record-baseline ...` entry that captures the same metric set structurally
 
 ## Rules

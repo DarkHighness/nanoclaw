@@ -41,6 +41,9 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment init --id demo --workload-name app --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --proxy-metric cpi:minimize`
     - `sched-claw experiment init --id demo --workload-name service --target-cgroup /sys/fs/cgroup/work.slice --primary-metric latency_ms --primary-goal minimize --guardrail throughput:maximize:5`
     - `sched-claw experiment set-evaluation-policy demo --min-baseline-runs 5 --min-candidate-runs 5 --max-primary-relative-spread-pct 8`
+    - `sched-claw experiment record-evidence demo --evidence-id perf-a --kind perf_stat --scheduler cfs --artifact artifacts/evidence/perf-a.txt --metric ipc=1.23`
+    - `sched-claw experiment record-analysis demo --analysis-id locality-a --title "Baseline locality diagnosis" --confidence medium --evidence-id perf-a --fact "ipc stayed low" --inference "migration churn likely hurts locality"`
+    - `sched-claw experiment record-design demo --design-id cand-a-v1 --candidate-id locality-v1 --title "Locality-first candidate" --analysis-id locality-a --lever "prefer same-cpu wakeups" --invariant "do not starve remote tasks"`
     - `sched-claw experiment add-candidate demo --candidate-id locality-v1 --template dsq_local`
     - `sched-claw experiment set-candidate demo --candidate-id locality-v1 --template dsq_local --daemon-arg loader --daemon-arg {source}`
     - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
@@ -84,7 +87,10 @@ They cover:
 
 - product readiness and operator dependency checks
 - workload contract definition and metric policy
+- scheduler-specific performance collection SOPs and evidence persistence
+- scheduler-specific performance analysis SOPs and durable fact or inference capture
 - Linux scheduler-focused evidence collection and triage
+- translating evidence and analysis into explicit sched-ext design records
 - sched-ext build, verifier, run, score, and rollout safety loops
 - Translating workload evidence into sched-ext policy and rollout steps
 - LLVM/clang build autotune demos with direct wall-clock metrics plus IPC/CPI fallback
@@ -187,6 +193,14 @@ The substrate is generic on purpose. Typical commands include:
 - `experiment set-evaluation-policy`
   - tighten or relax the evidence gate after an experiment already exists
   - keep minimum run counts, minimum improvement thresholds, and primary-metric spread limits durable in the manifest
+- `experiment record-evidence`
+  - persist scheduler evidence with a typed kind such as `perf_stat`, `perf_sched`, `perf_record`, `psi`, `schedstat`, `bpf_trace`, or `custom`
+  - keep artifact paths, collector command, optional scheduler or candidate association, and any parsed metrics durable in the manifest
+- `experiment record-analysis`
+  - persist factual findings, inferences, unknowns, recommendations, and confidence, linked back to specific evidence ids
+- `experiment record-design`
+  - persist sched-ext design intent before or during code changes
+  - keep candidate linkage, policy levers, invariants, risks, fallback criteria, and code targets explicit
 - `experiment add-candidate` / `experiment set-candidate`
   - persist candidate metadata, source/object paths, daemon argv, build commands, and knobs
 - `experiment materialize`
@@ -221,6 +235,18 @@ SOP should decide the loop; the host only makes the state durable and reusable.
 Materialized candidates now also persist both `source_path` and `object_path`,
 so the build and rollout layers share one concrete artifact contract instead of
 re-deriving object names ad hoc.
+
+The same manifest also now carries three non-run knowledge surfaces:
+
+- evidence records
+  - collection artifacts and parsed metrics
+- analysis records
+  - facts, inferences, unknowns, recommendations, and confidence
+- design records
+  - explicit sched-ext policy intent and rollback boundaries
+
+This keeps performance collection, data analysis, and code-generation intent
+queryable and reviewable outside the transcript.
 
 ## Evaluation Policy
 
