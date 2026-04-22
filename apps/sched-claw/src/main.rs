@@ -5,6 +5,7 @@ use sched_claw::bootstrap::load_bootstrap;
 use sched_claw::daemon_client::{SchedExtDaemonClient, render_response_text};
 use sched_claw::daemon_protocol::{SchedExtDaemonRequest, SchedExtDaemonResponse};
 use sched_claw::repl::{run_exec, run_repl};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -67,6 +68,7 @@ struct DaemonArgs {
 #[derive(Debug, Subcommand)]
 enum DaemonCommand {
     Status,
+    Activate(DaemonActivateArgs),
     Logs {
         #[arg(long, value_name = "LINES")]
         tail_lines: Option<usize>,
@@ -75,6 +77,24 @@ enum DaemonCommand {
         #[arg(long, value_name = "MS")]
         graceful_timeout_ms: Option<u64>,
     },
+}
+
+#[derive(Debug, Args)]
+struct DaemonActivateArgs {
+    #[arg(long, value_name = "TEXT")]
+    label: Option<String>,
+    #[arg(long, value_name = "PATH")]
+    cwd: Option<String>,
+    #[arg(long)]
+    replace_existing: bool,
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    env: Vec<(String, String)>,
+    #[arg(
+        value_name = "ARGV",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    argv: Vec<String>,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -104,6 +124,13 @@ async fn main() -> Result<()> {
             );
             let request = match args.command {
                 DaemonCommand::Status => SchedExtDaemonRequest::Status {},
+                DaemonCommand::Activate(args) => SchedExtDaemonRequest::Activate {
+                    label: args.label,
+                    argv: args.argv,
+                    cwd: args.cwd,
+                    env: args.env.into_iter().collect::<BTreeMap<_, _>>(),
+                    replace_existing: args.replace_existing,
+                },
                 DaemonCommand::Logs { tail_lines } => SchedExtDaemonRequest::Logs { tail_lines },
                 DaemonCommand::Stop {
                     graceful_timeout_ms,
@@ -149,6 +176,17 @@ fn join_prompt(parts: Vec<String>) -> Result<String> {
         anyhow::bail!("prompt cannot be empty");
     }
     Ok(prompt)
+}
+
+fn parse_key_value_arg(value: &str) -> Result<(String, String)> {
+    let (key, value) = value
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("expected KEY=VALUE, got `{value}`"))?;
+    let key = key.trim();
+    if key.is_empty() {
+        anyhow::bail!("expected non-empty key in KEY=VALUE");
+    }
+    Ok((key.to_string(), value.to_string()))
 }
 
 fn init_tracing() {

@@ -58,6 +58,17 @@ Start the daemon from the workspace root:
 sudo cargo run --manifest-path apps/Cargo.toml -p sched-claw --bin sched-claw-daemon -- serve
 ```
 
+For repeatable local startup without retyping the client uid/gid handoff flags,
+use:
+
+```bash
+apps/sched-claw/scripts/start-root-daemon.sh
+```
+
+That script builds the daemon as the current user, re-execs it under `sudo`,
+and passes `--client-uid/--client-gid` automatically so the socket becomes
+usable from the non-root `sched-claw` client.
+
 By default the daemon listens on:
 
 - `.nanoclaw/apps/sched-claw/sched-claw.sock`
@@ -79,3 +90,19 @@ substrate path:
 That split preserves one clear trust boundary instead of scattering privilege
 across ad hoc shell commands.
 
+## Validation
+
+Automated validation currently includes:
+
+- `cargo test --manifest-path apps/Cargo.toml -p sched-claw`
+  - unit tests for builtin skill materialization and daemon launch validation
+  - integration tests that spawn the real `sched-claw-daemon` binary, activate a
+    mock loader, verify `status/logs/stop`, and verify automatic reaping after a
+    child exits on its own
+- `apps/sched-claw/scripts/smoke-daemon-e2e.sh`
+  - manual protocol-level smoke check using the built binaries
+
+The root-required path still depends on a host that can actually run `sudo`
+interactively or through a service manager. The repository now includes the
+startup script for that path, but the repository test suite does not assume
+passwordless root.
