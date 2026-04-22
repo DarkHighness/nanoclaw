@@ -655,6 +655,18 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
             vec![
                 ("Name".to_string(), manifest.workload.name.clone()),
                 (
+                    "Target".to_string(),
+                    manifest.workload.effective_target().summary(),
+                ),
+                (
+                    "Target Kind".to_string(),
+                    manifest
+                        .workload
+                        .effective_target()
+                        .kind_label()
+                        .to_string(),
+                ),
+                (
                     "Description".to_string(),
                     manifest
                         .workload
@@ -710,6 +722,10 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
                         .unit
                         .clone()
                         .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "Performance Policy".to_string(),
+                    manifest.performance_policy.summary(),
                 ),
                 (
                     "Guardrails".to_string(),

@@ -20,9 +20,12 @@ use sched_claw::experiment::{
     SchedulerKind,
 };
 use sched_claw::history::SessionHistory;
-use sched_claw::metrics::{MetricGoal, MetricTarget, parse_guardrail, parse_metric_assignment};
+use sched_claw::metrics::{
+    MeasurementBasis, MetricGoal, MetricTarget, PerformancePolicy, PerformancePreference,
+    infer_performance_policy, parse_guardrail, parse_metric_assignment, parse_metric_target,
+};
 use sched_claw::repl::{run_exec, run_repl};
-use sched_claw::workload::WorkloadContract;
+use sched_claw::workload::{WorkloadContract, WorkloadTarget};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -155,6 +158,14 @@ struct ExperimentInitArgs {
     workload_name: String,
     #[arg(long, value_name = "TEXT")]
     workload_description: Option<String>,
+    #[arg(long, value_name = "PID")]
+    target_pid: Option<u32>,
+    #[arg(long, value_name = "UID")]
+    target_uid: Option<u32>,
+    #[arg(long, value_name = "GID")]
+    target_gid: Option<u32>,
+    #[arg(long, value_name = "PATH")]
+    target_cgroup: Option<String>,
     #[arg(long, value_name = "PATH")]
     workload_cwd: Option<String>,
     #[arg(long = "workload-arg", value_name = "ARG", allow_hyphen_values = true)]
@@ -173,6 +184,14 @@ struct ExperimentInitArgs {
     primary_goal: MetricGoal,
     #[arg(long, value_name = "UNIT")]
     primary_unit: Option<String>,
+    #[arg(long, value_name = "PREFERENCE", value_parser = parse_performance_preference_arg)]
+    performance_preference: Option<PerformancePreference>,
+    #[arg(long, value_name = "BASIS", value_parser = parse_measurement_basis_arg)]
+    performance_basis: Option<MeasurementBasis>,
+    #[arg(long = "proxy-metric", value_name = "NAME:GOAL[:UNIT]", value_parser = parse_metric_target_arg)]
+    proxy_metrics: Vec<MetricTarget>,
+    #[arg(long, value_name = "TEXT")]
+    performance_notes: Option<String>,
     #[arg(long = "guardrail", value_name = "NAME:GOAL:MAX_REGRESSION_PCT", value_parser = parse_guardrail_arg)]
     guardrails: Vec<sched_claw::metrics::Guardrail>,
 }
@@ -470,11 +489,27 @@ async fn run_experiment_command(
             println!("{}", render_experiment_list(&summaries, output.style));
         }
         ExperimentCommand::Init(args) => {
+            let target = build_workload_target(&args)?;
+            let primary_metric = MetricTarget {
+                name: args.primary_metric,
+                goal: args.primary_goal,
+                unit: args.primary_unit,
+                notes: None,
+            };
+            let performance_policy = resolve_performance_policy(
+                args.performance_preference,
+                args.performance_basis,
+                args.performance_notes,
+                &primary_metric,
+                &args.guardrails,
+                args.proxy_metrics,
+            )?;
             let artifact = catalog.init(ExperimentInitSpec {
                 experiment_id: args.id,
                 workload: WorkloadContract {
                     name: args.workload_name,
                     description: args.workload_description,
+                    target,
                     cwd: args.workload_cwd,
                     argv: args.workload_args,
                     env: args.workload_env.into_iter().collect(),
@@ -482,12 +517,8 @@ async fn run_experiment_command(
                     phase: args.workload_phase,
                     success_criteria: args.success_criteria,
                 },
-                primary_metric: MetricTarget {
-                    name: args.primary_metric,
-                    goal: args.primary_goal,
-                    unit: args.primary_unit,
-                    notes: None,
-                },
+                primary_metric,
+                performance_policy,
                 guardrails: args.guardrails,
             })?;
             println!("{}", render_experiment_artifact(&artifact));
@@ -909,6 +940,74 @@ fn join_prompt(parts: Vec<String>) -> Result<String> {
     Ok(prompt)
 }
 
+fn build_workload_target(args: &ExperimentInitArgs) -> Result<Option<WorkloadTarget>> {
+    let selectors = [
+        args.target_pid.is_some(),
+        args.target_uid.is_some(),
+        args.target_gid.is_some(),
+        args.target_cgroup.is_some(),
+    ];
+    if selectors.into_iter().filter(|selected| *selected).count() > 1 {
+        anyhow::bail!(
+            "only one of --target-pid, --target-uid, --target-gid, or --target-cgroup may be set"
+        );
+    }
+    if args.target_pid.is_some()
+        || args.target_uid.is_some()
+        || args.target_gid.is_some()
+        || args.target_cgroup.is_some()
+    {
+        if args.workload_cwd.is_some()
+            || !args.workload_args.is_empty()
+            || !args.workload_env.is_empty()
+        {
+            anyhow::bail!(
+                "script launch fields (--workload-cwd/--workload-arg/--workload-env) cannot be mixed with pid/uid/gid/cgroup targets"
+            );
+        }
+    }
+    Ok(if let Some(pid) = args.target_pid {
+        Some(WorkloadTarget::Pid { pid })
+    } else if let Some(uid) = args.target_uid {
+        Some(WorkloadTarget::Uid { uid })
+    } else if let Some(gid) = args.target_gid {
+        Some(WorkloadTarget::Gid { gid })
+    } else if let Some(path) = args.target_cgroup.clone() {
+        Some(WorkloadTarget::Cgroup { path })
+    } else if args.workload_cwd.is_some()
+        || !args.workload_args.is_empty()
+        || !args.workload_env.is_empty()
+    {
+        Some(WorkloadTarget::Script {
+            cwd: args.workload_cwd.clone(),
+            argv: args.workload_args.clone(),
+            env: args.workload_env.iter().cloned().collect(),
+        })
+    } else {
+        None
+    })
+}
+
+fn resolve_performance_policy(
+    preference: Option<PerformancePreference>,
+    basis: Option<MeasurementBasis>,
+    notes: Option<String>,
+    primary_metric: &MetricTarget,
+    guardrails: &[sched_claw::metrics::Guardrail],
+    proxy_metrics: Vec<MetricTarget>,
+) -> Result<PerformancePolicy> {
+    let mut policy = infer_performance_policy(primary_metric, guardrails, proxy_metrics);
+    if let Some(preference) = preference {
+        policy.preference = preference;
+    }
+    if let Some(basis) = basis {
+        policy.basis = basis;
+    }
+    policy.notes = notes;
+    policy.validate()?;
+    Ok(policy)
+}
+
 fn parse_key_value_arg(value: &str) -> Result<(String, String)> {
     let (key, value) = value
         .split_once('=')
@@ -924,8 +1023,20 @@ fn parse_metric_goal_arg(value: &str) -> Result<MetricGoal> {
     value.parse::<MetricGoal>()
 }
 
+fn parse_performance_preference_arg(value: &str) -> Result<PerformancePreference> {
+    value.parse::<PerformancePreference>()
+}
+
+fn parse_measurement_basis_arg(value: &str) -> Result<MeasurementBasis> {
+    value.parse::<MeasurementBasis>()
+}
+
 fn parse_guardrail_arg(value: &str) -> Result<sched_claw::metrics::Guardrail> {
     parse_guardrail(value)
+}
+
+fn parse_metric_target_arg(value: &str) -> Result<MetricTarget> {
+    parse_metric_target(value)
 }
 
 fn parse_metric_assignment_arg(value: &str) -> Result<(String, f64)> {
@@ -944,8 +1055,12 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, OutputStyle};
+    use super::{
+        Cli, Command, ExperimentCommand, ExperimentInitArgs, OutputStyle, build_workload_target,
+        resolve_performance_policy,
+    };
     use clap::Parser;
+    use sched_claw::metrics::{MeasurementBasis, MetricGoal, MetricTarget, PerformancePreference};
 
     #[test]
     fn parses_sessions_query_with_style_after_query() {
@@ -1038,5 +1153,103 @@ mod tests {
             Some(Command::Template(_)) => {}
             other => panic!("expected template command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_experiment_init_pid_target_and_proxy_metrics() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "init",
+            "--id",
+            "demo",
+            "--workload-name",
+            "bench",
+            "--target-pid",
+            "4242",
+            "--primary-metric",
+            "ipc",
+            "--primary-goal",
+            "maximize",
+            "--performance-basis",
+            "proxy_estimate",
+            "--proxy-metric",
+            "ipc:maximize",
+            "--proxy-metric",
+            "cpi:minimize",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::Init(args) => {
+                    assert_eq!(args.target_pid, Some(4242));
+                    assert_eq!(args.proxy_metrics.len(), 2);
+                }
+                other => panic!("expected init command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workload_target_rejects_selector_and_script_mix() {
+        let args = ExperimentInitArgs {
+            id: "demo".to_string(),
+            workload_name: "bench".to_string(),
+            workload_description: None,
+            target_pid: Some(1),
+            target_uid: None,
+            target_gid: None,
+            target_cgroup: None,
+            workload_cwd: None,
+            workload_args: vec!["./run.sh".to_string()],
+            workload_env: Vec::new(),
+            workload_scope: None,
+            workload_phase: None,
+            success_criteria: None,
+            primary_metric: "latency_ms".to_string(),
+            primary_goal: MetricGoal::Minimize,
+            primary_unit: None,
+            performance_preference: None,
+            performance_basis: None,
+            proxy_metrics: Vec::new(),
+            performance_notes: None,
+            guardrails: Vec::new(),
+        };
+        assert!(build_workload_target(&args).is_err());
+    }
+
+    #[test]
+    fn resolves_proxy_performance_policy() {
+        let policy = resolve_performance_policy(
+            Some(PerformancePreference::Custom),
+            Some(MeasurementBasis::ProxyEstimate),
+            Some("no direct throughput or latency metric".to_string()),
+            &MetricTarget {
+                name: "ipc".to_string(),
+                goal: MetricGoal::Maximize,
+                unit: None,
+                notes: None,
+            },
+            &[],
+            vec![
+                MetricTarget {
+                    name: "ipc".to_string(),
+                    goal: MetricGoal::Maximize,
+                    unit: None,
+                    notes: None,
+                },
+                MetricTarget {
+                    name: "cpi".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: None,
+                    notes: None,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(policy.basis, MeasurementBasis::ProxyEstimate);
+        assert_eq!(policy.proxy_metrics.len(), 2);
     }
 }

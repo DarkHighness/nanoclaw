@@ -1,5 +1,5 @@
 use crate::app_config::app_state_dir;
-use crate::metrics::{Guardrail, MetricMap, MetricTarget, median_metric};
+use crate::metrics::{Guardrail, MetricMap, MetricTarget, PerformancePolicy, median_metric};
 use crate::workload::{HostFingerprint, WorkloadContract};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,8 @@ pub struct ExperimentManifest {
     pub host: HostFingerprint,
     pub workload: WorkloadContract,
     pub primary_metric: MetricTarget,
+    #[serde(default)]
+    pub performance_policy: PerformancePolicy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guardrails: Vec<Guardrail>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -108,6 +110,7 @@ pub struct ExperimentInitSpec {
     pub experiment_id: String,
     pub workload: WorkloadContract,
     pub primary_metric: MetricTarget,
+    pub performance_policy: PerformancePolicy,
     pub guardrails: Vec<Guardrail>,
 }
 
@@ -274,6 +277,7 @@ impl ExperimentCatalog {
             host: HostFingerprint::capture(),
             workload: spec.workload,
             primary_metric: spec.primary_metric,
+            performance_policy: spec.performance_policy,
             guardrails: spec.guardrails,
             baseline_runs: Vec::new(),
             candidates: Vec::new(),
@@ -663,7 +667,7 @@ mod tests {
         CandidateDecision, CandidateRecord, CandidateSpec, DeploymentRecord, ExperimentCatalog,
         ExperimentInitSpec, RecordedRun, SchedulerKind, experiments_dir,
     };
-    use crate::metrics::{Guardrail, MetricGoal, MetricMap, MetricTarget};
+    use crate::metrics::{Guardrail, MetricGoal, MetricMap, MetricTarget, PerformancePolicy};
     use crate::workload::WorkloadContract;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
@@ -685,6 +689,7 @@ mod tests {
                     unit: Some("ms".to_string()),
                     notes: None,
                 },
+                performance_policy: PerformancePolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -715,6 +720,7 @@ mod tests {
                     unit: Some("ms".to_string()),
                     notes: None,
                 },
+                performance_policy: PerformancePolicy::default(),
                 guardrails: vec![Guardrail {
                     name: "throughput".to_string(),
                     goal: MetricGoal::Maximize,
@@ -789,6 +795,7 @@ mod tests {
                     unit: Some("ms".to_string()),
                     notes: None,
                 },
+                performance_policy: PerformancePolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -850,6 +857,7 @@ mod tests {
                     unit: Some("ms".to_string()),
                     notes: None,
                 },
+                performance_policy: PerformancePolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();

@@ -24,6 +24,8 @@ deployment.
 1. Start from the workload contract.
    - Name the optimization target: latency, fairness, locality, throughput, tail behavior, or isolation.
    - Record what CFS is currently doing wrong and what evidence supports that claim.
+   - Keep the target selector explicit: script, pid, uid, gid, or cgroup.
+   - When direct throughput or latency metrics are missing, state the proxy basis you are relying on, such as IPC or CPI, and keep that distinction visible in the experiment manifest.
 2. Convert evidence into policy levers.
    - Wakeup placement and CPU selection
    - Dispatch queue topology

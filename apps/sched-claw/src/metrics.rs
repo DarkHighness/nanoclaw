@@ -65,6 +65,127 @@ pub struct Guardrail {
     pub notes: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PerformancePreference {
+    LatencyThroughput,
+    ThroughputLatency,
+    LatencyOnly,
+    ThroughputOnly,
+    Custom,
+}
+
+impl PerformancePreference {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LatencyThroughput => "latency_throughput",
+            Self::ThroughputLatency => "throughput_latency",
+            Self::LatencyOnly => "latency_only",
+            Self::ThroughputOnly => "throughput_only",
+            Self::Custom => "custom",
+        }
+    }
+}
+
+impl Default for PerformancePreference {
+    fn default() -> Self {
+        Self::Custom
+    }
+}
+
+impl std::str::FromStr for PerformancePreference {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "latency-throughput" | "latency_throughput" | "latency_first" => {
+                Ok(Self::LatencyThroughput)
+            }
+            "throughput-latency" | "throughput_latency" | "throughput_first" => {
+                Ok(Self::ThroughputLatency)
+            }
+            "latency" | "latency_only" => Ok(Self::LatencyOnly),
+            "throughput" | "throughput_only" => Ok(Self::ThroughputOnly),
+            "custom" => Ok(Self::Custom),
+            other => bail!("unsupported performance preference `{other}`"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementBasis {
+    Direct,
+    ProxyEstimate,
+}
+
+impl MeasurementBasis {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::ProxyEstimate => "proxy_estimate",
+        }
+    }
+}
+
+impl Default for MeasurementBasis {
+    fn default() -> Self {
+        Self::Direct
+    }
+}
+
+impl std::str::FromStr for MeasurementBasis {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "direct" => Ok(Self::Direct),
+            "proxy" | "proxy_estimate" | "proxy-estimate" => Ok(Self::ProxyEstimate),
+            other => bail!("unsupported measurement basis `{other}`"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PerformancePolicy {
+    #[serde(default)]
+    pub preference: PerformancePreference,
+    #[serde(default)]
+    pub basis: MeasurementBasis,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proxy_metrics: Vec<MetricTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+impl PerformancePolicy {
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut summary = format!("{} / {}", self.preference.as_str(), self.basis.as_str());
+        if !self.proxy_metrics.is_empty() {
+            summary.push_str(" / proxies=");
+            summary.push_str(
+                &self
+                    .proxy_metrics
+                    .iter()
+                    .map(metric_target_summary)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+        summary
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.basis == MeasurementBasis::ProxyEstimate && self.proxy_metrics.is_empty() {
+            bail!("proxy_estimate basis requires at least one proxy metric");
+        }
+        Ok(())
+    }
+}
+
 pub type MetricMap = BTreeMap<String, f64>;
 
 pub fn parse_metric_assignment(value: &str) -> Result<(String, f64)> {
@@ -116,6 +237,64 @@ pub fn parse_guardrail(value: &str) -> Result<Guardrail> {
     })
 }
 
+pub fn parse_metric_target(value: &str) -> Result<MetricTarget> {
+    let mut parts = value.split(':');
+    let name = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("metric target must include a metric name"))?;
+    let goal = parts
+        .next()
+        .ok_or_else(|| anyhow!("metric target must include a goal"))?
+        .parse::<MetricGoal>()?;
+    let unit = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    if parts.next().is_some() {
+        bail!("metric target must use NAME:GOAL[:UNIT], got extra fields in `{value}`");
+    }
+    Ok(MetricTarget {
+        name: name.to_string(),
+        goal,
+        unit,
+        notes: None,
+    })
+}
+
+#[must_use]
+pub fn infer_performance_policy(
+    primary_metric: &MetricTarget,
+    guardrails: &[Guardrail],
+    proxy_metrics: Vec<MetricTarget>,
+) -> PerformancePolicy {
+    let primary_name = primary_metric.name.to_ascii_lowercase();
+    let guardrail_names = guardrails
+        .iter()
+        .map(|guardrail| guardrail.name.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let basis = if proxy_metrics.is_empty() {
+        MeasurementBasis::Direct
+    } else if is_direct_performance_metric(&primary_name)
+        || guardrail_names
+            .iter()
+            .any(|metric_name| is_direct_performance_metric(metric_name))
+    {
+        MeasurementBasis::Direct
+    } else {
+        MeasurementBasis::ProxyEstimate
+    };
+    let preference = infer_preference(&primary_name, &guardrail_names);
+    PerformancePolicy {
+        preference,
+        basis,
+        proxy_metrics,
+        notes: None,
+    }
+}
+
 pub fn median_metric<'a>(
     metric_name: &str,
     metrics: impl IntoIterator<Item = &'a MetricMap>,
@@ -137,6 +316,57 @@ pub fn median_metric<'a>(
     }
 }
 
+fn infer_preference(primary_name: &str, guardrail_names: &[String]) -> PerformancePreference {
+    let primary_is_latency = is_latency_metric(primary_name);
+    let primary_is_throughput = is_throughput_metric(primary_name);
+    let has_latency_guardrail = guardrail_names
+        .iter()
+        .any(|metric_name| is_latency_metric(metric_name));
+    let has_throughput_guardrail = guardrail_names
+        .iter()
+        .any(|metric_name| is_throughput_metric(metric_name));
+    if primary_is_latency && has_throughput_guardrail {
+        PerformancePreference::LatencyThroughput
+    } else if primary_is_throughput && has_latency_guardrail {
+        PerformancePreference::ThroughputLatency
+    } else if primary_is_latency {
+        PerformancePreference::LatencyOnly
+    } else if primary_is_throughput {
+        PerformancePreference::ThroughputOnly
+    } else {
+        PerformancePreference::Custom
+    }
+}
+
+fn is_direct_performance_metric(metric_name: &str) -> bool {
+    is_latency_metric(metric_name) || is_throughput_metric(metric_name)
+}
+
+fn is_latency_metric(metric_name: &str) -> bool {
+    matches_metric(
+        metric_name,
+        &["latency", "tail", "p99", "p95", "jitter", "response"],
+    )
+}
+
+fn is_throughput_metric(metric_name: &str) -> bool {
+    matches_metric(
+        metric_name,
+        &["throughput", "qps", "tps", "ops", "bandwidth", "rps"],
+    )
+}
+
+fn matches_metric(metric_name: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| metric_name.contains(needle))
+}
+
+fn metric_target_summary(metric: &MetricTarget) -> String {
+    match &metric.unit {
+        Some(unit) => format!("{}:{}:{}", metric.name, metric.goal.as_str(), unit),
+        None => format!("{}:{}", metric.name, metric.goal.as_str()),
+    }
+}
+
 trait ErrorContextExt<T> {
     fn with_context(self, context: impl FnOnce() -> String) -> Result<T>;
 }
@@ -152,7 +382,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{MetricGoal, median_metric, parse_guardrail, parse_metric_assignment};
+    use super::{
+        MeasurementBasis, MetricGoal, PerformancePreference, infer_performance_policy,
+        median_metric, parse_guardrail, parse_metric_assignment, parse_metric_target,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -192,5 +425,38 @@ mod tests {
             BTreeMap::from([(String::from("latency_ms"), 10.0)]),
         ];
         assert_eq!(median_metric("latency_ms", runs.iter()), Some(10.0));
+    }
+
+    #[test]
+    fn parses_metric_target() {
+        let target = parse_metric_target("ipc:maximize").unwrap();
+        assert_eq!(target.name, "ipc");
+        assert_eq!(target.goal, MetricGoal::Maximize);
+        assert_eq!(target.unit, None);
+    }
+
+    #[test]
+    fn infers_latency_throughput_policy() {
+        let policy = infer_performance_policy(
+            &parse_metric_target("latency_ms:minimize").unwrap(),
+            &[parse_guardrail("throughput:maximize:5").unwrap()],
+            Vec::new(),
+        );
+        assert_eq!(policy.preference, PerformancePreference::LatencyThroughput);
+        assert_eq!(policy.basis, MeasurementBasis::Direct);
+    }
+
+    #[test]
+    fn infers_proxy_policy_when_only_ipc_cpi_exist() {
+        let policy = infer_performance_policy(
+            &parse_metric_target("ipc:maximize").unwrap(),
+            &[parse_guardrail("cpi:minimize:3").unwrap()],
+            vec![
+                parse_metric_target("ipc:maximize").unwrap(),
+                parse_metric_target("cpi:minimize").unwrap(),
+            ],
+        );
+        assert_eq!(policy.preference, PerformancePreference::Custom);
+        assert_eq!(policy.basis, MeasurementBasis::ProxyEstimate);
     }
 }

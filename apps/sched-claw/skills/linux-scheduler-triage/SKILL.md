@@ -23,6 +23,7 @@ steps that match the current evidence and question.
 1. Define the failure contract before collecting anything.
    - State the workload entrypoint, the bad outcome, the affected CPUs or cgroups, and whether the bad phase is steady-state, bursty, or startup-only.
    - Record the success metric that will later decide whether the new scheduler beats CFS.
+   - If the workload target is already known, persist it structurally as a script, pid, uid, gid, or cgroup target instead of leaving it only in prose.
 2. Establish a reproducible baseline directory.
    - If the local host is running `sched-claw`, use the experiment substrate when it helps keep the workload contract and metric trail durable: `sched-claw experiment init ...`, `record-baseline ...`, `score ...`.
    - Unless the repository already has a stronger convention, create `.nanoclaw/apps/sched-claw/artifacts/<run-label>/`.
@@ -44,6 +45,7 @@ steps that match the current evidence and question.
    - State what the next `sched-ext` policy should optimize: locality, latency, fairness, throughput, tail control, or workload isolation.
    - Also state what the policy should explicitly avoid making worse.
    - If the next step needs concrete code scaffolding, inspect `sched-claw template list` or `sched-claw template show <name>` and let the active design skill decide which template, if any, to materialize.
+   - If throughput or latency are not measurable on this workload, say that explicitly and record the proxy basis you are using instead, such as IPC or CPI.
 
 ## Artifact Checklist
 - `baseline.md` or equivalent short note with workload, metric, and bad phase definition

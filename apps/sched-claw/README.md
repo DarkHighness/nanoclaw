@@ -37,6 +37,8 @@ template materialization, scoring, and privileged rollout.
   - a local experiment substrate for workload contracts, baselines, candidates, and scoring:
     - `sched-claw experiment list --style table`
     - `sched-claw experiment init --id demo --workload-name bench --primary-metric latency_ms --primary-goal minimize`
+    - `sched-claw experiment init --id demo --workload-name app --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --proxy-metric cpi:minimize`
+    - `sched-claw experiment init --id demo --workload-name service --target-cgroup /sys/fs/cgroup/work.slice --primary-metric latency_ms --primary-goal minimize --guardrail throughput:maximize:5`
     - `sched-claw experiment add-candidate demo --candidate-id locality-v1 --template dsq_local`
     - `sched-claw experiment set-candidate demo --candidate-id locality-v1 --template dsq_local --daemon-arg loader --daemon-arg {source}`
     - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
@@ -166,7 +168,7 @@ Workload-driven sched-ext tuning should not rely on transcript prose alone.
 The substrate is generic on purpose. Typical commands include:
 
 - `experiment init`
-  - define the workload contract, primary metric, and guardrails
+  - define the workload contract, target selector, primary metric, performance policy, and guardrails
 - `experiment add-candidate` / `experiment set-candidate`
   - persist candidate metadata, daemon argv, build commands, and knobs
 - `experiment materialize`
@@ -186,6 +188,33 @@ the visible tool surface stays minimal.
 
 Which commands to use, and in what order, is not host policy. The active skill
 SOP should decide the loop; the host only makes the state durable and reusable.
+
+## Workload selectors and performance policy
+
+`sched-claw` can now record the workload target explicitly instead of leaving it
+as free text. `experiment init` supports:
+
+- script target
+  - default when you use `--workload-cwd`, `--workload-arg`, or `--workload-env`
+- `--target-pid <pid>`
+- `--target-uid <uid>`
+- `--target-gid <gid>`
+- `--target-cgroup <path>`
+
+Only one non-script selector may be set at a time. Script launch fields do not
+mix with pid/uid/gid/cgroup selectors.
+
+Performance intent is also stored explicitly:
+
+- direct metrics
+  - use throughput and latency when they are available
+  - express the priority with `--primary-metric`, `--primary-goal`, and optional guardrails
+- proxy estimate
+  - use `--performance-basis proxy_estimate`
+  - record proxies such as `IPC` or `CPI` with `--proxy-metric ipc:maximize` and `--proxy-metric cpi:minimize`
+
+The host stores this as manifest metadata. It does not force the agent to use a
+fixed evaluation workflow, but it makes the basis of a decision auditable.
 
 ## Template catalog
 

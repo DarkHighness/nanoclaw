@@ -29,6 +29,10 @@ pub fn build_system_preamble(
             .to_string(),
         "When a task is workload-driven, use the sched-claw experiment substrate whenever it helps keep workload contracts, candidates, baseline runs, deployments, and scores structured instead of living only in transcript text."
             .to_string(),
+        "When defining a workload contract, keep the target selector explicit: script, pid, uid, gid, or cgroup."
+            .to_string(),
+        "Prefer direct throughput or latency metrics when they exist. If they do not, record the proxy basis explicitly, for example IPC or CPI, instead of pretending the metric is direct."
+            .to_string(),
         "Use the local template catalog and materialization commands when you need concrete sched-ext source scaffolding, but do not treat template selection as a fixed workflow."
             .to_string(),
         "Use sched_ext_daemon only for status, activate, stop, and logs. Do not use it as a generic privileged execution escape hatch."
