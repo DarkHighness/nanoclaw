@@ -3193,6 +3193,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "sched-claw"
+version = "0.1.0"
+dependencies = [
+ "agent",
+ "agent-env",
+ "anyhow",
+ "async-trait",
+ "clap",
+ "code-agent-backend",
+ "include_dir",
+ "nanoclaw-config",
+ "nix",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "schemars"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -6,6 +6,7 @@ members = [
     "code-agent/crates/config",
     "code-agent/crates/contracts",
     "code-agent/crates/tui",
+    "sched-claw",
 ]
 resolver = "2"
 
