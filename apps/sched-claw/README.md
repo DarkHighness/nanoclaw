@@ -37,18 +37,20 @@ template materialization, scoring, and privileged rollout.
   - a local experiment substrate for workload contracts, baselines, candidates, and scoring:
     - `sched-claw experiment list --style table`
     - `sched-claw experiment init --id demo --workload-name bench --primary-metric latency_ms --primary-goal minimize`
+    - `sched-claw experiment init --id demo --workload-name bench --primary-metric latency_ms --primary-goal minimize --min-baseline-runs 3 --min-candidate-runs 3 --min-primary-improvement-pct 2 --max-primary-relative-spread-pct 10`
     - `sched-claw experiment init --id demo --workload-name app --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --proxy-metric cpi:minimize`
     - `sched-claw experiment init --id demo --workload-name service --target-cgroup /sys/fs/cgroup/work.slice --primary-metric latency_ms --primary-goal minimize --guardrail throughput:maximize:5`
+    - `sched-claw experiment set-evaluation-policy demo --min-baseline-runs 5 --min-candidate-runs 5 --max-primary-relative-spread-pct 8`
     - `sched-claw experiment add-candidate demo --candidate-id locality-v1 --template dsq_local`
     - `sched-claw experiment set-candidate demo --candidate-id locality-v1 --template dsq_local --daemon-arg loader --daemon-arg {source}`
     - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
     - `sched-claw experiment build demo --candidate-id locality-v1 --style table`
     - `sched-claw experiment run demo --label cfs-a --style table`
-    - `sched-claw experiment run demo --candidate-id locality-v1 --label cand-a --style table`
+    - `sched-claw experiment run demo --candidate-id locality-v1 --label cand-a --timeout-seconds 60 --lease-seconds 60 --style table`
     - `sched-claw experiment record-baseline demo --label cfs-baseline --artifact-dir artifacts/baseline --metric latency_ms=12.4`
     - `sched-claw experiment record-candidate demo --candidate-id locality-v1 --label run-a --artifact-dir artifacts/cand-a --metric latency_ms=9.1`
     - `sched-claw experiment score demo --style table`
-    - `sched-claw experiment deploy demo --candidate-id locality-v1 --style table`
+    - `sched-claw experiment deploy demo --candidate-id locality-v1 --lease-seconds 300 --style table`
   - a product-facing readiness surface:
     - `sched-claw doctor --style table`
     - `sched-claw doctor --style plain`
@@ -182,6 +184,9 @@ The substrate is generic on purpose. Typical commands include:
 
 - `experiment init`
   - define the workload contract, target selector, primary metric, performance policy, and guardrails
+- `experiment set-evaluation-policy`
+  - tighten or relax the evidence gate after an experiment already exists
+  - keep minimum run counts, minimum improvement thresholds, and primary-metric spread limits durable in the manifest
 - `experiment add-candidate` / `experiment set-candidate`
   - persist candidate metadata, source/object paths, daemon argv, build commands, and knobs
 - `experiment materialize`
@@ -201,8 +206,10 @@ The substrate is generic on purpose. Typical commands include:
   - store one or more sched-ext runs for a specific candidate
 - `experiment score`
   - compare candidate medians against the baseline and classify each candidate as `promote`, `revise`, `blocked`, or `incomplete`
+  - also report the current evaluation policy, baseline spread, candidate spread, and any reasons that kept a candidate from promotion
 - `experiment deploy`
   - activate a chosen candidate through the daemon and persist the deployment record back into the manifest
+  - optional `--lease-seconds` bounds how long the privileged deployment may remain active if the client dies or forgets to stop it
 
 This is intentionally a host-local substrate, not a new model-visible tool.
 Agents are expected to call these commands through the existing shell tool so
@@ -214,6 +221,20 @@ SOP should decide the loop; the host only makes the state durable and reusable.
 Materialized candidates now also persist both `source_path` and `object_path`,
 so the build and rollout layers share one concrete artifact contract instead of
 re-deriving object names ad hoc.
+
+## Evaluation Policy
+
+Every experiment manifest now carries an explicit evaluation policy alongside
+its primary metric and guardrails. This keeps promotion criteria durable instead
+of implicit:
+
+- minimum baseline run count
+- minimum candidate run count
+- optional minimum primary-metric improvement percent
+- optional maximum primary-metric relative spread percent
+
+If the manifest says the evidence is insufficient, `sched-claw experiment score`
+will keep the candidate `incomplete` even when a single run looked promising.
 
 ## Workload selectors and performance policy
 
@@ -366,6 +387,10 @@ substrate path:
 - evidence capture and artifact management use normal tools
 - scheduler source generation uses normal file-edit tools
 - only privileged activation, stop, and log inspection use `sched_ext_daemon`
+
+The daemon now also supports bounded leases for active deployments. That gives
+the host a generic safety primitive for rollout windows without turning the
+daemon into a workflow engine.
 
 That split preserves one clear trust boundary instead of scattering privilege
 across ad hoc shell commands.

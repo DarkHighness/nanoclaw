@@ -37,6 +37,7 @@ echo "completed"
             argv: vec![script.display().to_string(), "--demo".to_string()],
             cwd: Some(harness.workspace_root().display().to_string()),
             env: Default::default(),
+            lease_timeout_ms: None,
             replace_existing: false,
         })
         .await
@@ -88,6 +89,7 @@ exit 0
             argv: vec![script.display().to_string()],
             cwd: Some(harness.workspace_root().display().to_string()),
             env: Default::default(),
+            lease_timeout_ms: None,
             replace_existing: false,
         })
         .await
@@ -105,6 +107,52 @@ exit 0
     assert_eq!(last_exit.exit_code, Some(0));
     let logs = harness.client.logs(Some(32)).await.unwrap();
     assert!(logs.lines.iter().any(|line| line.line == "fast-exit"));
+
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn daemon_stops_active_process_when_lease_expires() {
+    let harness = DaemonHarness::start().await;
+    let script = harness.write_executable(
+        "lease-loop.sh",
+        r#"#!/bin/sh
+trap 'echo trapped; exit 0' TERM INT
+echo "lease-start"
+while true; do
+  sleep 0.1
+done
+"#,
+    );
+
+    harness
+        .client
+        .send(&SchedExtDaemonRequest::Activate {
+            label: Some("lease-test".to_string()),
+            argv: vec![script.display().to_string()],
+            cwd: Some(harness.workspace_root().display().to_string()),
+            env: Default::default(),
+            lease_timeout_ms: Some(500),
+            replace_existing: false,
+        })
+        .await
+        .unwrap();
+
+    wait_until(Duration::from_secs(5), || async {
+        let status = harness.client.status().await.unwrap();
+        status.active.is_none()
+            && status
+                .last_exit
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.exit_reason == "lease_expired")
+    })
+    .await;
+
+    let status = harness.client.status().await.unwrap();
+    let last_exit = status.last_exit.unwrap();
+    assert_eq!(last_exit.label, "lease-test");
+    assert_eq!(last_exit.exit_reason, "lease_expired");
+    assert_eq!(last_exit.lease_timeout_ms, Some(500));
 
     harness.shutdown().await;
 }

@@ -816,6 +816,10 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
                     manifest.performance_policy.summary(),
                 ),
                 (
+                    "Evaluation Policy".to_string(),
+                    manifest.evaluation_policy.summary(),
+                ),
+                (
                     "Guardrails".to_string(),
                     if manifest.guardrails.is_empty() {
                         "<none>".to_string()
@@ -906,8 +910,10 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                     "Runs",
                     "Primary Value",
                     "Improvement %",
+                    "Spread %",
                     "Decision",
                     "Guardrails",
+                    "Reasons",
                 ],
                 &report
                     .entries
@@ -925,21 +931,31 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                                 .primary_improvement_pct
                                 .map(format_pct)
                                 .unwrap_or_else(|| "<missing>".to_string()),
+                            entry
+                                .candidate_primary_relative_spread_pct
+                                .map(format_pct)
+                                .unwrap_or_else(|| "<missing>".to_string()),
                             entry.decision.as_str().to_string(),
                             render_guardrail_statuses(entry),
+                            join_or_none(entry.status_reasons.clone()),
                         ]
                     })
                     .collect::<Vec<_>>(),
             );
             let _ = write!(
                 &mut out,
-                "\nprimary metric: {} ({})\nbaseline runs: {}\nbaseline value: {}",
+                "\nprimary metric: {} ({})\nevaluation policy: {}\nbaseline runs: {}\nbaseline value: {}\nbaseline spread: {}",
                 report.primary_metric.name,
                 report.primary_metric.goal.as_str(),
+                report.evaluation_policy.summary(),
                 report.baseline_run_count,
                 report
                     .baseline_primary_value
                     .map(format_float)
+                    .unwrap_or_else(|| "<missing>".to_string()),
+                report
+                    .baseline_primary_relative_spread_pct
+                    .map(format_pct)
                     .unwrap_or_else(|| "<missing>".to_string())
             );
             out
@@ -953,6 +969,11 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                 report.primary_metric.name,
                 report.primary_metric.goal.as_str()
             );
+            let _ = writeln!(
+                &mut out,
+                "evaluation_policy: {}",
+                report.evaluation_policy.summary()
+            );
             let _ = writeln!(&mut out, "baseline_runs: {}", report.baseline_run_count);
             let _ = writeln!(
                 &mut out,
@@ -962,10 +983,18 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                     .map(format_float)
                     .unwrap_or_else(|| "<missing>".to_string())
             );
+            let _ = writeln!(
+                &mut out,
+                "baseline_spread: {}",
+                report
+                    .baseline_primary_relative_spread_pct
+                    .map(format_pct)
+                    .unwrap_or_else(|| "<missing>".to_string())
+            );
             for entry in &report.entries {
                 let _ = writeln!(
                     &mut out,
-                    "- {} template={} runs={} value={} improvement={} decision={}",
+                    "- {} template={} runs={} value={} improvement={} spread={} decision={}",
                     entry.candidate_id,
                     entry.template,
                     entry.run_count,
@@ -977,6 +1006,10 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                         .primary_improvement_pct
                         .map(format_pct)
                         .unwrap_or_else(|| "<missing>".to_string()),
+                    entry
+                        .candidate_primary_relative_spread_pct
+                        .map(format_pct)
+                        .unwrap_or_else(|| "<missing>".to_string()),
                     entry.decision.as_str()
                 );
                 if !entry.breached_guardrails.is_empty() {
@@ -984,6 +1017,13 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                         &mut out,
                         "  guardrails: {}",
                         render_guardrail_statuses(entry)
+                    );
+                }
+                if !entry.status_reasons.is_empty() {
+                    let _ = writeln!(
+                        &mut out,
+                        "  reasons: {}",
+                        join_or_none(entry.status_reasons.clone())
                     );
                 }
             }
@@ -1302,6 +1342,20 @@ fn active_rows(active: &ActiveDeploymentSnapshot) -> Vec<(String, String)> {
             "Started At (unix_s)".to_string(),
             active.started_at_unix_s.to_string(),
         ),
+        (
+            "Lease Timeout (ms)".to_string(),
+            active
+                .lease_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+        ),
+        (
+            "Lease Expires At (unix_ms)".to_string(),
+            active
+                .lease_expires_at_unix_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+        ),
         ("Log Lines".to_string(), active.log_line_count.to_string()),
     ]
 }
@@ -1332,6 +1386,21 @@ fn exit_rows(last_exit: &DeploymentExitSnapshot) -> Vec<(String, String)> {
             last_exit
                 .signal
                 .map(|signal| signal.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+        ),
+        ("Exit Reason".to_string(), last_exit.exit_reason.clone()),
+        (
+            "Lease Timeout (ms)".to_string(),
+            last_exit
+                .lease_timeout_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+        ),
+        (
+            "Lease Expires At (unix_ms)".to_string(),
+            last_exit
+                .lease_expires_at_unix_ms
+                .map(|value| value.to_string())
                 .unwrap_or_else(|| "<none>".to_string()),
         ),
         (
@@ -1647,10 +1716,14 @@ fn list_deployment_summaries(manifest: &crate::experiment::ExperimentManifest) -
             .iter()
             .map(|deployment| {
                 format!(
-                    "{} candidate={} pid={} argv={}",
+                    "{} candidate={} pid={} lease_ms={} argv={}",
                     deployment.label,
                     deployment.candidate_id,
                     deployment.daemon_pid,
+                    deployment
+                        .lease_timeout_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
                     if deployment.argv.is_empty() {
                         "<none>".to_string()
                     } else {
@@ -1733,9 +1806,9 @@ mod tests {
     use crate::daemon_protocol::DaemonStatusSnapshot;
     use crate::doctor::{DoctorCheck, DoctorReport, DoctorStatus};
     use crate::experiment::{
-        CandidateBuildRecord, CandidateDecision, CandidateScore, CommandStatus, ExperimentArtifact,
-        ExperimentScoreReport, ExperimentSummary, StepCommandRecord, VerifierBackend,
-        VerifierCommandRecord,
+        CandidateBuildRecord, CandidateDecision, CandidateScore, CommandStatus, EvaluationPolicy,
+        ExperimentArtifact, ExperimentScoreReport, ExperimentSummary, StepCommandRecord,
+        VerifierBackend, VerifierCommandRecord,
     };
     use crate::history::{SessionExportArtifact, SessionExportKind};
     use crate::metrics::{MetricGoal, MetricTarget};
@@ -1911,16 +1984,20 @@ mod tests {
                     unit: Some("ms".to_string()),
                     notes: None,
                 },
+                evaluation_policy: EvaluationPolicy::default(),
                 baseline_run_count: 2,
                 baseline_primary_value: Some(10.0),
+                baseline_primary_relative_spread_pct: Some(5.0),
                 entries: vec![CandidateScore {
                     candidate_id: "cand-a".to_string(),
                     template: "locality".to_string(),
                     run_count: 1,
                     primary_candidate_value: Some(8.0),
                     primary_improvement_pct: Some(20.0),
+                    candidate_primary_relative_spread_pct: Some(0.0),
                     decision: CandidateDecision::Promote,
                     breached_guardrails: Vec::new(),
+                    status_reasons: Vec::new(),
                 }],
             },
             OutputStyle::Table,

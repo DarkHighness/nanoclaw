@@ -17,7 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, interval, timeout};
 use tracing::{info, warn};
 
 #[derive(Clone, Debug)]
@@ -58,6 +58,8 @@ struct ActiveDeployment {
     cwd: PathBuf,
     pid: u32,
     started_at_unix_s: u64,
+    lease_timeout_ms: Option<u64>,
+    lease_expires_at_unix_ms: Option<u64>,
     child: Arc<AsyncMutex<Child>>,
     logs: Arc<Mutex<LogBuffer>>,
 }
@@ -75,6 +77,29 @@ struct LaunchSpec {
     args: Vec<String>,
     cwd: PathBuf,
     env: BTreeMap<String, String>,
+    lease_timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StopReason {
+    Requested,
+    Replaced,
+    Shutdown,
+    LeaseExpired,
+    Exited,
+}
+
+impl StopReason {
+    #[must_use]
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested_stop",
+            Self::Replaced => "replaced",
+            Self::Shutdown => "daemon_shutdown",
+            Self::LeaseExpired => "lease_expired",
+            Self::Exited => "exited",
+        }
+    }
 }
 
 pub async fn serve(options: ServeOptions) -> Result<()> {
@@ -92,6 +117,7 @@ pub async fn serve(options: ServeOptions) -> Result<()> {
         workspace_root = %server.options.workspace_root.display(),
         "sched-claw daemon listening"
     );
+    let mut maintenance_tick = interval(Duration::from_millis(250));
 
     loop {
         tokio::select! {
@@ -103,6 +129,14 @@ pub async fn serve(options: ServeOptions) -> Result<()> {
                         warn!(error = %error, "failed to handle daemon client");
                     }
                 });
+            }
+            _ = maintenance_tick.tick() => {
+                if let Err(error) = server.reap_active_if_exited().await {
+                    warn!(error = %error, "failed to reap active deployment");
+                }
+                if let Err(error) = server.enforce_active_lease().await {
+                    warn!(error = %error, "failed to enforce active deployment lease");
+                }
             }
             signal = tokio::signal::ctrl_c() => {
                 if let Err(error) = signal {
@@ -206,7 +240,9 @@ impl DaemonServer {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        let _ = self.stop_active(DEFAULT_STOP_TIMEOUT_MS).await?;
+        let _ = self
+            .stop_active(DEFAULT_STOP_TIMEOUT_MS, StopReason::Shutdown)
+            .await?;
         Ok(())
     }
 
@@ -250,16 +286,19 @@ impl DaemonServer {
                 argv,
                 cwd,
                 env,
+                lease_timeout_ms,
                 replace_existing,
             } => {
                 if replace_existing {
-                    let _ = self.stop_active(DEFAULT_STOP_TIMEOUT_MS).await?;
+                    let _ = self
+                        .stop_active(DEFAULT_STOP_TIMEOUT_MS, StopReason::Replaced)
+                        .await?;
                 } else if self.state.lock().unwrap().active.is_some() {
                     bail!(
                         "a sched-ext deployment is already active; stop it first or set replace_existing=true"
                     );
                 }
-                let launch = self.validate_launch(label, argv, cwd, env)?;
+                let launch = self.validate_launch(label, argv, cwd, env, lease_timeout_ms)?;
                 let snapshot = self.start_active(launch).await?;
                 Ok(SchedExtDaemonResponse::Ack {
                     message: "activated sched-ext deployment".to_string(),
@@ -270,7 +309,10 @@ impl DaemonServer {
                 graceful_timeout_ms,
             } => {
                 let snapshot = self
-                    .stop_active(graceful_timeout_ms.unwrap_or(DEFAULT_STOP_TIMEOUT_MS))
+                    .stop_active(
+                        graceful_timeout_ms.unwrap_or(DEFAULT_STOP_TIMEOUT_MS),
+                        StopReason::Requested,
+                    )
                     .await?;
                 Ok(SchedExtDaemonResponse::Ack {
                     message: "stopped active sched-ext deployment".to_string(),
@@ -286,6 +328,7 @@ impl DaemonServer {
         argv: Vec<String>,
         cwd: Option<String>,
         env: BTreeMap<String, String>,
+        lease_timeout_ms: Option<u64>,
     ) -> Result<LaunchSpec> {
         if argv.is_empty() {
             bail!("activate requires a non-empty argv");
@@ -336,6 +379,7 @@ impl DaemonServer {
             executable,
             cwd,
             env,
+            lease_timeout_ms: lease_timeout_ms.map(|value| value.max(1)),
         })
     }
 
@@ -398,6 +442,10 @@ impl DaemonServer {
             cwd: launch.cwd,
             pid,
             started_at_unix_s: now_unix_s(),
+            lease_timeout_ms: launch.lease_timeout_ms,
+            lease_expires_at_unix_ms: launch
+                .lease_timeout_ms
+                .map(|value| now_unix_ms().saturating_add(value)),
             child: Arc::new(AsyncMutex::new(child)),
             logs,
         };
@@ -408,7 +456,11 @@ impl DaemonServer {
         Ok(self.status_snapshot_locked(&state))
     }
 
-    async fn stop_active(&self, graceful_timeout_ms: u64) -> Result<DaemonStatusSnapshot> {
+    async fn stop_active(
+        &self,
+        graceful_timeout_ms: u64,
+        reason: StopReason,
+    ) -> Result<DaemonStatusSnapshot> {
         self.reap_active_if_exited().await?;
         let Some(active) = self.state.lock().unwrap().active.clone() else {
             return Ok(self.status_snapshot());
@@ -432,7 +484,7 @@ impl DaemonServer {
                 }
             }
         };
-        let exit = build_exit_snapshot(&active, wait_result);
+        let exit = build_exit_snapshot(&active, wait_result, reason);
         let logs = active.logs.lock().unwrap().snapshot_all();
         let mut state = self.state.lock().unwrap();
         if state.active.as_ref().map(|deployment| deployment.pid) == Some(active.pid) {
@@ -454,7 +506,7 @@ impl DaemonServer {
         let Some(exit_status) = exit_status else {
             return Ok(());
         };
-        let exit = build_exit_snapshot(&active, exit_status);
+        let exit = build_exit_snapshot(&active, exit_status, StopReason::Exited);
         let logs = active.logs.lock().unwrap().snapshot_all();
         let mut state = self.state.lock().unwrap();
         if state.active.as_ref().map(|deployment| deployment.pid) == Some(active.pid) {
@@ -462,6 +514,28 @@ impl DaemonServer {
             state.last_exit = Some(exit);
             state.last_logs = logs;
         }
+        Ok(())
+    }
+
+    async fn enforce_active_lease(&self) -> Result<()> {
+        let Some(active) = self.state.lock().unwrap().active.clone() else {
+            return Ok(());
+        };
+        let Some(lease_expires_at_unix_ms) = active.lease_expires_at_unix_ms else {
+            return Ok(());
+        };
+        if now_unix_ms() < lease_expires_at_unix_ms {
+            return Ok(());
+        }
+        warn!(
+            pid = active.pid,
+            label = %active.label,
+            lease_expires_at_unix_ms,
+            "active sched-ext deployment exceeded its lease; stopping"
+        );
+        let _ = self
+            .stop_active(DEFAULT_STOP_TIMEOUT_MS, StopReason::LeaseExpired)
+            .await?;
         Ok(())
     }
 
@@ -490,6 +564,8 @@ impl DaemonServer {
                     cwd: active.cwd.display().to_string(),
                     pid: active.pid,
                     started_at_unix_s: active.started_at_unix_s,
+                    lease_timeout_ms: active.lease_timeout_ms,
+                    lease_expires_at_unix_ms: active.lease_expires_at_unix_ms,
                     log_line_count: active.logs.lock().unwrap().len(),
                 }),
             last_exit: state.last_exit.clone(),
@@ -596,6 +672,7 @@ where
 fn build_exit_snapshot(
     active: &ActiveDeployment,
     status: std::process::ExitStatus,
+    reason: StopReason,
 ) -> DeploymentExitSnapshot {
     DeploymentExitSnapshot {
         label: active.label.clone(),
@@ -606,6 +683,9 @@ fn build_exit_snapshot(
         ended_at_unix_s: now_unix_s(),
         exit_code: status.code(),
         signal: status.signal(),
+        exit_reason: reason.as_str().to_string(),
+        lease_timeout_ms: active.lease_timeout_ms,
+        lease_expires_at_unix_ms: active.lease_expires_at_unix_ms,
         log_line_count: active.logs.lock().unwrap().len(),
     }
 }
@@ -671,6 +751,7 @@ mod tests {
                 vec![outside_exec.display().to_string()],
                 None,
                 BTreeMap::new(),
+                None,
             )
             .unwrap_err();
 
@@ -704,6 +785,7 @@ mod tests {
                 vec!["./bin/scx-demo".to_string(), "--demo".to_string()],
                 None,
                 BTreeMap::new(),
+                None,
             )
             .unwrap();
 

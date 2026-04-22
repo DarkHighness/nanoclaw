@@ -1,5 +1,7 @@
 use crate::app_config::app_state_dir;
-use crate::metrics::{Guardrail, MetricMap, MetricTarget, PerformancePolicy, median_metric};
+use crate::metrics::{
+    Guardrail, MetricMap, MetricTarget, PerformancePolicy, median_metric, relative_spread_pct,
+};
 use crate::workload::{HostFingerprint, WorkloadContract};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,8 @@ pub struct ExperimentManifest {
     pub primary_metric: MetricTarget,
     #[serde(default)]
     pub performance_policy: PerformancePolicy,
+    #[serde(default)]
+    pub evaluation_policy: EvaluationPolicy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guardrails: Vec<Guardrail>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -163,6 +167,8 @@ pub struct DeploymentRecord {
     pub env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_timeout_ms: Option<u64>,
     #[serde(default)]
     pub replace_existing: bool,
 }
@@ -190,7 +196,68 @@ pub struct ExperimentInitSpec {
     pub workload: WorkloadContract,
     pub primary_metric: MetricTarget,
     pub performance_policy: PerformancePolicy,
+    pub evaluation_policy: EvaluationPolicy,
     pub guardrails: Vec<Guardrail>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EvaluationPolicy {
+    #[serde(default = "default_min_run_count")]
+    pub min_baseline_runs: usize,
+    #[serde(default = "default_min_run_count")]
+    pub min_candidate_runs: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_primary_improvement_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_primary_relative_spread_pct: Option<f64>,
+}
+
+impl Default for EvaluationPolicy {
+    fn default() -> Self {
+        Self {
+            min_baseline_runs: default_min_run_count(),
+            min_candidate_runs: default_min_run_count(),
+            min_primary_improvement_pct: None,
+            max_primary_relative_spread_pct: None,
+        }
+    }
+}
+
+impl EvaluationPolicy {
+    pub fn validate(&self) -> Result<()> {
+        if self.min_baseline_runs == 0 {
+            bail!("min_baseline_runs must be at least 1");
+        }
+        if self.min_candidate_runs == 0 {
+            bail!("min_candidate_runs must be at least 1");
+        }
+        if let Some(value) = self.min_primary_improvement_pct
+            && (!value.is_finite() || value < 0.0)
+        {
+            bail!("min_primary_improvement_pct must be a finite non-negative number");
+        }
+        if let Some(value) = self.max_primary_relative_spread_pct
+            && (!value.is_finite() || value < 0.0)
+        {
+            bail!("max_primary_relative_spread_pct must be a finite non-negative number");
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut parts = vec![
+            format!("baseline>={}", self.min_baseline_runs),
+            format!("candidate>={}", self.min_candidate_runs),
+        ];
+        if let Some(value) = self.min_primary_improvement_pct {
+            parts.push(format!("improvement>={value:.2}%"));
+        }
+        if let Some(value) = self.max_primary_relative_spread_pct {
+            parts.push(format!("spread<={value:.2}%"));
+        }
+        parts.join(" / ")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -224,8 +291,10 @@ pub struct ExperimentScoreReport {
     pub experiment_id: String,
     pub manifest_path: PathBuf,
     pub primary_metric: MetricTarget,
+    pub evaluation_policy: EvaluationPolicy,
     pub baseline_run_count: usize,
     pub baseline_primary_value: Option<f64>,
+    pub baseline_primary_relative_spread_pct: Option<f64>,
     pub entries: Vec<CandidateScore>,
 }
 
@@ -236,8 +305,10 @@ pub struct CandidateScore {
     pub run_count: usize,
     pub primary_candidate_value: Option<f64>,
     pub primary_improvement_pct: Option<f64>,
+    pub candidate_primary_relative_spread_pct: Option<f64>,
     pub decision: CandidateDecision,
     pub breached_guardrails: Vec<GuardrailScore>,
+    pub status_reasons: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -339,6 +410,8 @@ impl ExperimentCatalog {
 
     pub fn init(&self, spec: ExperimentInitSpec) -> Result<ExperimentArtifact> {
         validate_identifier("experiment id", &spec.experiment_id)?;
+        spec.performance_policy.validate()?;
+        spec.evaluation_policy.validate()?;
         let manifest_path = self.manifest_path_for_id(&spec.experiment_id);
         if manifest_path.exists() {
             bail!(
@@ -357,6 +430,7 @@ impl ExperimentCatalog {
             workload: spec.workload,
             primary_metric: spec.primary_metric,
             performance_policy: spec.performance_policy,
+            evaluation_policy: spec.evaluation_policy,
             guardrails: spec.guardrails,
             baseline_runs: Vec::new(),
             candidates: Vec::new(),
@@ -560,9 +634,31 @@ impl ExperimentCatalog {
         })
     }
 
+    pub fn set_evaluation_policy(
+        &self,
+        reference: &str,
+        policy: EvaluationPolicy,
+    ) -> Result<ExperimentArtifact> {
+        policy.validate()?;
+        let mut loaded = self.load(reference)?;
+        loaded.manifest.evaluation_policy = policy.clone();
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "updated evaluation policy",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details: vec![("policy".to_string(), policy.summary())],
+        })
+    }
+
     pub fn score(&self, reference: &str) -> Result<ExperimentScoreReport> {
         let loaded = self.load(reference)?;
         let baseline_primary_value = median_metric(
+            &loaded.manifest.primary_metric.name,
+            loaded.manifest.baseline_runs.iter().map(|run| &run.metrics),
+        );
+        let baseline_primary_relative_spread_pct = relative_spread_pct(
             &loaded.manifest.primary_metric.name,
             loaded.manifest.baseline_runs.iter().map(|run| &run.metrics),
         );
@@ -573,6 +669,7 @@ impl ExperimentCatalog {
             .map(|candidate| {
                 score_candidate(
                     &loaded.manifest.primary_metric,
+                    &loaded.manifest.evaluation_policy,
                     &loaded.manifest.guardrails,
                     &loaded.manifest.baseline_runs,
                     candidate,
@@ -583,8 +680,10 @@ impl ExperimentCatalog {
             experiment_id: loaded.manifest.experiment_id,
             manifest_path: loaded.manifest_path,
             primary_metric: loaded.manifest.primary_metric,
+            evaluation_policy: loaded.manifest.evaluation_policy,
             baseline_run_count: loaded.manifest.baseline_runs.len(),
             baseline_primary_value,
+            baseline_primary_relative_spread_pct,
             entries,
         })
     }
@@ -643,6 +742,10 @@ fn candidate_id(manifest: &ExperimentManifest) -> &str {
         .last()
         .map(|candidate| candidate.spec.candidate_id.as_str())
         .unwrap_or("<unknown>")
+}
+
+fn default_min_run_count() -> usize {
+    1
 }
 
 pub fn experiments_dir(workspace_root: &Path) -> PathBuf {
@@ -706,6 +809,7 @@ fn write_manifest(path: &Path, manifest: &ExperimentManifest) -> Result<()> {
 
 fn score_candidate(
     primary_metric: &MetricTarget,
+    evaluation_policy: &EvaluationPolicy,
     guardrails: &[Guardrail],
     baseline_runs: &[RecordedRun],
     candidate: &CandidateRecord,
@@ -718,6 +822,14 @@ fn score_candidate(
         &primary_metric.name,
         candidate.runs.iter().map(|run| &run.metrics),
     );
+    let baseline_primary_relative_spread_pct = relative_spread_pct(
+        &primary_metric.name,
+        baseline_runs.iter().map(|run| &run.metrics),
+    );
+    let candidate_primary_relative_spread_pct = relative_spread_pct(
+        &primary_metric.name,
+        candidate.runs.iter().map(|run| &run.metrics),
+    );
     let primary_improvement_pct = baseline_primary_value.and_then(|baseline| {
         primary_candidate_value
             .and_then(|value| primary_metric.goal.improvement_pct(baseline, value))
@@ -726,26 +838,108 @@ fn score_candidate(
         .iter()
         .map(|guardrail| score_guardrail(guardrail, baseline_runs, &candidate.runs))
         .collect::<Vec<_>>();
-    let decision = if baseline_primary_value.is_none() || primary_candidate_value.is_none() {
+    let mut status_reasons = Vec::new();
+    if baseline_runs.len() < evaluation_policy.min_baseline_runs {
+        status_reasons.push(format!(
+            "baseline runs {} below required {}",
+            baseline_runs.len(),
+            evaluation_policy.min_baseline_runs
+        ));
+    }
+    if candidate.runs.len() < evaluation_policy.min_candidate_runs {
+        status_reasons.push(format!(
+            "candidate runs {} below required {}",
+            candidate.runs.len(),
+            evaluation_policy.min_candidate_runs
+        ));
+    }
+    if baseline_primary_value.is_none() {
+        status_reasons.push("missing baseline primary metric".to_string());
+    }
+    if primary_candidate_value.is_none() {
+        status_reasons.push("missing candidate primary metric".to_string());
+    }
+    if let Some(max_spread_pct) = evaluation_policy.max_primary_relative_spread_pct {
+        if let Some(value) = baseline_primary_relative_spread_pct {
+            if value > max_spread_pct {
+                status_reasons.push(format!(
+                    "baseline primary spread {:.2}% exceeds {:.2}%",
+                    value, max_spread_pct
+                ));
+            }
+        }
+        if let Some(value) = candidate_primary_relative_spread_pct {
+            if value > max_spread_pct {
+                status_reasons.push(format!(
+                    "candidate primary spread {:.2}% exceeds {:.2}%",
+                    value, max_spread_pct
+                ));
+            }
+        }
+    }
+    for score in &breached_guardrails {
+        if matches!(score.status, GuardrailStatus::Missing) {
+            status_reasons.push(format!("missing guardrail metric {}", score.name));
+        }
+    }
+    if let Some(min_improvement_pct) = evaluation_policy.min_primary_improvement_pct {
+        if let Some(value) = primary_improvement_pct {
+            if value > 0.0 && value < min_improvement_pct {
+                status_reasons.push(format!(
+                    "primary improvement {:.2}% below required {:.2}%",
+                    value, min_improvement_pct
+                ));
+            }
+        }
+    }
+    let decision = if baseline_primary_value.is_none()
+        || primary_candidate_value.is_none()
+        || baseline_runs.len() < evaluation_policy.min_baseline_runs
+        || candidate.runs.len() < evaluation_policy.min_candidate_runs
+        || breached_guardrails
+            .iter()
+            .any(|score| matches!(score.status, GuardrailStatus::Missing))
+        || evaluation_policy
+            .max_primary_relative_spread_pct
+            .is_some_and(|max_spread_pct| {
+                baseline_primary_relative_spread_pct.is_some_and(|value| value > max_spread_pct)
+                    || candidate_primary_relative_spread_pct
+                        .is_some_and(|value| value > max_spread_pct)
+            }) {
         CandidateDecision::Incomplete
     } else if breached_guardrails
         .iter()
         .any(|score| matches!(score.status, GuardrailStatus::Breach))
     {
         CandidateDecision::Blocked
-    } else if primary_improvement_pct.is_some_and(|value| value > 0.0) {
+    } else if primary_improvement_pct.is_some_and(|value| {
+        value > 0.0
+            && value
+                >= evaluation_policy
+                    .min_primary_improvement_pct
+                    .unwrap_or_default()
+    }) {
         CandidateDecision::Promote
     } else {
         CandidateDecision::Revise
     };
+    if matches!(decision, CandidateDecision::Revise) {
+        if let Some(value) = primary_improvement_pct {
+            if value <= 0.0 {
+                status_reasons.push(format!("primary metric did not improve ({value:.2}%)"));
+            }
+        }
+    }
     CandidateScore {
         candidate_id: candidate.spec.candidate_id.clone(),
         template: candidate.spec.template.clone(),
         run_count: candidate.runs.len(),
         primary_candidate_value,
         primary_improvement_pct,
+        candidate_primary_relative_spread_pct,
         decision,
         breached_guardrails,
+        status_reasons,
     }
 }
 
@@ -784,8 +978,8 @@ fn score_guardrail(
 mod tests {
     use super::{
         CandidateBuildRecord, CandidateDecision, CandidateRecord, CandidateSpec, CommandStatus,
-        DeploymentRecord, ExperimentCatalog, ExperimentInitSpec, RecordedRun, SchedulerKind,
-        StepCommandRecord, VerifierBackend, VerifierCommandRecord, experiments_dir,
+        DeploymentRecord, EvaluationPolicy, ExperimentCatalog, ExperimentInitSpec, RecordedRun,
+        SchedulerKind, StepCommandRecord, VerifierBackend, VerifierCommandRecord, experiments_dir,
     };
     use crate::metrics::{Guardrail, MetricGoal, MetricMap, MetricTarget, PerformancePolicy};
     use crate::workload::WorkloadContract;
@@ -810,6 +1004,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -841,6 +1036,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
                 guardrails: vec![Guardrail {
                     name: "throughput".to_string(),
                     goal: MetricGoal::Maximize,
@@ -918,6 +1114,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -986,6 +1183,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -1001,6 +1199,7 @@ mod tests {
                     cwd: Some("/tmp".to_string()),
                     env: BTreeMap::new(),
                     source_path: Some("sources/cand-a.bpf.c".to_string()),
+                    lease_timeout_ms: Some(1_000),
                     replace_existing: false,
                 },
             )
@@ -1028,6 +1227,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -1086,6 +1286,141 @@ mod tests {
         assert_eq!(
             loaded.manifest.candidates[0].builds[0].verifier.backend,
             VerifierBackend::BpftoolProgLoadall
+        );
+    }
+
+    #[test]
+    fn score_marks_candidate_incomplete_when_evidence_policy_is_not_met() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "policy-demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy {
+                    min_baseline_runs: 2,
+                    min_candidate_runs: 2,
+                    min_primary_improvement_pct: Some(5.0),
+                    max_primary_relative_spread_pct: Some(10.0),
+                },
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .record_baseline(
+                "policy-demo",
+                RecordedRun {
+                    label: "baseline-a".to_string(),
+                    recorded_at_unix_ms: 1,
+                    scheduler: SchedulerKind::Cfs,
+                    artifact_dir: "artifacts/baseline-a".to_string(),
+                    metrics: MetricMap::from([("latency_ms".to_string(), 10.0)]),
+                    notes: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .set_candidate(
+                "policy-demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "latency_guard".to_string(),
+                    source_path: None,
+                    object_path: None,
+                    build_command: None,
+                    daemon_argv: Vec::new(),
+                    daemon_cwd: None,
+                    daemon_env: BTreeMap::new(),
+                    knobs: BTreeMap::new(),
+                    notes: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .record_candidate(
+                "policy-demo",
+                "cand-a",
+                RecordedRun {
+                    label: "candidate-a".to_string(),
+                    recorded_at_unix_ms: 2,
+                    scheduler: SchedulerKind::SchedExt,
+                    artifact_dir: "artifacts/candidate-a".to_string(),
+                    metrics: MetricMap::from([("latency_ms".to_string(), 8.0)]),
+                    notes: None,
+                },
+            )
+            .unwrap();
+
+        let report = catalog.score("policy-demo").unwrap();
+        assert_eq!(report.entries[0].decision, CandidateDecision::Incomplete);
+        assert!(
+            report.entries[0]
+                .status_reasons
+                .iter()
+                .any(|reason| reason.contains("below required"))
+        );
+    }
+
+    #[test]
+    fn set_evaluation_policy_updates_manifest() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "policy-update".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .set_evaluation_policy(
+                "policy-update",
+                EvaluationPolicy {
+                    min_baseline_runs: 3,
+                    min_candidate_runs: 4,
+                    min_primary_improvement_pct: Some(2.5),
+                    max_primary_relative_spread_pct: Some(9.0),
+                },
+            )
+            .unwrap();
+
+        let loaded = catalog.load("policy-update").unwrap();
+        assert_eq!(loaded.manifest.evaluation_policy.min_baseline_runs, 3);
+        assert_eq!(loaded.manifest.evaluation_policy.min_candidate_runs, 4);
+        assert_eq!(
+            loaded
+                .manifest
+                .evaluation_policy
+                .min_primary_improvement_pct,
+            Some(2.5)
+        );
+        assert_eq!(
+            loaded
+                .manifest
+                .evaluation_policy
+                .max_primary_relative_spread_pct,
+            Some(9.0)
         );
     }
 }

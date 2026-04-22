@@ -9,6 +9,7 @@ pub struct DeployOverrides {
     pub loader_args: Vec<String>,
     pub cwd: Option<String>,
     pub env: BTreeMap<String, String>,
+    pub lease_timeout_ms: Option<u64>,
     pub replace_existing: bool,
 }
 
@@ -19,6 +20,7 @@ pub struct CandidateActivationPlan {
     pub cwd: Option<String>,
     pub env: BTreeMap<String, String>,
     pub source_path: Option<String>,
+    pub lease_timeout_ms: Option<u64>,
     pub replace_existing: bool,
 }
 
@@ -82,6 +84,7 @@ pub fn build_activation_plan(
         cwd,
         env,
         source_path,
+        lease_timeout_ms: overrides.lease_timeout_ms,
         replace_existing: overrides.replace_existing,
     })
 }

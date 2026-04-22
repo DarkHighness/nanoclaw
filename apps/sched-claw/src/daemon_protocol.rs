@@ -17,6 +17,8 @@ pub enum SchedExtDaemonRequest {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         env: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_timeout_ms: Option<u64>,
         #[serde(default)]
         replace_existing: bool,
     },
@@ -68,6 +70,10 @@ pub struct ActiveDeploymentSnapshot {
     pub cwd: String,
     pub pid: u32,
     pub started_at_unix_s: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at_unix_ms: Option<u64>,
     pub log_line_count: usize,
 }
 
@@ -83,6 +89,11 @@ pub struct DeploymentExitSnapshot {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal: Option<i32>,
+    pub exit_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at_unix_ms: Option<u64>,
     pub log_line_count: usize,
 }
 

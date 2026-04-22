@@ -19,8 +19,8 @@ use sched_claw::display::{
 };
 use sched_claw::doctor::collect_doctor_report;
 use sched_claw::experiment::{
-    CandidateRecord, CandidateSpec, CommandStatus, DeploymentRecord, ExperimentCatalog,
-    ExperimentInitSpec, RecordedRun, SchedulerKind,
+    CandidateRecord, CandidateSpec, CommandStatus, DeploymentRecord, EvaluationPolicy,
+    ExperimentCatalog, ExperimentInitSpec, RecordedRun, SchedulerKind,
 };
 use sched_claw::history::SessionHistory;
 use sched_claw::metrics::{
@@ -140,6 +140,7 @@ enum ExperimentCommand {
     List(OutputArgs),
     Init(ExperimentInitArgs),
     Show(ExperimentShowArgs),
+    SetEvaluationPolicy(ExperimentSetEvaluationPolicyArgs),
     AddCandidate(ExperimentAddCandidateArgs),
     SetCandidate(ExperimentAddCandidateArgs),
     Materialize(ExperimentMaterializeArgs),
@@ -203,6 +204,28 @@ struct ExperimentInitArgs {
     performance_notes: Option<String>,
     #[arg(long = "guardrail", value_name = "NAME:GOAL:MAX_REGRESSION_PCT", value_parser = parse_guardrail_arg)]
     guardrails: Vec<sched_claw::metrics::Guardrail>,
+    #[arg(long, value_name = "N", default_value_t = 1usize)]
+    min_baseline_runs: usize,
+    #[arg(long, value_name = "N", default_value_t = 1usize)]
+    min_candidate_runs: usize,
+    #[arg(long, value_name = "PCT")]
+    min_primary_improvement_pct: Option<f64>,
+    #[arg(long, value_name = "PCT")]
+    max_primary_relative_spread_pct: Option<f64>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentSetEvaluationPolicyArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "N")]
+    min_baseline_runs: Option<usize>,
+    #[arg(long, value_name = "N")]
+    min_candidate_runs: Option<usize>,
+    #[arg(long, value_name = "PCT")]
+    min_primary_improvement_pct: Option<f64>,
+    #[arg(long, value_name = "PCT")]
+    max_primary_relative_spread_pct: Option<f64>,
 }
 
 #[derive(Debug, Args)]
@@ -287,6 +310,8 @@ struct ExperimentRunArgs {
     metrics_file: String,
     #[arg(long, value_name = "SECONDS")]
     timeout_seconds: Option<u64>,
+    #[arg(long, value_name = "SECONDS")]
+    lease_seconds: Option<u64>,
     #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
     env: Vec<(String, String)>,
     #[arg(long)]
@@ -347,6 +372,8 @@ struct ExperimentDeployArgs {
     cwd: Option<String>,
     #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
     env: Vec<(String, String)>,
+    #[arg(long, value_name = "SECONDS")]
+    lease_seconds: Option<u64>,
     #[arg(long)]
     replace_existing: bool,
     #[arg(long)]
@@ -449,6 +476,8 @@ struct DaemonActivateArgs {
     cwd: Option<String>,
     #[arg(long)]
     replace_existing: bool,
+    #[arg(long, value_name = "SECONDS")]
+    lease_seconds: Option<u64>,
     #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
     env: Vec<(String, String)>,
     #[arg(
@@ -570,6 +599,12 @@ async fn run_experiment_command(
                 &args.guardrails,
                 args.proxy_metrics,
             )?;
+            let evaluation_policy = EvaluationPolicy {
+                min_baseline_runs: args.min_baseline_runs,
+                min_candidate_runs: args.min_candidate_runs,
+                min_primary_improvement_pct: args.min_primary_improvement_pct,
+                max_primary_relative_spread_pct: args.max_primary_relative_spread_pct,
+            };
             let artifact = catalog.init(ExperimentInitSpec {
                 experiment_id: args.id,
                 workload: WorkloadContract {
@@ -585,6 +620,7 @@ async fn run_experiment_command(
                 },
                 primary_metric,
                 performance_policy,
+                evaluation_policy,
                 guardrails: args.guardrails,
             })?;
             println!("{}", render_experiment_artifact(&artifact));
@@ -595,6 +631,24 @@ async fn run_experiment_command(
                 "{}",
                 render_experiment_detail(&experiment, args.output.style)
             );
+        }
+        ExperimentCommand::SetEvaluationPolicy(args) => {
+            let experiment = catalog.load(&args.experiment_ref)?;
+            let mut policy = experiment.manifest.evaluation_policy;
+            if let Some(value) = args.min_baseline_runs {
+                policy.min_baseline_runs = value;
+            }
+            if let Some(value) = args.min_candidate_runs {
+                policy.min_candidate_runs = value;
+            }
+            if let Some(value) = args.min_primary_improvement_pct {
+                policy.min_primary_improvement_pct = Some(value);
+            }
+            if let Some(value) = args.max_primary_relative_spread_pct {
+                policy.max_primary_relative_spread_pct = Some(value);
+            }
+            let artifact = catalog.set_evaluation_policy(&args.experiment_ref, policy)?;
+            println!("{}", render_experiment_artifact(&artifact));
         }
         ExperimentCommand::AddCandidate(args) => {
             let artifact = catalog.add_candidate(
@@ -797,6 +851,10 @@ async fn run_experiment_command(
                     &candidate.spec,
                     &DeployOverrides {
                         label: Some(format!("{}:{}", experiment.manifest.experiment_id, label)),
+                        lease_timeout_ms: effective_run_lease_timeout_ms(
+                            args.timeout_seconds,
+                            args.lease_seconds,
+                        ),
                         replace_existing: args.replace_existing,
                         ..DeployOverrides::default()
                     },
@@ -810,6 +868,7 @@ async fn run_experiment_command(
                         argv: plan.argv.clone(),
                         cwd: plan.cwd.clone(),
                         env: plan.env.clone(),
+                        lease_timeout_ms: plan.lease_timeout_ms,
                         replace_existing: plan.replace_existing,
                     })
                     .await?;
@@ -953,6 +1012,7 @@ async fn run_experiment_command(
                     loader_args: args.loader_args,
                     cwd: args.cwd,
                     env: args.env.into_iter().collect(),
+                    lease_timeout_ms: lease_seconds_to_ms(args.lease_seconds),
                     replace_existing: args.replace_existing,
                 },
             )?;
@@ -965,6 +1025,7 @@ async fn run_experiment_command(
                     argv: plan.argv.clone(),
                     cwd: plan.cwd.clone(),
                     env: plan.env.clone(),
+                    lease_timeout_ms: plan.lease_timeout_ms,
                     replace_existing: plan.replace_existing,
                 })
                 .await?;
@@ -989,6 +1050,7 @@ async fn run_experiment_command(
                             cwd: Some(active.cwd.clone()),
                             env: plan.env,
                             source_path: plan.source_path,
+                            lease_timeout_ms: plan.lease_timeout_ms,
                             replace_existing: plan.replace_existing,
                         },
                     )?;
@@ -1160,6 +1222,7 @@ async fn run_daemon_command(
                 argv: args.argv,
                 cwd: args.cwd,
                 env: args.env.into_iter().collect::<BTreeMap<_, _>>(),
+                lease_timeout_ms: lease_seconds_to_ms(args.lease_seconds),
                 replace_existing: args.replace_existing,
             },
             args.output.style,
@@ -1191,6 +1254,17 @@ fn join_prompt(parts: Vec<String>) -> Result<String> {
         anyhow::bail!("prompt cannot be empty");
     }
     Ok(prompt)
+}
+
+fn lease_seconds_to_ms(seconds: Option<u64>) -> Option<u64> {
+    seconds.map(|value| value.max(1).saturating_mul(1_000))
+}
+
+fn effective_run_lease_timeout_ms(
+    timeout_seconds: Option<u64>,
+    lease_seconds: Option<u64>,
+) -> Option<u64> {
+    lease_seconds_to_ms(lease_seconds).or_else(|| lease_seconds_to_ms(timeout_seconds))
 }
 
 fn ensure_candidate_ready_for_rollout(
@@ -1340,8 +1414,9 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Command, ExperimentCommand, ExperimentInitArgs, OutputStyle, RunFailureMode,
-        build_workload_target, ensure_candidate_ready_for_rollout, resolve_performance_policy,
+        Cli, Command, DaemonCommand, ExperimentCommand, ExperimentInitArgs, OutputStyle,
+        RunFailureMode, build_workload_target, ensure_candidate_ready_for_rollout,
+        resolve_performance_policy,
     };
     use clap::Parser;
     use sched_claw::experiment::{
@@ -1475,6 +1550,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_set_evaluation_policy_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "set-evaluation-policy",
+            "demo",
+            "--min-baseline-runs",
+            "3",
+            "--min-candidate-runs",
+            "4",
+            "--min-primary-improvement-pct",
+            "2.5",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::SetEvaluationPolicy(args) => {
+                    assert_eq!(args.min_baseline_runs, Some(3));
+                    assert_eq!(args.min_candidate_runs, Some(4));
+                    assert_eq!(args.min_primary_improvement_pct, Some(2.5));
+                }
+                other => panic!("expected set-evaluation-policy command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_experiment_run_command() {
         let cli = Cli::try_parse_from([
             "sched-claw",
@@ -1484,6 +1588,8 @@ mod tests {
             "--candidate-id",
             "cand-a",
             "--allow-unverified-build",
+            "--lease-seconds",
+            "30",
             "--on-failure",
             "strict",
         ])
@@ -1494,6 +1600,7 @@ mod tests {
                 ExperimentCommand::Run(args) => {
                     assert_eq!(args.candidate_id.as_deref(), Some("cand-a"));
                     assert!(args.allow_unverified_build);
+                    assert_eq!(args.lease_seconds, Some(30));
                     assert_eq!(args.on_failure, RunFailureMode::Strict);
                 }
                 other => panic!("expected run command, got {other:?}"),
@@ -1509,6 +1616,29 @@ mod tests {
         match cli.command {
             Some(Command::Template(_)) => {}
             other => panic!("expected template command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_daemon_activate_lease() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "daemon",
+            "activate",
+            "--lease-seconds",
+            "30",
+            "/tmp/loader",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Daemon(args)) => match args.command {
+                DaemonCommand::Activate(args) => {
+                    assert_eq!(args.lease_seconds, Some(30));
+                }
+                other => panic!("expected activate command, got {other:?}"),
+            },
+            other => panic!("expected daemon command, got {other:?}"),
         }
     }
 
@@ -1573,6 +1703,10 @@ mod tests {
             proxy_metrics: Vec::new(),
             performance_notes: None,
             guardrails: Vec::new(),
+            min_baseline_runs: 1,
+            min_candidate_runs: 1,
+            min_primary_improvement_pct: None,
+            max_primary_relative_spread_pct: None,
         };
         assert!(build_workload_target(&args).is_err());
     }

@@ -299,11 +299,7 @@ pub fn median_metric<'a>(
     metric_name: &str,
     metrics: impl IntoIterator<Item = &'a MetricMap>,
 ) -> Option<f64> {
-    let mut values = metrics
-        .into_iter()
-        .filter_map(|run| run.get(metric_name).copied())
-        .filter(|value| value.is_finite())
-        .collect::<Vec<_>>();
+    let mut values = collect_metric_values(metric_name, metrics);
     if values.is_empty() {
         return None;
     }
@@ -313,6 +309,47 @@ pub fn median_metric<'a>(
         Some(values[mid])
     } else {
         Some((values[mid - 1] + values[mid]) / 2.0)
+    }
+}
+
+pub fn relative_spread_pct<'a>(
+    metric_name: &str,
+    metrics: impl IntoIterator<Item = &'a MetricMap>,
+) -> Option<f64> {
+    let mut values = collect_metric_values(metric_name, metrics);
+    if values.is_empty() {
+        return None;
+    }
+    if values.len() == 1 {
+        return Some(0.0);
+    }
+    values.sort_by(|left, right| left.total_cmp(right));
+    let min = values.first().copied().unwrap_or_default();
+    let max = values.last().copied().unwrap_or_default();
+    let median = median_from_sorted(&values);
+    if median == 0.0 {
+        return if min == max { Some(0.0) } else { None };
+    }
+    Some(((max - min).abs() / median.abs()) * 100.0)
+}
+
+fn collect_metric_values<'a>(
+    metric_name: &str,
+    metrics: impl IntoIterator<Item = &'a MetricMap>,
+) -> Vec<f64> {
+    metrics
+        .into_iter()
+        .filter_map(|run| run.get(metric_name).copied())
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>()
+}
+
+fn median_from_sorted(values: &[f64]) -> f64 {
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        values[mid]
+    } else {
+        (values[mid - 1] + values[mid]) / 2.0
     }
 }
 
@@ -385,6 +422,7 @@ mod tests {
     use super::{
         MeasurementBasis, MetricGoal, PerformancePreference, infer_performance_policy,
         median_metric, parse_guardrail, parse_metric_assignment, parse_metric_target,
+        relative_spread_pct,
     };
     use std::collections::BTreeMap;
 
@@ -425,6 +463,16 @@ mod tests {
             BTreeMap::from([(String::from("latency_ms"), 10.0)]),
         ];
         assert_eq!(median_metric("latency_ms", runs.iter()), Some(10.0));
+    }
+
+    #[test]
+    fn relative_spread_pct_uses_range_over_median() {
+        let runs = vec![
+            BTreeMap::from([(String::from("latency_ms"), 8.0)]),
+            BTreeMap::from([(String::from("latency_ms"), 10.0)]),
+            BTreeMap::from([(String::from("latency_ms"), 12.0)]),
+        ];
+        assert_eq!(relative_spread_pct("latency_ms", runs.iter()), Some(40.0));
     }
 
     #[test]
