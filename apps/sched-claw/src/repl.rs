@@ -6,16 +6,18 @@ use crate::app_config::CliOverrides;
 use crate::bootstrap::BuiltRuntime;
 use crate::daemon_protocol::SchedExtDaemonRequest;
 use crate::display::{
-    OutputStyle, render_daemon_response, render_session_detail, render_session_list,
+    OutputStyle, render_daemon_response, render_experiment_detail, render_experiment_list,
+    render_experiment_score, render_session_detail, render_session_list,
     render_session_search_results, render_skill_detail, render_skill_list, render_tool_detail,
     render_tool_list,
 };
+use crate::experiment::ExperimentCatalog;
 use crate::history::SessionHistory;
 
 pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) -> Result<()> {
     println!("sched-claw repl");
     println!(
-        "Commands: :help, :format <table|plain>, :tools, :tool <name>, :skills, :skill <name>, :sessions [query], :session <id>, :resume <id>, :daemon status, :daemon logs [N], :quit"
+        "Commands: :help, :format <table|plain>, :experiments, :experiment <id>, :score <id>, :tools, :tool <name>, :skills, :skill <name>, :sessions [query], :session <id>, :resume <id>, :daemon status, :daemon logs [N], :quit"
     );
     let stdin = io::stdin();
     let mut line = String::new();
@@ -32,6 +34,9 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
             ReplCommand::Help => {
                 println!("Type a normal prompt to run a turn.");
                 println!(":format <table|plain>  switch local inspection output style");
+                println!(":experiments           list experiment manifests");
+                println!(":experiment <id>       inspect one experiment manifest");
+                println!(":score <id>            score one experiment manifest");
                 println!(":tools                 show the startup tool surface");
                 println!(":tool <name>           inspect one tool from the startup catalog");
                 println!(":skills                show available skills");
@@ -46,6 +51,21 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
             ReplCommand::SetFormat(style) => {
                 output_style = style;
                 println!("output format: {}", output_style.as_str());
+            }
+            ReplCommand::Experiments => {
+                let catalog = open_experiments(host)?;
+                let summaries = catalog.list()?;
+                println!("{}", render_experiment_list(&summaries, output_style));
+            }
+            ReplCommand::ExperimentShow(experiment_ref) => {
+                let catalog = open_experiments(host)?;
+                let experiment = catalog.load(&experiment_ref)?;
+                println!("{}", render_experiment_detail(&experiment, output_style));
+            }
+            ReplCommand::ExperimentScore(experiment_ref) => {
+                let catalog = open_experiments(host)?;
+                let report = catalog.score(&experiment_ref)?;
+                println!("{}", render_experiment_score(&report, output_style));
             }
             ReplCommand::Tools => {
                 println!(
@@ -133,11 +153,18 @@ async fn open_history(host: &BuiltRuntime) -> Result<SessionHistory> {
     SessionHistory::open(&host.workspace_root, &CliOverrides::default()).await
 }
 
+fn open_experiments(host: &BuiltRuntime) -> Result<ExperimentCatalog> {
+    ExperimentCatalog::open(&host.workspace_root)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ReplCommand {
     Help,
     Quit,
     SetFormat(OutputStyle),
+    Experiments,
+    ExperimentShow(String),
+    ExperimentScore(String),
     Tools,
     ToolShow(String),
     Skills,
@@ -164,6 +191,7 @@ fn parse_repl_command(input: &str) -> Result<ReplCommand> {
     match command {
         ":quit" | ":exit" => Ok(ReplCommand::Quit),
         ":help" => Ok(ReplCommand::Help),
+        ":experiments" => Ok(ReplCommand::Experiments),
         ":tools" => Ok(ReplCommand::Tools),
         ":skills" => Ok(ReplCommand::Skills),
         ":sessions" => Ok(ReplCommand::Sessions {
@@ -198,6 +226,18 @@ fn parse_repl_command(input: &str) -> Result<ReplCommand> {
                 "plain" => Ok(ReplCommand::SetFormat(OutputStyle::Plain)),
                 other => bail!("unsupported format `{other}`; expected `table` or `plain`"),
             }
+        }
+        ":experiment" => {
+            let experiment_ref = parts
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("usage: :experiment <id|last|path>"))?;
+            Ok(ReplCommand::ExperimentShow(experiment_ref.to_string()))
+        }
+        ":score" => {
+            let experiment_ref = parts
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("usage: :score <id|last|path>"))?;
+            Ok(ReplCommand::ExperimentScore(experiment_ref.to_string()))
         }
         ":session" => {
             let session_ref = parts
@@ -314,6 +354,14 @@ mod tests {
             ReplCommand::Sessions {
                 query: Some("wakeup latency".to_string())
             }
+        );
+    }
+
+    #[test]
+    fn parses_experiment_score_command() {
+        assert_eq!(
+            parse_repl_command(":score last").unwrap(),
+            ReplCommand::ExperimentScore("last".to_string())
         );
     }
 

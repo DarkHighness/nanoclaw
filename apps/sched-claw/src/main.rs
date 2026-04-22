@@ -5,12 +5,18 @@ use sched_claw::bootstrap::load_bootstrap;
 use sched_claw::daemon_client::SchedExtDaemonClient;
 use sched_claw::daemon_protocol::{SchedExtDaemonRequest, SchedExtDaemonResponse};
 use sched_claw::display::{
-    OutputStyle, render_daemon_response, render_session_detail, render_session_export_artifact,
-    render_session_list, render_session_search_results, render_skill_detail, render_skill_list,
-    render_tool_detail, render_tool_list,
+    OutputStyle, render_daemon_response, render_experiment_artifact, render_experiment_detail,
+    render_experiment_list, render_experiment_score, render_session_detail,
+    render_session_export_artifact, render_session_list, render_session_search_results,
+    render_skill_detail, render_skill_list, render_tool_detail, render_tool_list,
+};
+use sched_claw::experiment::{
+    CandidateSpec, ExperimentCatalog, ExperimentInitSpec, RecordedRun, SchedulerKind,
 };
 use sched_claw::history::SessionHistory;
+use sched_claw::metrics::{MetricGoal, MetricTarget, parse_guardrail, parse_metric_assignment};
 use sched_claw::repl::{run_exec, run_repl};
+use sched_claw::workload::WorkloadContract;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -46,6 +52,7 @@ enum Command {
     Resume(ResumeArgs),
     ExportTranscript(ExportArgs),
     ExportEvents(ExportArgs),
+    Experiment(ExperimentArgs),
     Tool(ToolArgs),
     Skill(SkillArgs),
     Daemon(DaemonArgs),
@@ -103,6 +110,111 @@ struct ExportArgs {
     session_ref: String,
     #[arg(value_name = "PATH")]
     path: String,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentArgs {
+    #[command(subcommand)]
+    command: ExperimentCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ExperimentCommand {
+    List(OutputArgs),
+    Init(ExperimentInitArgs),
+    Show(ExperimentShowArgs),
+    AddCandidate(ExperimentAddCandidateArgs),
+    RecordBaseline(ExperimentRecordBaselineArgs),
+    RecordCandidate(ExperimentRecordCandidateArgs),
+    Score(ExperimentShowArgs),
+}
+
+#[derive(Debug, Args)]
+struct ExperimentShowArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentInitArgs {
+    #[arg(long, value_name = "ID")]
+    id: String,
+    #[arg(long, value_name = "NAME")]
+    workload_name: String,
+    #[arg(long, value_name = "TEXT")]
+    workload_description: Option<String>,
+    #[arg(long, value_name = "PATH")]
+    workload_cwd: Option<String>,
+    #[arg(long = "workload-arg", value_name = "ARG", allow_hyphen_values = true)]
+    workload_args: Vec<String>,
+    #[arg(long = "workload-env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    workload_env: Vec<(String, String)>,
+    #[arg(long, value_name = "TEXT")]
+    workload_scope: Option<String>,
+    #[arg(long, value_name = "TEXT")]
+    workload_phase: Option<String>,
+    #[arg(long, value_name = "TEXT")]
+    success_criteria: Option<String>,
+    #[arg(long, value_name = "NAME")]
+    primary_metric: String,
+    #[arg(long, value_name = "GOAL", value_parser = parse_metric_goal_arg)]
+    primary_goal: MetricGoal,
+    #[arg(long, value_name = "UNIT")]
+    primary_unit: Option<String>,
+    #[arg(long = "guardrail", value_name = "NAME:GOAL:MAX_REGRESSION_PCT", value_parser = parse_guardrail_arg)]
+    guardrails: Vec<sched_claw::metrics::Guardrail>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentAddCandidateArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "NAME")]
+    template: String,
+    #[arg(long, value_name = "PATH")]
+    source_path: Option<String>,
+    #[arg(long, value_name = "TEXT")]
+    build_command: Option<String>,
+    #[arg(long = "daemon-arg", value_name = "ARG", allow_hyphen_values = true)]
+    daemon_args: Vec<String>,
+    #[arg(long = "knob", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    knobs: Vec<(String, String)>,
+    #[arg(long, value_name = "TEXT")]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentRecordBaselineArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "LABEL")]
+    label: String,
+    #[arg(long, value_name = "PATH")]
+    artifact_dir: String,
+    #[arg(long = "metric", value_name = "NAME=VALUE", value_parser = parse_metric_assignment_arg)]
+    metrics: Vec<(String, f64)>,
+    #[arg(long, value_name = "TEXT")]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentRecordCandidateArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "LABEL")]
+    label: String,
+    #[arg(long, value_name = "PATH")]
+    artifact_dir: String,
+    #[arg(long = "metric", value_name = "NAME=VALUE", value_parser = parse_metric_assignment_arg)]
+    metrics: Vec<(String, f64)>,
+    #[arg(long, value_name = "TEXT")]
+    notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -229,6 +341,7 @@ async fn main() -> Result<()> {
         Some(Command::ExportEvents(args)) => {
             run_export_events_command(&workspace_root, &overrides, args).await?
         }
+        Some(Command::Experiment(args)) => run_experiment_command(&workspace_root, args).await?,
         Some(Command::Tool(args)) => run_tool_command(&workspace_root, &overrides, args).await?,
         Some(Command::Skill(args)) => run_skill_command(&workspace_root, &overrides, args).await?,
         Some(Command::Daemon(args)) => {
@@ -257,6 +370,95 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn run_experiment_command(workspace_root: &Path, args: ExperimentArgs) -> Result<()> {
+    let catalog = ExperimentCatalog::open(workspace_root)?;
+    match args.command {
+        ExperimentCommand::List(output) => {
+            let summaries = catalog.list()?;
+            println!("{}", render_experiment_list(&summaries, output.style));
+        }
+        ExperimentCommand::Init(args) => {
+            let artifact = catalog.init(ExperimentInitSpec {
+                experiment_id: args.id,
+                workload: WorkloadContract {
+                    name: args.workload_name,
+                    description: args.workload_description,
+                    cwd: args.workload_cwd,
+                    argv: args.workload_args,
+                    env: args.workload_env.into_iter().collect(),
+                    scope: args.workload_scope,
+                    phase: args.workload_phase,
+                    success_criteria: args.success_criteria,
+                },
+                primary_metric: MetricTarget {
+                    name: args.primary_metric,
+                    goal: args.primary_goal,
+                    unit: args.primary_unit,
+                    notes: None,
+                },
+                guardrails: args.guardrails,
+            })?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::Show(args) => {
+            let experiment = catalog.load(&args.experiment_ref)?;
+            println!(
+                "{}",
+                render_experiment_detail(&experiment, args.output.style)
+            );
+        }
+        ExperimentCommand::AddCandidate(args) => {
+            let artifact = catalog.add_candidate(
+                &args.experiment_ref,
+                CandidateSpec {
+                    candidate_id: args.candidate_id,
+                    template: args.template,
+                    source_path: args.source_path,
+                    build_command: args.build_command,
+                    daemon_argv: args.daemon_args,
+                    knobs: args.knobs.into_iter().collect(),
+                    notes: args.notes,
+                },
+            )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::RecordBaseline(args) => {
+            let artifact = catalog.record_baseline(
+                &args.experiment_ref,
+                RecordedRun {
+                    label: args.label,
+                    recorded_at_unix_ms: sched_claw::experiment::now_unix_ms(),
+                    scheduler: SchedulerKind::Cfs,
+                    artifact_dir: args.artifact_dir,
+                    metrics: args.metrics.into_iter().collect(),
+                    notes: args.notes,
+                },
+            )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::RecordCandidate(args) => {
+            let artifact = catalog.record_candidate(
+                &args.experiment_ref,
+                &args.candidate_id,
+                RecordedRun {
+                    label: args.label,
+                    recorded_at_unix_ms: sched_claw::experiment::now_unix_ms(),
+                    scheduler: SchedulerKind::SchedExt,
+                    artifact_dir: args.artifact_dir,
+                    metrics: args.metrics.into_iter().collect(),
+                    notes: args.notes,
+                },
+            )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::Score(args) => {
+            let report = catalog.score(&args.experiment_ref)?;
+            println!("{}", render_experiment_score(&report, args.output.style));
+        }
+    }
     Ok(())
 }
 
@@ -437,6 +639,18 @@ fn parse_key_value_arg(value: &str) -> Result<(String, String)> {
     Ok((key.to_string(), value.to_string()))
 }
 
+fn parse_metric_goal_arg(value: &str) -> Result<MetricGoal> {
+    value.parse::<MetricGoal>()
+}
+
+fn parse_guardrail_arg(value: &str) -> Result<sched_claw::metrics::Guardrail> {
+    parse_guardrail(value)
+}
+
+fn parse_metric_assignment_arg(value: &str) -> Result<(String, f64)> {
+    parse_metric_assignment(value)
+}
+
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -463,6 +677,51 @@ mod tests {
                 assert_eq!(args.output.style, OutputStyle::Plain);
             }
             other => panic!("expected sessions command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_experiment_init_arguments() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "init",
+            "--id",
+            "demo",
+            "--workload-name",
+            "bench",
+            "--primary-metric",
+            "latency_ms",
+            "--primary-goal",
+            "minimize",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(_)) => {}
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_candidate_daemon_arg_that_starts_with_dash() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "add-candidate",
+            "demo",
+            "--candidate-id",
+            "cand-a",
+            "--template",
+            "locality",
+            "--daemon-arg",
+            "--sched-ext",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(_)) => {}
+            other => panic!("expected experiment command, got {other:?}"),
         }
     }
 }

@@ -25,9 +25,13 @@ pub fn build_system_preamble(
             .to_string(),
         "Before collecting or interpreting Linux performance data, inspect the skill index below and load the relevant skill with skill_view. Err on the side of loading."
             .to_string(),
+        "When a task is workload-driven, initialize or inspect a sched-claw experiment manifest first so workload contract, baseline runs, candidates, and scores stay structured instead of living only in transcript text."
+            .to_string(),
         "Use sched_ext_daemon only for status, activate, stop, and logs. Do not use it as a generic privileged execution escape hatch."
             .to_string(),
         "When you generate a new sched-ext scheduler, keep the rollout loop explicit: baseline evidence, code change, privileged activation, verification, and rollback criteria."
+            .to_string(),
+        "Prefer the local experiment substrate for sched-ext tuning loops: experiment init, add-candidate, record-baseline, record-candidate, and score."
             .to_string(),
     ];
     if let Some(system_prompt) = profile

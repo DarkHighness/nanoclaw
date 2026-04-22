@@ -31,6 +31,7 @@ tags:
    - Which source files or scheduler examples you are borrowing from
    - What state lives in BPF maps, DSQs, or per-task/per-cpu storage
    - What invariant should hold after each scheduling decision
+   - Add or update a candidate entry with `sched-claw experiment add-candidate ...` so the policy template, build command, daemon argv, and knobs are durable
 4. Keep the implementation loop explicit.
    - Edit code with normal file tools.
    - Build with normal shell tools.
@@ -48,6 +49,7 @@ tags:
 7. Compare against CFS using the same evidence set.
    - If the new scheduler regresses the primary goal or introduces a new bottleneck, stop it and return to the last stable point.
    - Separate "policy failed" from "measurement insufficient" so the next iteration is scoped correctly.
+   - Prefer `sched-claw experiment record-candidate ...` and `sched-claw experiment score ...` so promotion or rollback decisions are based on the same typed metric surface each round
 
 ## Output Checklist
 - policy summary with explicit mapping from evidence to scheduler behavior
@@ -56,6 +58,7 @@ tags:
 - startup log excerpt and stop status
 - before/after comparison against the CFS baseline
 - next action: keep, revise, or rollback
+- if available, the current experiment score output and whether the candidate is `promote`, `revise`, `blocked`, or `incomplete`
 
 ## Rules
 - Do not use the daemon as a generic privileged shell.
@@ -63,6 +66,7 @@ tags:
 - State whether each conclusion is a fact, inference, or hypothesis.
 - Prefer a single active scheduler experiment at a time so comparisons stay attributable.
 - If the sched-ext ABI or helper surface looks version-sensitive, say so and tie the conclusion to the tested kernel version.
+- Do not compare free-form notes alone when the same run can be recorded in the experiment manifest.
 
 ## Reference Material
 - `references/official-docs.md`

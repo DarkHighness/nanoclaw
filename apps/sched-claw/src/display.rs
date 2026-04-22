@@ -2,6 +2,9 @@ use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot,
     SchedExtDaemonResponse,
 };
+use crate::experiment::{
+    ExperimentArtifact, ExperimentScoreReport, ExperimentSummary, GuardrailStatus, LoadedExperiment,
+};
 use crate::history::{LoadedSessionDetail, SessionExportArtifact, SessionExportKind, preview_id};
 use clap::ValueEnum;
 use std::fmt::Write as _;
@@ -496,6 +499,307 @@ pub fn render_session_export_artifact(artifact: &SessionExportArtifact) -> Strin
     )
 }
 
+pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyle) -> String {
+    match style {
+        OutputStyle::Table => render_grid(
+            Some(format!("Experiments · {}", summaries.len())),
+            &[
+                "#",
+                "Experiment",
+                "Workload",
+                "Primary Metric",
+                "Baselines",
+                "Candidates",
+                "Updated (ms)",
+            ],
+            &summaries
+                .iter()
+                .enumerate()
+                .map(|(index, summary)| {
+                    vec![
+                        (index + 1).to_string(),
+                        summary.experiment_id.clone(),
+                        summary.workload_name.clone(),
+                        summary.primary_metric_name.clone(),
+                        summary.baseline_run_count.to_string(),
+                        summary.candidate_count.to_string(),
+                        summary.updated_at_unix_ms.to_string(),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        OutputStyle::Plain => {
+            let mut out = String::new();
+            let _ = writeln!(&mut out, "Experiments ({})", summaries.len());
+            for summary in summaries {
+                let _ = writeln!(
+                    &mut out,
+                    "- {} workload={} primary_metric={} baselines={} candidates={}",
+                    summary.experiment_id,
+                    summary.workload_name,
+                    summary.primary_metric_name,
+                    summary.baseline_run_count,
+                    summary.candidate_count
+                );
+            }
+            out.trim_end().to_string()
+        }
+    }
+}
+
+pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyle) -> String {
+    let manifest = &experiment.manifest;
+    let sections = vec![
+        (
+            "Overview",
+            vec![
+                ("Experiment".to_string(), manifest.experiment_id.clone()),
+                (
+                    "Manifest Path".to_string(),
+                    experiment.manifest_path.display().to_string(),
+                ),
+                ("Version".to_string(), manifest.version.to_string()),
+                (
+                    "Updated (ms)".to_string(),
+                    manifest.updated_at_unix_ms.to_string(),
+                ),
+            ],
+        ),
+        (
+            "Workload",
+            vec![
+                ("Name".to_string(), manifest.workload.name.clone()),
+                (
+                    "Description".to_string(),
+                    manifest
+                        .workload
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "Cwd".to_string(),
+                    manifest
+                        .workload
+                        .cwd
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "Argv".to_string(),
+                    join_or_none(manifest.workload.argv.clone()),
+                ),
+                (
+                    "Scope".to_string(),
+                    manifest
+                        .workload
+                        .scope
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "Phase".to_string(),
+                    manifest
+                        .workload
+                        .phase
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+            ],
+        ),
+        (
+            "Metrics",
+            vec![
+                (
+                    "Primary Metric".to_string(),
+                    format!(
+                        "{} ({})",
+                        manifest.primary_metric.name,
+                        manifest.primary_metric.goal.as_str()
+                    ),
+                ),
+                (
+                    "Primary Unit".to_string(),
+                    manifest
+                        .primary_metric
+                        .unit
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "Guardrails".to_string(),
+                    if manifest.guardrails.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        manifest
+                            .guardrails
+                            .iter()
+                            .map(|guardrail| {
+                                format!(
+                                    "{}:{}:{}%",
+                                    guardrail.name,
+                                    guardrail.goal.as_str(),
+                                    format_float(guardrail.max_regression_pct)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    },
+                ),
+            ],
+        ),
+        (
+            "Runs",
+            vec![
+                (
+                    "Baseline Runs".to_string(),
+                    manifest.baseline_runs.len().to_string(),
+                ),
+                (
+                    "Candidates".to_string(),
+                    manifest.candidates.len().to_string(),
+                ),
+                (
+                    "Host Kernel".to_string(),
+                    manifest
+                        .host
+                        .kernel_release
+                        .clone()
+                        .unwrap_or_else(|| "<unknown>".to_string()),
+                ),
+                (
+                    "CPU Model".to_string(),
+                    manifest
+                        .host
+                        .cpu_model
+                        .clone()
+                        .unwrap_or_else(|| "<unknown>".to_string()),
+                ),
+            ],
+        ),
+    ];
+
+    let appendix = format!(
+        "Baseline Labels\n{}\n{}\n\nCandidates\n{}\n{}",
+        "-".repeat("Baseline Labels".len()),
+        list_run_labels(&manifest.baseline_runs),
+        "-".repeat("Candidates".len()),
+        list_candidate_summaries(manifest)
+    );
+    render_sections(
+        &format!("Experiment · {}", manifest.experiment_id),
+        &sections,
+        style,
+        Some(appendix),
+    )
+}
+
+pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyle) -> String {
+    match style {
+        OutputStyle::Table => {
+            let mut out = render_grid(
+                Some(format!("Experiment Score · {}", report.experiment_id)),
+                &[
+                    "Candidate",
+                    "Template",
+                    "Runs",
+                    "Primary Value",
+                    "Improvement %",
+                    "Decision",
+                    "Guardrails",
+                ],
+                &report
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        vec![
+                            entry.candidate_id.clone(),
+                            entry.template.clone(),
+                            entry.run_count.to_string(),
+                            entry
+                                .primary_candidate_value
+                                .map(format_float)
+                                .unwrap_or_else(|| "<missing>".to_string()),
+                            entry
+                                .primary_improvement_pct
+                                .map(format_pct)
+                                .unwrap_or_else(|| "<missing>".to_string()),
+                            entry.decision.as_str().to_string(),
+                            render_guardrail_statuses(entry),
+                        ]
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let _ = write!(
+                &mut out,
+                "\nprimary metric: {} ({})\nbaseline runs: {}\nbaseline value: {}",
+                report.primary_metric.name,
+                report.primary_metric.goal.as_str(),
+                report.baseline_run_count,
+                report
+                    .baseline_primary_value
+                    .map(format_float)
+                    .unwrap_or_else(|| "<missing>".to_string())
+            );
+            out
+        }
+        OutputStyle::Plain => {
+            let mut out = String::new();
+            let _ = writeln!(&mut out, "Experiment Score · {}", report.experiment_id);
+            let _ = writeln!(
+                &mut out,
+                "primary_metric: {} ({})",
+                report.primary_metric.name,
+                report.primary_metric.goal.as_str()
+            );
+            let _ = writeln!(&mut out, "baseline_runs: {}", report.baseline_run_count);
+            let _ = writeln!(
+                &mut out,
+                "baseline_value: {}",
+                report
+                    .baseline_primary_value
+                    .map(format_float)
+                    .unwrap_or_else(|| "<missing>".to_string())
+            );
+            for entry in &report.entries {
+                let _ = writeln!(
+                    &mut out,
+                    "- {} template={} runs={} value={} improvement={} decision={}",
+                    entry.candidate_id,
+                    entry.template,
+                    entry.run_count,
+                    entry
+                        .primary_candidate_value
+                        .map(format_float)
+                        .unwrap_or_else(|| "<missing>".to_string()),
+                    entry
+                        .primary_improvement_pct
+                        .map(format_pct)
+                        .unwrap_or_else(|| "<missing>".to_string()),
+                    entry.decision.as_str()
+                );
+                if !entry.breached_guardrails.is_empty() {
+                    let _ = writeln!(
+                        &mut out,
+                        "  guardrails: {}",
+                        render_guardrail_statuses(entry)
+                    );
+                }
+            }
+            out.trim_end().to_string()
+        }
+    }
+}
+
+pub fn render_experiment_artifact(artifact: &ExperimentArtifact) -> String {
+    format!(
+        "{} experiment {} at {}",
+        artifact.action,
+        artifact.experiment_id,
+        artifact.manifest_path.display()
+    )
+}
+
 pub fn render_daemon_status(snapshot: &DaemonStatusSnapshot, style: OutputStyle) -> String {
     let mut sections = vec![(
         "Overview",
@@ -822,6 +1126,87 @@ fn bool_label(value: bool) -> String {
     if value { "yes" } else { "no" }.to_string()
 }
 
+fn format_float(value: f64) -> String {
+    format!("{value:.3}")
+}
+
+fn format_pct(value: f64) -> String {
+    format!("{value:.2}%")
+}
+
+fn list_run_labels(runs: &[crate::experiment::RecordedRun]) -> String {
+    if runs.is_empty() {
+        "<none>".to_string()
+    } else {
+        runs.iter()
+            .map(|run| {
+                format!(
+                    "{} [{}] {}",
+                    run.label,
+                    run.scheduler.as_str(),
+                    run.artifact_dir
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn list_candidate_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
+    if manifest.candidates.is_empty() {
+        "<none>".to_string()
+    } else {
+        manifest
+            .candidates
+            .iter()
+            .map(|candidate| {
+                format!(
+                    "{} [{}] runs={} knobs={}",
+                    candidate.spec.candidate_id,
+                    candidate.spec.template,
+                    candidate.runs.len(),
+                    if candidate.spec.knobs.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        candidate
+                            .spec
+                            .knobs
+                            .iter()
+                            .map(|(key, value)| format!("{key}={value}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn render_guardrail_statuses(entry: &crate::experiment::CandidateScore) -> String {
+    let rendered = entry
+        .breached_guardrails
+        .iter()
+        .map(|guardrail| {
+            let status = match guardrail.status {
+                GuardrailStatus::Pass => "pass",
+                GuardrailStatus::Breach => "breach",
+                GuardrailStatus::Missing => "missing",
+            };
+            let delta = guardrail
+                .improvement_pct
+                .map(format_pct)
+                .unwrap_or_else(|| "<missing>".to_string());
+            format!("{}:{} ({delta})", guardrail.name, status)
+        })
+        .collect::<Vec<_>>();
+    if rendered.is_empty() {
+        "<none>".to_string()
+    } else {
+        rendered.join(", ")
+    }
+}
+
 fn tool_kind_label(kind: &ToolKind) -> &'static str {
     match kind {
         ToolKind::Function => "function",
@@ -859,11 +1244,17 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputStyle, render_daemon_status, render_session_export_artifact, render_session_list,
+        OutputStyle, render_daemon_status, render_experiment_artifact, render_experiment_list,
+        render_experiment_score, render_session_export_artifact, render_session_list,
         render_skill_list, render_tool_list,
     };
     use crate::daemon_protocol::DaemonStatusSnapshot;
+    use crate::experiment::{
+        CandidateDecision, CandidateScore, ExperimentArtifact, ExperimentScoreReport,
+        ExperimentSummary,
+    };
     use crate::history::{SessionExportArtifact, SessionExportKind};
+    use crate::metrics::{MetricGoal, MetricTarget};
     use agent::{
         SessionId, Skill, SkillProvenance, SkillRoot, SkillRootKind, ToolOrigin, ToolOutputMode,
         ToolSource, ToolSpec,
@@ -965,5 +1356,64 @@ mod tests {
         });
         assert!(rendered.contains("Exported transcript"));
         assert!(rendered.contains("/tmp/transcript.txt"));
+    }
+
+    #[test]
+    fn renders_experiment_list_plain_view() {
+        let rendered = render_experiment_list(
+            &[ExperimentSummary {
+                experiment_id: "demo".to_string(),
+                manifest_path: PathBuf::from("/tmp/demo/experiment.toml"),
+                updated_at_unix_ms: 42,
+                workload_name: "bench".to_string(),
+                primary_metric_name: "latency_ms".to_string(),
+                baseline_run_count: 1,
+                candidate_count: 2,
+            }],
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Experiments (1)"));
+        assert!(rendered.contains("latency_ms"));
+    }
+
+    #[test]
+    fn renders_experiment_score_table() {
+        let rendered = render_experiment_score(
+            &ExperimentScoreReport {
+                experiment_id: "demo".to_string(),
+                manifest_path: PathBuf::from("/tmp/demo/experiment.toml"),
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                baseline_run_count: 2,
+                baseline_primary_value: Some(10.0),
+                entries: vec![CandidateScore {
+                    candidate_id: "cand-a".to_string(),
+                    template: "locality".to_string(),
+                    run_count: 1,
+                    primary_candidate_value: Some(8.0),
+                    primary_improvement_pct: Some(20.0),
+                    decision: CandidateDecision::Promote,
+                    breached_guardrails: Vec::new(),
+                }],
+            },
+            OutputStyle::Table,
+        );
+        assert!(rendered.contains("Experiment Score · demo"));
+        assert!(rendered.contains("cand-a"));
+        assert!(rendered.contains("20.00%"));
+    }
+
+    #[test]
+    fn renders_experiment_artifact_summary() {
+        let rendered = render_experiment_artifact(&ExperimentArtifact {
+            action: "initialized",
+            experiment_id: "demo".to_string(),
+            manifest_path: PathBuf::from("/tmp/demo/experiment.toml"),
+        });
+        assert!(rendered.contains("initialized experiment demo"));
     }
 }

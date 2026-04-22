@@ -27,6 +27,13 @@ scheduler, and hand privileged rollout work to a dedicated daemon.
 - `sched-claw` provides:
   - one-shot execution: `sched-claw exec "prompt"`
   - a simple line REPL: `sched-claw repl`
+  - a local experiment substrate for workload contracts, baselines, candidates, and scoring:
+    - `sched-claw experiment list --style table`
+    - `sched-claw experiment init --id demo --workload-name bench --primary-metric latency_ms --primary-goal minimize`
+    - `sched-claw experiment add-candidate demo --candidate-id locality-v1 --template dsq_local`
+    - `sched-claw experiment record-baseline demo --label cfs-baseline --artifact-dir artifacts/baseline --metric latency_ms=12.4`
+    - `sched-claw experiment record-candidate demo --candidate-id locality-v1 --label run-a --artifact-dir artifacts/cand-a --metric latency_ms=9.1`
+    - `sched-claw experiment score demo --style table`
   - local inspection and audit helpers such as:
     - `sched-claw tool list --style table`
     - `sched-claw tool show sched_ext_daemon --style plain`
@@ -58,6 +65,11 @@ They cover:
 - Linux scheduler-focused evidence collection and triage
 - Translating workload evidence into sched-ext policy and rollout steps
 
+When the repository also contains [`apps/code-agent/skills`](./../code-agent/skills),
+`sched-claw` loads that skill root by default as well. This lets the agent reuse
+existing Linux performance collection, analysis, and eBPF engineering skills
+without inflating the model-visible tool surface.
+
 The model is expected to load those skills with `skill_view` before inventing
 new measurement recipes.
 
@@ -78,6 +90,9 @@ output styles inspired by the management surfaces in `code-agent`:
 
 The style switch applies to:
 
+- `sched-claw experiment list`
+- `sched-claw experiment show <id>`
+- `sched-claw experiment score <id>`
 - `sched-claw sessions [query]`
 - `sched-claw session <id>`
 - `sched-claw tool list`
@@ -92,6 +107,9 @@ The style switch applies to:
 The REPL also supports local inspection commands:
 
 - `:format <table|plain>`
+- `:experiments`
+- `:experiment <id>`
+- `:score <id>`
 - `:tools`
 - `:tool <name>`
 - `:skills`
@@ -123,6 +141,30 @@ implicit side effect hidden in the store directory.
 
 These commands intentionally reuse the shared `store` and `runtime` layers
 instead of maintaining a separate history protocol.
+
+## Experiment substrate
+
+Workload-driven sched-ext tuning should not rely on transcript prose alone.
+`sched-claw` now includes a local experiment manifest and scoring layer under:
+
+- `.nanoclaw/apps/sched-claw/experiments/<id>/experiment.toml`
+
+The intended loop is:
+
+1. `experiment init`
+   - define the workload contract, primary metric, and guardrails
+2. `experiment add-candidate`
+   - register the candidate policy template, source path, build command, daemon argv, and knobs
+3. `experiment record-baseline`
+   - store one or more CFS baseline runs with artifact paths and measured metrics
+4. `experiment record-candidate`
+   - store one or more sched-ext runs for a specific candidate
+5. `experiment score`
+   - compare candidate medians against the baseline and classify each candidate as `promote`, `revise`, `blocked`, or `incomplete`
+
+This is intentionally a host-local substrate, not a new model-visible tool.
+Agents are expected to call these commands through the existing shell tool so
+the visible tool surface stays minimal.
 
 ## Daemon startup
 
@@ -183,6 +225,7 @@ Automated validation currently includes:
 
 Recent additions also have unit coverage for:
 
+- experiment manifest persistence and guardrail scoring
 - REPL command parsing
 - session history reference resolution and transcript rendering
 - startup catalog alias resolution

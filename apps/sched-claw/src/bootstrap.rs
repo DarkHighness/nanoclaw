@@ -204,6 +204,10 @@ fn resolve_skill_roots(workspace_root: &Path, configured_roots: &[PathBuf]) -> V
             &mut roots,
             SkillRoot::external(workspace_root.join(".codex/skills")),
         );
+        push_if_exists(
+            &mut roots,
+            SkillRoot::external(workspace_root.join("apps/code-agent/skills")),
+        );
         if let Some(home) = agent_env::home_dir() {
             push_if_exists(&mut roots, SkillRoot::external(home.join(".codex/skills")));
         }

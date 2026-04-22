@@ -21,6 +21,7 @@ tags:
    - State the workload entrypoint, the bad outcome, the affected CPUs or cgroups, and whether the bad phase is steady-state, bursty, or startup-only.
    - Record the success metric that will later decide whether the new scheduler beats CFS.
 2. Establish a reproducible baseline directory.
+   - If the local host is running `sched-claw`, prefer creating or updating a structured experiment manifest first with `sched-claw experiment init ...`.
    - Unless the repository already has a stronger convention, create `.nanoclaw/apps/sched-claw/artifacts/<run-label>/`.
    - Save commands, raw outputs, and short notes side by side so the later sched-ext comparison can replay the same evidence path.
 3. Capture low-overhead scheduler evidence first.
@@ -46,12 +47,14 @@ tags:
 - trace capture command lines if deeper tracing was required
 - a final hypothesis list ranked by confidence
 - one paragraph that maps the evidence to the next sched-ext policy change
+- if available, one `sched-claw experiment record-baseline ...` entry that captures the same metric set structurally
 
 ## Rules
 - Do not invent a dedicated collection tool. Use normal shell commands and preserve artifacts.
 - Prefer low-overhead counters and summaries before invasive tracing.
 - If evidence is noisy or mixed, say so and lower confidence.
 - Before comparing schedulers, capture one clean CFS baseline with the same workload and command set.
+- When possible, store baseline metrics in the experiment manifest instead of only in Markdown notes.
 - If the repository already has a reporting convention, follow it instead of forcing the default artifact path above.
 
 ## Reference Material

@@ -3211,6 +3211,7 @@ dependencies = [
  "store",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "unicode-width 0.2.0",
