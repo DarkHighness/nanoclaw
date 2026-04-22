@@ -27,11 +27,17 @@ scheduler, and hand privileged rollout work to a dedicated daemon.
 - `sched-claw` provides:
   - one-shot execution: `sched-claw exec "prompt"`
   - a simple line REPL: `sched-claw repl`
-  - local inspection helpers such as:
+  - local inspection and audit helpers such as:
     - `sched-claw tool list --style table`
     - `sched-claw tool show sched_ext_daemon --style plain`
     - `sched-claw skill list --style table`
     - `sched-claw skill show linux-scheduler-triage --style plain`
+    - `sched-claw sessions --style table`
+    - `sched-claw sessions "wakeup latency" --style plain`
+    - `sched-claw session last --style plain`
+    - `sched-claw export-transcript last artifacts/session.txt`
+    - `sched-claw export-events last artifacts/session.jsonl`
+    - `sched-claw resume last "continue from the prior analysis"`
     - `sched-claw daemon status --style table`
 - `sched-claw-daemon` is a separate binary intended to run with elevated
   privileges. It manages one active sched-ext deployment at a time, captures the
@@ -72,6 +78,8 @@ output styles inspired by the management surfaces in `code-agent`:
 
 The style switch applies to:
 
+- `sched-claw sessions [query]`
+- `sched-claw session <id>`
 - `sched-claw tool list`
 - `sched-claw tool show <name>`
 - `sched-claw skill list`
@@ -88,8 +96,33 @@ The REPL also supports local inspection commands:
 - `:tool <name>`
 - `:skills`
 - `:skill <name>`
+- `:sessions [query]`
+- `:session <id>`
+- `:resume <id>`
 - `:daemon status`
 - `:daemon logs [N]`
+
+## Session history and resume
+
+Persistent session history is a first-class operator surface now, not an
+implicit side effect hidden in the store directory.
+
+- `sched-claw sessions`
+  - list persisted sessions in recency order
+- `sched-claw sessions "query text"`
+  - search prompts, transcript text, and indexed event metadata
+- `sched-claw session <id|last>`
+  - inspect one persisted session with transcript and token usage details
+- `sched-claw export-transcript <id|last> <path>`
+  - write an operator-readable transcript export
+- `sched-claw export-events <id|last> <path>`
+  - write raw JSONL event history for audit or post-processing
+- `sched-claw resume <id|last> [prompt...]`
+  - fork a fresh live agent session from a persisted runtime snapshot and
+    optionally continue with a one-shot prompt immediately
+
+These commands intentionally reuse the shared `store` and `runtime` layers
+instead of maintaining a separate history protocol.
 
 ## Daemon startup
 
@@ -151,8 +184,9 @@ Automated validation currently includes:
 Recent additions also have unit coverage for:
 
 - REPL command parsing
+- session history reference resolution and transcript rendering
 - startup catalog alias resolution
-- table/plain rendering for tool, skill, and daemon inspection views
+- table/plain rendering for tool, skill, session, and daemon inspection views
 
 The root-required path still depends on a host that can actually run `sudo`
 interactively or through a service manager. The repository now includes the

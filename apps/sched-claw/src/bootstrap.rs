@@ -36,6 +36,7 @@ pub struct BuiltRuntime {
     pub runtime: AgentRuntime,
     pub startup_catalog: StartupCatalog,
     pub daemon_client: SchedExtDaemonClient,
+    pub workspace_root: PathBuf,
 }
 
 pub async fn load_bootstrap(
@@ -86,6 +87,7 @@ impl RuntimeBootstrap {
             &self.config.env_map,
         )?);
         let store = build_store(&self.config.core, &self.tool_context.workspace_root).await?;
+        let workspace_root = self.tool_context.workspace_root.clone();
         let runtime = AgentRuntimeBuilder::new(backend, store)
             .hook_runner(Arc::new(HookRunner::default()))
             .tool_registry(self.tool_registry)
@@ -97,6 +99,7 @@ impl RuntimeBootstrap {
             runtime,
             startup_catalog: self.startup_catalog,
             daemon_client: self.daemon_client,
+            workspace_root,
         })
     }
 }

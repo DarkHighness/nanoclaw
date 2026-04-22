@@ -2,11 +2,13 @@ use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot,
     SchedExtDaemonResponse,
 };
+use crate::history::{LoadedSessionDetail, SessionExportArtifact, SessionExportKind, preview_id};
 use clap::ValueEnum;
 use std::fmt::Write as _;
 use unicode_width::UnicodeWidthStr;
 
 use agent::{Skill, ToolKind, ToolOrigin, ToolOutputMode, ToolSource, ToolSpec};
+use store::{SessionSearchResult, SessionSummary, SessionTokenUsageReport};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum OutputStyle {
@@ -323,6 +325,177 @@ pub fn render_daemon_response(response: &SchedExtDaemonResponse, style: OutputSt
     }
 }
 
+pub fn render_session_list(summaries: &[SessionSummary], style: OutputStyle) -> String {
+    match style {
+        OutputStyle::Table => render_grid(
+            Some(format!("Sessions · {}", summaries.len())),
+            &[
+                "#",
+                "Session",
+                "Last Prompt",
+                "Events",
+                "Messages",
+                "Agents",
+            ],
+            &summaries
+                .iter()
+                .enumerate()
+                .map(|(index, summary)| {
+                    vec![
+                        (index + 1).to_string(),
+                        preview_id(summary.session_id.as_str()),
+                        summary
+                            .last_user_prompt
+                            .clone()
+                            .unwrap_or_else(|| "<none>".to_string()),
+                        summary.event_count.to_string(),
+                        summary.transcript_message_count.to_string(),
+                        summary.agent_session_count.to_string(),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        OutputStyle::Plain => {
+            let mut out = String::new();
+            let _ = writeln!(&mut out, "Sessions ({})", summaries.len());
+            for summary in summaries {
+                let _ = writeln!(
+                    &mut out,
+                    "- {} events={} messages={} agents={}",
+                    summary.session_id,
+                    summary.event_count,
+                    summary.transcript_message_count,
+                    summary.agent_session_count
+                );
+                if let Some(prompt) = &summary.last_user_prompt {
+                    let _ = writeln!(&mut out, "  prompt: {prompt}");
+                }
+            }
+            out.trim_end().to_string()
+        }
+    }
+}
+
+pub fn render_session_search_results(
+    results: &[SessionSearchResult],
+    style: OutputStyle,
+) -> String {
+    match style {
+        OutputStyle::Table => render_grid(
+            Some(format!("Session Matches · {}", results.len())),
+            &["#", "Session", "Matched Events", "Last Prompt", "Preview"],
+            &results
+                .iter()
+                .enumerate()
+                .map(|(index, result)| {
+                    vec![
+                        (index + 1).to_string(),
+                        preview_id(result.summary.session_id.as_str()),
+                        result.matched_event_count.to_string(),
+                        result
+                            .summary
+                            .last_user_prompt
+                            .clone()
+                            .unwrap_or_else(|| "<none>".to_string()),
+                        join_or_none(result.preview_matches.clone()),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        OutputStyle::Plain => {
+            let mut out = String::new();
+            let _ = writeln!(&mut out, "Session Matches ({})", results.len());
+            for result in results {
+                let _ = writeln!(
+                    &mut out,
+                    "- {} matched_events={}",
+                    result.summary.session_id, result.matched_event_count
+                );
+                for preview in &result.preview_matches {
+                    let _ = writeln!(&mut out, "  preview: {preview}");
+                }
+            }
+            out.trim_end().to_string()
+        }
+    }
+}
+
+pub fn render_session_detail(detail: &LoadedSessionDetail, style: OutputStyle) -> String {
+    let mut sections = vec![(
+        "Overview",
+        vec![
+            ("Session".to_string(), detail.summary.session_id.to_string()),
+            (
+                "Last Prompt".to_string(),
+                detail
+                    .summary
+                    .last_user_prompt
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+            ("Events".to_string(), detail.summary.event_count.to_string()),
+            (
+                "Messages".to_string(),
+                detail.summary.transcript_message_count.to_string(),
+            ),
+            (
+                "Agent Sessions".to_string(),
+                detail.summary.agent_session_count.to_string(),
+            ),
+        ],
+    )];
+    sections.push((
+        "Runtime",
+        vec![
+            (
+                "Agent Session IDs".to_string(),
+                join_or_none(
+                    detail
+                        .agent_session_ids
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                ),
+            ),
+            (
+                "Time Range (ms)".to_string(),
+                format!(
+                    "{} -> {}",
+                    detail.summary.first_timestamp_ms, detail.summary.last_timestamp_ms
+                ),
+            ),
+        ],
+    ));
+    sections.push(("Token Usage", token_usage_rows(&detail.token_usage)));
+    render_sections(
+        &format!("Session · {}", detail.summary.session_id),
+        &sections,
+        style,
+        Some(format!(
+            "Transcript\n{}\n{}",
+            "-".repeat("Transcript".len()),
+            if detail.transcript.is_empty() {
+                "<empty>".to_string()
+            } else {
+                crate::history::render_transcript_text(&detail.transcript)
+            }
+        )),
+    )
+}
+
+pub fn render_session_export_artifact(artifact: &SessionExportArtifact) -> String {
+    let kind = match artifact.kind {
+        SessionExportKind::EventsJsonl => "events",
+        SessionExportKind::TranscriptText => "transcript",
+    };
+    format!(
+        "Exported {kind} for {} to {} ({} items).",
+        artifact.session_id,
+        artifact.output_path.display(),
+        artifact.item_count
+    )
+}
+
 pub fn render_daemon_status(snapshot: &DaemonStatusSnapshot, style: OutputStyle) -> String {
     let mut sections = vec![(
         "Overview",
@@ -467,6 +640,54 @@ fn exit_rows(last_exit: &DeploymentExitSnapshot) -> Vec<(String, String)> {
             "Log Lines".to_string(),
             last_exit.log_line_count.to_string(),
         ),
+    ]
+}
+
+fn token_usage_rows(report: &SessionTokenUsageReport) -> Vec<(String, String)> {
+    let aggregate = report.aggregate_usage;
+    let prefix_cache_rate = report
+        .aggregate_prefix_cache_hit_rate_basis_points()
+        .map(|basis_points| format!("{:.2}%", f64::from(basis_points) / 100.0))
+        .unwrap_or_else(|| "<none>".to_string());
+    let context_window = report
+        .session
+        .as_ref()
+        .and_then(|record| record.ledger.context_window)
+        .map(|window| format!("{} / {}", window.used_tokens, window.max_tokens))
+        .unwrap_or_else(|| "<none>".to_string());
+    vec![
+        (
+            "Session Record".to_string(),
+            bool_label(report.session.is_some()),
+        ),
+        (
+            "Root Agent Sessions".to_string(),
+            report.agent_sessions.len().to_string(),
+        ),
+        ("Subagents".to_string(), report.subagents.len().to_string()),
+        ("Tasks".to_string(), report.tasks.len().to_string()),
+        (
+            "Visible Total Tokens".to_string(),
+            aggregate.visible_total_tokens().to_string(),
+        ),
+        (
+            "Input Tokens".to_string(),
+            aggregate.input_tokens.to_string(),
+        ),
+        (
+            "Output Tokens".to_string(),
+            aggregate.output_tokens.to_string(),
+        ),
+        (
+            "Cache Read Tokens".to_string(),
+            aggregate.cache_read_tokens.to_string(),
+        ),
+        (
+            "Reasoning Tokens".to_string(),
+            aggregate.reasoning_tokens.to_string(),
+        ),
+        ("Prefix Cache Hit Rate".to_string(), prefix_cache_rate),
+        ("Context Window".to_string(), context_window),
     ]
 }
 
@@ -637,15 +858,20 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputStyle, render_daemon_status, render_skill_list, render_tool_list};
+    use super::{
+        OutputStyle, render_daemon_status, render_session_export_artifact, render_session_list,
+        render_skill_list, render_tool_list,
+    };
     use crate::daemon_protocol::DaemonStatusSnapshot;
+    use crate::history::{SessionExportArtifact, SessionExportKind};
     use agent::{
-        Skill, SkillProvenance, SkillRoot, SkillRootKind, ToolOrigin, ToolOutputMode, ToolSource,
-        ToolSpec,
+        SessionId, Skill, SkillProvenance, SkillRoot, SkillRootKind, ToolOrigin, ToolOutputMode,
+        ToolSource, ToolSpec,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use store::SessionSummary;
 
     #[test]
     fn renders_tool_table_with_headers() {
@@ -708,5 +934,36 @@ mod tests {
         assert!(rendered.contains("Daemon Status"));
         assert!(rendered.contains("Daemon PID: 42"));
         assert!(rendered.contains("State: none"));
+    }
+
+    #[test]
+    fn renders_session_list_plain_view() {
+        let rendered = render_session_list(
+            &[SessionSummary {
+                session_id: SessionId::from("session_abc123"),
+                first_timestamp_ms: 1,
+                last_timestamp_ms: 2,
+                event_count: 3,
+                agent_session_count: 1,
+                transcript_message_count: 2,
+                last_user_prompt: Some("inspect wakeup latency".to_string()),
+                token_usage: None,
+            }],
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Sessions (1)"));
+        assert!(rendered.contains("inspect wakeup latency"));
+    }
+
+    #[test]
+    fn renders_export_artifact_summary() {
+        let rendered = render_session_export_artifact(&SessionExportArtifact {
+            kind: SessionExportKind::TranscriptText,
+            session_id: SessionId::from("session_abc123"),
+            output_path: PathBuf::from("/tmp/transcript.txt"),
+            item_count: 4,
+        });
+        assert!(rendered.contains("Exported transcript"));
+        assert!(rendered.contains("/tmp/transcript.txt"));
     }
 }

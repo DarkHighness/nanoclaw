@@ -3208,6 +3208,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "store",
  "tempfile",
  "tokio",
  "tracing",

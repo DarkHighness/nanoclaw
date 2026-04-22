@@ -5,9 +5,11 @@ use sched_claw::bootstrap::load_bootstrap;
 use sched_claw::daemon_client::SchedExtDaemonClient;
 use sched_claw::daemon_protocol::{SchedExtDaemonRequest, SchedExtDaemonResponse};
 use sched_claw::display::{
-    OutputStyle, render_daemon_response, render_skill_detail, render_skill_list,
+    OutputStyle, render_daemon_response, render_session_detail, render_session_export_artifact,
+    render_session_list, render_session_search_results, render_skill_detail, render_skill_list,
     render_tool_detail, render_tool_list,
 };
+use sched_claw::history::SessionHistory;
 use sched_claw::repl::{run_exec, run_repl};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -39,6 +41,11 @@ struct Cli {
 enum Command {
     Exec(PromptArgs),
     Repl(ReplArgs),
+    Sessions(SessionsArgs),
+    Session(SessionArgs),
+    Resume(ResumeArgs),
+    ExportTranscript(ExportArgs),
+    ExportEvents(ExportArgs),
     Tool(ToolArgs),
     Skill(SkillArgs),
     Daemon(DaemonArgs),
@@ -58,6 +65,44 @@ struct PromptArgs {
 struct ReplArgs {
     #[command(flatten)]
     output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct SessionsArgs {
+    #[command(flatten)]
+    output: OutputArgs,
+    #[arg(value_name = "QUERY")]
+    query: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct SessionArgs {
+    #[arg(value_name = "SESSION")]
+    session_ref: String,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct ResumeArgs {
+    #[arg(value_name = "SESSION")]
+    session_ref: String,
+    #[command(flatten)]
+    output: OutputArgs,
+    #[arg(
+        value_name = "PROMPT",
+        allow_hyphen_values = true,
+        trailing_var_arg = true
+    )]
+    prompt: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExportArgs {
+    #[arg(value_name = "SESSION")]
+    session_ref: String,
+    #[arg(value_name = "PATH")]
+    path: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -169,6 +214,21 @@ async fn main() -> Result<()> {
     };
 
     match cli.command {
+        Some(Command::Sessions(args)) => {
+            run_sessions_command(&workspace_root, &overrides, args).await?
+        }
+        Some(Command::Session(args)) => {
+            run_session_command(&workspace_root, &overrides, args).await?
+        }
+        Some(Command::Resume(args)) => {
+            run_resume_command(&workspace_root, &overrides, args).await?
+        }
+        Some(Command::ExportTranscript(args)) => {
+            run_export_transcript_command(&workspace_root, &overrides, args).await?
+        }
+        Some(Command::ExportEvents(args)) => {
+            run_export_events_command(&workspace_root, &overrides, args).await?
+        }
         Some(Command::Tool(args)) => run_tool_command(&workspace_root, &overrides, args).await?,
         Some(Command::Skill(args)) => run_skill_command(&workspace_root, &overrides, args).await?,
         Some(Command::Daemon(args)) => {
@@ -197,6 +257,81 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn run_sessions_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: SessionsArgs,
+) -> Result<()> {
+    let history = SessionHistory::open(workspace_root, overrides).await?;
+    if let Some(query) = args.query {
+        let results = history.search_sessions(&query).await?;
+        println!(
+            "{}",
+            render_session_search_results(&results, args.output.style)
+        );
+    } else {
+        let sessions = history.list_sessions().await?;
+        println!("{}", render_session_list(&sessions, args.output.style));
+    }
+    Ok(())
+}
+
+async fn run_session_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: SessionArgs,
+) -> Result<()> {
+    let history = SessionHistory::open(workspace_root, overrides).await?;
+    let detail = history.load_session(&args.session_ref).await?;
+    println!("{}", render_session_detail(&detail, args.output.style));
+    Ok(())
+}
+
+async fn run_resume_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: ResumeArgs,
+) -> Result<()> {
+    let history = SessionHistory::open(workspace_root, overrides).await?;
+    let (summary, runtime_session) = history.load_resumable_session(&args.session_ref).await?;
+    let bootstrap = load_bootstrap(workspace_root, overrides).await?;
+    let mut host = bootstrap.build_runtime().await?;
+    host.runtime.resume_session(runtime_session).await?;
+    eprintln!("resumed session {}", summary.session_id);
+    if args.prompt.is_empty() {
+        run_repl(&mut host, args.output.style).await?;
+    } else {
+        run_exec(&mut host, join_prompt(args.prompt)?).await?;
+    }
+    Ok(())
+}
+
+async fn run_export_transcript_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: ExportArgs,
+) -> Result<()> {
+    let history = SessionHistory::open(workspace_root, overrides).await?;
+    let artifact = history
+        .export_transcript(workspace_root, &args.session_ref, &args.path)
+        .await?;
+    println!("{}", render_session_export_artifact(&artifact));
+    Ok(())
+}
+
+async fn run_export_events_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: ExportArgs,
+) -> Result<()> {
+    let history = SessionHistory::open(workspace_root, overrides).await?;
+    let artifact = history
+        .export_events(workspace_root, &args.session_ref, &args.path)
+        .await?;
+    println!("{}", render_session_export_artifact(&artifact));
     Ok(())
 }
 
@@ -310,4 +445,24 @@ fn init_tracing() {
         .with_target(false)
         .without_time()
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Command, OutputStyle};
+    use clap::Parser;
+
+    #[test]
+    fn parses_sessions_query_with_style_after_query() {
+        let cli = Cli::try_parse_from(["sched-claw", "sessions", "agent-e2e", "--style", "plain"])
+            .unwrap();
+
+        match cli.command {
+            Some(Command::Sessions(args)) => {
+                assert_eq!(args.query.as_deref(), Some("agent-e2e"));
+                assert_eq!(args.output.style, OutputStyle::Plain);
+            }
+            other => panic!("expected sessions command, got {other:?}"),
+        }
+    }
 }

@@ -6,6 +6,7 @@ pub mod daemon_protocol;
 pub mod daemon_server;
 pub mod daemon_tool;
 pub mod display;
+pub mod history;
 pub mod preamble;
 pub mod repl;
 pub mod startup_catalog;

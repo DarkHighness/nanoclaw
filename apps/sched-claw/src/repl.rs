@@ -2,17 +2,20 @@ use agent::runtime::{RuntimeObserver, RuntimeProgressEvent};
 use anyhow::{Context, Result, bail};
 use std::io::{self, Write};
 
+use crate::app_config::CliOverrides;
 use crate::bootstrap::BuiltRuntime;
 use crate::daemon_protocol::SchedExtDaemonRequest;
 use crate::display::{
-    OutputStyle, render_daemon_response, render_skill_detail, render_skill_list,
-    render_tool_detail, render_tool_list,
+    OutputStyle, render_daemon_response, render_session_detail, render_session_list,
+    render_session_search_results, render_skill_detail, render_skill_list, render_tool_detail,
+    render_tool_list,
 };
+use crate::history::SessionHistory;
 
 pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) -> Result<()> {
     println!("sched-claw repl");
     println!(
-        "Commands: :help, :format <table|plain>, :tools, :tool <name>, :skills, :skill <name>, :daemon status, :daemon logs [N], :quit"
+        "Commands: :help, :format <table|plain>, :tools, :tool <name>, :skills, :skill <name>, :sessions [query], :session <id>, :resume <id>, :daemon status, :daemon logs [N], :quit"
     );
     let stdin = io::stdin();
     let mut line = String::new();
@@ -33,6 +36,9 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
                 println!(":tool <name>           inspect one tool from the startup catalog");
                 println!(":skills                show available skills");
                 println!(":skill <name>          inspect one skill from the startup catalog");
+                println!(":sessions [query]      list persisted sessions or search them");
+                println!(":session <id>          inspect one persisted session");
+                println!(":resume <id>           attach the repl to a persisted session");
                 println!(":daemon status         inspect the privileged daemon snapshot");
                 println!(":daemon logs [N]       inspect daemon logs with an optional tail size");
                 println!(":quit                  exit the repl");
@@ -66,6 +72,28 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
                     .resolve_skill(&name)
                     .ok_or_else(|| anyhow::anyhow!("unknown skill `{name}`"))?;
                 println!("{}", render_skill_detail(skill, output_style));
+            }
+            ReplCommand::Sessions { query } => {
+                let history = open_history(host).await?;
+                if let Some(query) = query {
+                    let results = history.search_sessions(&query).await?;
+                    println!("{}", render_session_search_results(&results, output_style));
+                } else {
+                    let sessions = history.list_sessions().await?;
+                    println!("{}", render_session_list(&sessions, output_style));
+                }
+            }
+            ReplCommand::SessionShow(session_ref) => {
+                let history = open_history(host).await?;
+                let detail = history.load_session(&session_ref).await?;
+                println!("{}", render_session_detail(&detail, output_style));
+            }
+            ReplCommand::Resume(session_ref) => {
+                let history = open_history(host).await?;
+                let (summary, runtime_session) =
+                    history.load_resumable_session(&session_ref).await?;
+                host.runtime.resume_session(runtime_session).await?;
+                println!("resumed session {}", summary.session_id);
             }
             ReplCommand::DaemonStatus => {
                 let response = host
@@ -101,6 +129,10 @@ pub async fn run_exec(host: &mut BuiltRuntime, prompt: String) -> Result<()> {
     observer.finish()
 }
 
+async fn open_history(host: &BuiltRuntime) -> Result<SessionHistory> {
+    SessionHistory::open(&host.workspace_root, &CliOverrides::default()).await
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ReplCommand {
     Help,
@@ -110,6 +142,9 @@ enum ReplCommand {
     ToolShow(String),
     Skills,
     SkillShow(String),
+    Sessions { query: Option<String> },
+    SessionShow(String),
+    Resume(String),
     DaemonStatus,
     DaemonLogs { tail_lines: Option<usize> },
     Prompt(String),
@@ -131,6 +166,17 @@ fn parse_repl_command(input: &str) -> Result<ReplCommand> {
         ":help" => Ok(ReplCommand::Help),
         ":tools" => Ok(ReplCommand::Tools),
         ":skills" => Ok(ReplCommand::Skills),
+        ":sessions" => Ok(ReplCommand::Sessions {
+            query: {
+                let query = parts.collect::<Vec<_>>().join(" ");
+                let trimmed = query.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            },
+        }),
         ":tool" => {
             let name = parts
                 .next()
@@ -152,6 +198,18 @@ fn parse_repl_command(input: &str) -> Result<ReplCommand> {
                 "plain" => Ok(ReplCommand::SetFormat(OutputStyle::Plain)),
                 other => bail!("unsupported format `{other}`; expected `table` or `plain`"),
             }
+        }
+        ":session" => {
+            let session_ref = parts
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("usage: :session <id|last>"))?;
+            Ok(ReplCommand::SessionShow(session_ref.to_string()))
+        }
+        ":resume" => {
+            let session_ref = parts
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("usage: :resume <id|last>"))?;
+            Ok(ReplCommand::Resume(session_ref.to_string()))
         }
         ":daemon" => match parts.next() {
             Some("status") => Ok(ReplCommand::DaemonStatus),
@@ -246,6 +304,24 @@ mod tests {
             ReplCommand::DaemonLogs {
                 tail_lines: Some(12)
             }
+        );
+    }
+
+    #[test]
+    fn parses_session_search() {
+        assert_eq!(
+            parse_repl_command(":sessions wakeup latency").unwrap(),
+            ReplCommand::Sessions {
+                query: Some("wakeup latency".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn parses_resume_command() {
+        assert_eq!(
+            parse_repl_command(":resume last").unwrap(),
+            ReplCommand::Resume("last".to_string())
         );
     }
 
