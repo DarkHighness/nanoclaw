@@ -43,6 +43,8 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment set-candidate demo --candidate-id locality-v1 --template dsq_local --daemon-arg loader --daemon-arg {source}`
     - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
     - `sched-claw experiment build demo --candidate-id locality-v1 --style table`
+    - `sched-claw experiment run demo --label cfs-a --style table`
+    - `sched-claw experiment run demo --candidate-id locality-v1 --label cand-a --style table`
     - `sched-claw experiment record-baseline demo --label cfs-baseline --artifact-dir artifacts/baseline --metric latency_ms=12.4`
     - `sched-claw experiment record-candidate demo --candidate-id locality-v1 --label run-a --artifact-dir artifacts/cand-a --metric latency_ms=9.1`
     - `sched-claw experiment score demo --style table`
@@ -181,6 +183,10 @@ The substrate is generic on purpose. Typical commands include:
   - capture build stdout/stderr, exit code, and a short failure summary under the experiment artifact tree
   - run a verifier probe through `bpftool -d -L prog loadall` by default so libbpf and verifier logs are captured without pinning persistent bpffs state
   - persist the build and verifier records back into the candidate manifest entry
+- `experiment run`
+  - execute the script workload contract and capture stdout/stderr, metrics, and artifact paths under the experiment artifact tree
+  - for candidate runs, activate the sched-ext loader through the daemon, stop it after the workload finishes, and persist daemon logs next to the run artifacts
+  - refuse candidate rollout by default when the latest build or verifier record is not successful; use `--allow-unverified-build` only as an explicit override
 - `experiment record-baseline`
   - store one or more CFS baseline runs with artifact paths and measured metrics
 - `experiment record-candidate`
@@ -353,6 +359,7 @@ Recent additions also have unit coverage for:
 
 - experiment manifest persistence and guardrail scoring
 - build and verifier capture for materialized sched-ext candidates
+- workload run capture, metrics import, and rollout gating
 - REPL command parsing
 - session history reference resolution and transcript rendering
 - startup catalog alias resolution

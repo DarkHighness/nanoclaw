@@ -14,5 +14,6 @@ pub mod history;
 pub mod metrics;
 pub mod preamble;
 pub mod repl;
+pub mod run_capture;
 pub mod startup_catalog;
 pub mod workload;

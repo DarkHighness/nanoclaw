@@ -1039,6 +1039,73 @@ pub fn render_candidate_build_capture(
     )
 }
 
+pub fn render_workload_run_capture(
+    experiment_id: &str,
+    candidate_id: Option<&str>,
+    manifest_path: &std::path::Path,
+    capture: &crate::run_capture::WorkloadRunCapture,
+    style: OutputStyle,
+) -> String {
+    let sections = vec![
+        (
+            "Overview",
+            vec![
+                ("Experiment".to_string(), experiment_id.to_string()),
+                (
+                    "Candidate".to_string(),
+                    candidate_id.unwrap_or("<baseline>").to_string(),
+                ),
+                ("Manifest".to_string(), manifest_path.display().to_string()),
+                ("Label".to_string(), capture.run.label.clone()),
+                (
+                    "Scheduler".to_string(),
+                    capture.run.scheduler.as_str().to_string(),
+                ),
+                (
+                    "Artifact Dir".to_string(),
+                    capture.manifest_artifact_dir.clone(),
+                ),
+                ("Metrics File".to_string(), capture.metrics_path.clone()),
+            ],
+        ),
+        (
+            "Execution",
+            vec![
+                ("Command File".to_string(), capture.command_path.clone()),
+                ("Stdout".to_string(), capture.stdout_path.clone()),
+                ("Stderr".to_string(), capture.stderr_path.clone()),
+                (
+                    "Daemon Logs".to_string(),
+                    capture
+                        .daemon_logs_path
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                ("Summary".to_string(), capture.summary.clone()),
+            ],
+        ),
+        (
+            "Metrics",
+            if capture.run.metrics.is_empty() {
+                vec![("Metrics".to_string(), "<none>".to_string())]
+            } else {
+                capture
+                    .run
+                    .metrics
+                    .iter()
+                    .map(|(name, value)| (name.clone(), format_float(*value)))
+                    .collect::<Vec<_>>()
+            },
+        ),
+    ];
+    render_sections(
+        &format!("Workload Run · {}", capture.run.label),
+        &sections,
+        style,
+        None,
+    )
+}
+
 pub fn render_daemon_status(snapshot: &DaemonStatusSnapshot, style: OutputStyle) -> String {
     let mut sections = vec![(
         "Overview",
@@ -1572,7 +1639,7 @@ mod tests {
         OutputStyle, render_candidate_build_capture, render_daemon_status,
         render_experiment_artifact, render_experiment_list, render_experiment_score,
         render_session_export_artifact, render_session_list, render_skill_list,
-        render_template_list, render_tool_list,
+        render_template_list, render_tool_list, render_workload_run_capture,
     };
     use crate::candidate_templates::template_specs;
     use crate::daemon_protocol::DaemonStatusSnapshot;
@@ -1583,6 +1650,7 @@ mod tests {
     };
     use crate::history::{SessionExportArtifact, SessionExportKind};
     use crate::metrics::{MetricGoal, MetricTarget};
+    use crate::run_capture::WorkloadRunCapture;
     use agent::{
         SessionId, Skill, SkillProvenance, SkillRoot, SkillRootKind, ToolOrigin, ToolOutputMode,
         ToolSource, ToolSpec,
@@ -1787,6 +1855,36 @@ mod tests {
         assert!(rendered.contains("Build Capture"));
         assert!(rendered.contains("bpftool_prog_loadall"));
         assert!(rendered.contains("build completed successfully"));
+    }
+
+    #[test]
+    fn renders_workload_run_capture_sections() {
+        let rendered = render_workload_run_capture(
+            "demo",
+            Some("cand-a"),
+            std::path::Path::new("/tmp/demo/experiment.toml"),
+            &WorkloadRunCapture {
+                run: crate::experiment::RecordedRun {
+                    label: "cand-a-run".to_string(),
+                    recorded_at_unix_ms: 1,
+                    scheduler: crate::experiment::SchedulerKind::SchedExt,
+                    artifact_dir: "artifacts/runs/cand-a/1".to_string(),
+                    metrics: BTreeMap::from([("latency_ms".to_string(), 7.0)]),
+                    notes: Some("status=success".to_string()),
+                },
+                manifest_artifact_dir: "artifacts/runs/cand-a/1".to_string(),
+                command_path: "workload.command.txt".to_string(),
+                stdout_path: "workload.stdout.log".to_string(),
+                stderr_path: "workload.stderr.log".to_string(),
+                metrics_path: "metrics.env".to_string(),
+                daemon_logs_path: Some("daemon.logs.txt".to_string()),
+                summary: "status=success".to_string(),
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Workload Run"));
+        assert!(rendered.contains("daemon.logs.txt"));
+        assert!(rendered.contains("latency_ms"));
     }
 
     #[test]

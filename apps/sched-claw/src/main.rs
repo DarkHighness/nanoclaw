@@ -15,10 +15,11 @@ use sched_claw::display::{
     render_experiment_score, render_session_detail, render_session_export_artifact,
     render_session_list, render_session_search_results, render_skill_detail, render_skill_list,
     render_template_detail, render_template_list, render_tool_detail, render_tool_list,
+    render_workload_run_capture,
 };
 use sched_claw::experiment::{
-    CandidateSpec, DeploymentRecord, ExperimentCatalog, ExperimentInitSpec, RecordedRun,
-    SchedulerKind,
+    CandidateRecord, CandidateSpec, CommandStatus, DeploymentRecord, ExperimentCatalog,
+    ExperimentInitSpec, RecordedRun, SchedulerKind,
 };
 use sched_claw::history::SessionHistory;
 use sched_claw::metrics::{
@@ -26,6 +27,9 @@ use sched_claw::metrics::{
     infer_performance_policy, parse_guardrail, parse_metric_assignment, parse_metric_target,
 };
 use sched_claw::repl::{run_exec, run_repl};
+use sched_claw::run_capture::{
+    RunFailureMode, WorkloadRunOptions, attach_daemon_logs, capture_workload_run,
+};
 use sched_claw::workload::{WorkloadContract, WorkloadTarget};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -138,6 +142,7 @@ enum ExperimentCommand {
     SetCandidate(ExperimentAddCandidateArgs),
     Materialize(ExperimentMaterializeArgs),
     Build(ExperimentBuildArgs),
+    Run(ExperimentRunArgs),
     RecordBaseline(ExperimentRecordBaselineArgs),
     RecordCandidate(ExperimentRecordCandidateArgs),
     Score(ExperimentShowArgs),
@@ -267,6 +272,34 @@ struct ExperimentBuildArgs {
 }
 
 #[derive(Debug, Args)]
+struct ExperimentRunArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: Option<String>,
+    #[arg(long, value_name = "LABEL")]
+    label: Option<String>,
+    #[arg(long, value_name = "PATH")]
+    artifact_dir: Option<String>,
+    #[arg(long, value_name = "NAME", default_value = "metrics.env")]
+    metrics_file: String,
+    #[arg(long, value_name = "SECONDS")]
+    timeout_seconds: Option<u64>,
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    env: Vec<(String, String)>,
+    #[arg(long)]
+    replace_existing: bool,
+    #[arg(long)]
+    allow_unverified_build: bool,
+    #[arg(long, value_enum, default_value_t = RunFailureMode::Record)]
+    on_failure: RunFailureMode,
+    #[arg(long, value_name = "LINES", default_value_t = 500usize)]
+    daemon_log_tail_lines: usize,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
 struct ExperimentRecordBaselineArgs {
     #[arg(value_name = "EXPERIMENT")]
     experiment_ref: String,
@@ -314,6 +347,8 @@ struct ExperimentDeployArgs {
     env: Vec<(String, String)>,
     #[arg(long)]
     replace_existing: bool,
+    #[arg(long)]
+    allow_unverified_build: bool,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -719,6 +754,137 @@ async fn run_experiment_command(
                 )
             );
         }
+        ExperimentCommand::Run(args) => {
+            let experiment = catalog.load(&args.experiment_ref)?;
+            let label = args.label.clone().unwrap_or_else(|| {
+                args.candidate_id
+                    .as_deref()
+                    .map(|candidate_id| {
+                        format!("{candidate_id}-{}", sched_claw::experiment::now_unix_ms())
+                    })
+                    .unwrap_or_else(|| {
+                        format!("baseline-{}", sched_claw::experiment::now_unix_ms())
+                    })
+            });
+
+            let capture = if let Some(candidate_id) = &args.candidate_id {
+                let candidate = experiment
+                    .manifest
+                    .candidates
+                    .iter()
+                    .find(|candidate| candidate.spec.candidate_id == *candidate_id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "unknown candidate {} in experiment {}",
+                            candidate_id,
+                            experiment.manifest.experiment_id
+                        )
+                    })?;
+                ensure_candidate_ready_for_rollout(candidate, args.allow_unverified_build)?;
+                let plan = build_activation_plan(
+                    &experiment.manifest.experiment_id,
+                    &candidate.spec,
+                    &DeployOverrides {
+                        label: Some(format!("{}:{}", experiment.manifest.experiment_id, label)),
+                        replace_existing: args.replace_existing,
+                        ..DeployOverrides::default()
+                    },
+                )?;
+                let client = SchedExtDaemonClient::new(
+                    SchedClawConfig::load_from_dir(workspace_root, overrides)?.daemon,
+                );
+                let response = client
+                    .send(&SchedExtDaemonRequest::Activate {
+                        label: Some(plan.label.clone()),
+                        argv: plan.argv.clone(),
+                        cwd: plan.cwd.clone(),
+                        env: plan.env.clone(),
+                        replace_existing: plan.replace_existing,
+                    })
+                    .await?;
+                if let SchedExtDaemonResponse::Error { message } = &response {
+                    anyhow::bail!(message.clone());
+                }
+                let run_result = capture_workload_run(
+                    workspace_root,
+                    &experiment.manifest.experiment_id,
+                    &experiment.manifest.workload,
+                    &WorkloadRunOptions {
+                        label: label.clone(),
+                        scheduler: SchedulerKind::SchedExt,
+                        candidate_id: Some(candidate_id.clone()),
+                        artifact_dir: args.artifact_dir.clone(),
+                        metrics_file_name: args.metrics_file.clone(),
+                        timeout_seconds: args.timeout_seconds,
+                        extra_env: args.env.clone().into_iter().collect(),
+                    },
+                )
+                .await;
+                let stop_response = client
+                    .send(&SchedExtDaemonRequest::Stop {
+                        graceful_timeout_ms: None,
+                    })
+                    .await;
+                let mut capture = run_result?;
+                match stop_response? {
+                    SchedExtDaemonResponse::Error { message } => anyhow::bail!(message),
+                    _ => {}
+                }
+                let logs = client.logs(Some(args.daemon_log_tail_lines)).await;
+                if let Ok(snapshot) = logs {
+                    attach_daemon_logs(workspace_root, &mut capture, &snapshot)?;
+                }
+                let artifact = catalog.record_candidate(
+                    &args.experiment_ref,
+                    candidate_id,
+                    capture.run.clone(),
+                )?;
+                println!("{}", render_experiment_artifact(&artifact));
+                capture
+            } else {
+                let capture = capture_workload_run(
+                    workspace_root,
+                    &experiment.manifest.experiment_id,
+                    &experiment.manifest.workload,
+                    &WorkloadRunOptions {
+                        label: label.clone(),
+                        scheduler: SchedulerKind::Cfs,
+                        candidate_id: None,
+                        artifact_dir: args.artifact_dir.clone(),
+                        metrics_file_name: args.metrics_file.clone(),
+                        timeout_seconds: args.timeout_seconds,
+                        extra_env: args.env.clone().into_iter().collect(),
+                    },
+                )
+                .await?;
+                let artifact =
+                    catalog.record_baseline(&args.experiment_ref, capture.run.clone())?;
+                println!("{}", render_experiment_artifact(&artifact));
+                capture
+            };
+
+            println!(
+                "{}",
+                render_workload_run_capture(
+                    &experiment.manifest.experiment_id,
+                    args.candidate_id.as_deref(),
+                    &experiment.manifest_path,
+                    &capture,
+                    args.output.style,
+                )
+            );
+
+            if matches!(args.on_failure, RunFailureMode::Strict)
+                && capture
+                    .run
+                    .notes
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("status=failed")
+            {
+                anyhow::bail!("workload run completed with a failure status");
+            }
+        }
         ExperimentCommand::RecordBaseline(args) => {
             let artifact = catalog.record_baseline(
                 &args.experiment_ref,
@@ -766,6 +932,7 @@ async fn run_experiment_command(
                         experiment.manifest.experiment_id
                     )
                 })?;
+            ensure_candidate_ready_for_rollout(candidate, args.allow_unverified_build)?;
             let plan = build_activation_plan(
                 &experiment.manifest.experiment_id,
                 &candidate.spec,
@@ -1004,6 +1171,37 @@ fn join_prompt(parts: Vec<String>) -> Result<String> {
     Ok(prompt)
 }
 
+fn ensure_candidate_ready_for_rollout(
+    candidate: &CandidateRecord,
+    allow_unverified_build: bool,
+) -> Result<()> {
+    if allow_unverified_build {
+        return Ok(());
+    }
+    let Some(latest_build) = candidate.builds.last() else {
+        anyhow::bail!(
+            "candidate {} has no recorded build; run `sched-claw experiment build ...` first or pass --allow-unverified-build",
+            candidate.spec.candidate_id
+        );
+    };
+    if latest_build.build.status != CommandStatus::Success {
+        anyhow::bail!(
+            "candidate {} latest build status is {}; rerun `sched-claw experiment build ...` or pass --allow-unverified-build",
+            candidate.spec.candidate_id,
+            latest_build.build.status.as_str()
+        );
+    }
+    if latest_build.verifier.status != CommandStatus::Success {
+        anyhow::bail!(
+            "candidate {} latest verifier status is {}; inspect {} and rerun `sched-claw experiment build ...` or pass --allow-unverified-build",
+            candidate.spec.candidate_id,
+            latest_build.verifier.status.as_str(),
+            latest_build.verifier.stderr_path
+        );
+    }
+    Ok(())
+}
+
 fn build_workload_target(args: &ExperimentInitArgs) -> Result<Option<WorkloadTarget>> {
     let selectors = [
         args.target_pid.is_some(),
@@ -1120,11 +1318,16 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, Command, ExperimentCommand, ExperimentInitArgs, OutputStyle, build_workload_target,
-        resolve_performance_policy,
+        Cli, Command, ExperimentCommand, ExperimentInitArgs, OutputStyle, RunFailureMode,
+        build_workload_target, ensure_candidate_ready_for_rollout, resolve_performance_policy,
     };
     use clap::Parser;
+    use sched_claw::experiment::{
+        CandidateBuildRecord, CandidateRecord, CandidateSpec, CommandStatus, StepCommandRecord,
+        VerifierBackend, VerifierCommandRecord,
+    };
     use sched_claw::metrics::{MeasurementBasis, MetricGoal, MetricTarget, PerformancePreference};
+    use std::collections::BTreeMap;
 
     #[test]
     fn parses_sessions_query_with_style_after_query() {
@@ -1238,6 +1441,34 @@ mod tests {
     }
 
     #[test]
+    fn parses_experiment_run_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "run",
+            "demo",
+            "--candidate-id",
+            "cand-a",
+            "--allow-unverified-build",
+            "--on-failure",
+            "strict",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::Run(args) => {
+                    assert_eq!(args.candidate_id.as_deref(), Some("cand-a"));
+                    assert!(args.allow_unverified_build);
+                    assert_eq!(args.on_failure, RunFailureMode::Strict);
+                }
+                other => panic!("expected run command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_template_show_command() {
         let cli = Cli::try_parse_from(["sched-claw", "template", "show", "latency_guard"]).unwrap();
 
@@ -1343,5 +1574,53 @@ mod tests {
         .unwrap();
         assert_eq!(policy.basis, MeasurementBasis::ProxyEstimate);
         assert_eq!(policy.proxy_metrics.len(), 2);
+    }
+
+    #[test]
+    fn rollout_gate_rejects_missing_verified_build() {
+        let candidate = CandidateRecord {
+            spec: CandidateSpec {
+                candidate_id: "cand-a".to_string(),
+                template: "latency_guard".to_string(),
+                source_path: None,
+                object_path: None,
+                build_command: None,
+                daemon_argv: Vec::new(),
+                daemon_cwd: None,
+                daemon_env: BTreeMap::new(),
+                knobs: BTreeMap::new(),
+                notes: None,
+            },
+            runs: Vec::new(),
+            builds: vec![CandidateBuildRecord {
+                requested_at_unix_ms: 1,
+                artifact_dir: "artifacts/builds/cand-a/1".to_string(),
+                source_path: None,
+                object_path: None,
+                build: StepCommandRecord {
+                    status: CommandStatus::Success,
+                    command: "clang".to_string(),
+                    command_path: "build.command.txt".to_string(),
+                    exit_code: Some(0),
+                    duration_ms: 1,
+                    stdout_path: "build.stdout.log".to_string(),
+                    stderr_path: "build.stderr.log".to_string(),
+                    summary: None,
+                },
+                verifier: VerifierCommandRecord {
+                    backend: VerifierBackend::BpftoolProgLoadall,
+                    status: CommandStatus::Failed,
+                    command: "bpftool".to_string(),
+                    command_path: "verify.command.txt".to_string(),
+                    exit_code: Some(1),
+                    duration_ms: 1,
+                    stdout_path: "verify.stdout.log".to_string(),
+                    stderr_path: "verify.stderr.log".to_string(),
+                    summary: None,
+                },
+            }],
+        };
+        assert!(ensure_candidate_ready_for_rollout(&candidate, false).is_err());
+        assert!(ensure_candidate_ready_for_rollout(&candidate, true).is_ok());
     }
 }
