@@ -76,6 +76,8 @@ They cover:
 
 - Linux scheduler-focused evidence collection and triage
 - Translating workload evidence into sched-ext policy and rollout steps
+- LLVM/clang build autotune demos with direct wall-clock metrics plus IPC/CPI fallback
+- MySQL sysbench autotune demos with direct throughput and latency metrics
 
 When the repository also contains [`apps/code-agent/skills`](./../code-agent/skills),
 `sched-claw` loads that skill root by default as well. This lets the agent reuse
@@ -237,6 +239,49 @@ Current built-in starting points are:
 experiment state directory by default and records the resulting source path,
 build command, knobs, and optional daemon argv back into the candidate spec.
 
+## Demo scripts
+
+For operator demos, `sched-claw` now ships standalone scripts that call the host
+instead of adding a dedicated workload command surface.
+
+- LLVM/clang build autotune
+  - demo wrapper:
+    - `apps/sched-claw/scripts/demos/llvm-clang-autotune.sh`
+  - workload launcher:
+    - `apps/sched-claw/scripts/workloads/run-llvm-clang-build.sh`
+  - builtin skill:
+    - `llvm-clang-build-tuning`
+- MySQL sysbench autotune
+  - demo wrapper:
+    - `apps/sched-claw/scripts/demos/mysql-sysbench-autotune.sh`
+  - workload launcher:
+    - `apps/sched-claw/scripts/workloads/run-mysql-sysbench.sh`
+  - builtin skill:
+    - `mysql-sysbench-tuning`
+
+The wrapper scripts do two things:
+
+- initialize a structured experiment manifest with the right direct metrics,
+  guardrails, proxy hints, and replayable launcher argv
+- call `sched-claw exec` with a prompt that points the agent at the workload-
+  specific skill instead of hard-coding a host workflow
+
+Typical dry-run examples:
+
+```bash
+tmp=$(mktemp -d)
+mkdir -p "$tmp/llvm"
+printf 'cmake_minimum_required(VERSION 3.20)\n' >"$tmp/llvm/CMakeLists.txt"
+apps/sched-claw/scripts/demos/llvm-clang-autotune.sh --llvm-src "$tmp" --dry-run
+```
+
+```bash
+apps/sched-claw/scripts/demos/mysql-sysbench-autotune.sh --dry-run
+```
+
+The workload launchers are also usable directly when you want reproducible local
+measurements without invoking the model runtime.
+
 ## Daemon startup
 
 Start the daemon from the workspace root:
@@ -301,6 +346,7 @@ Recent additions also have unit coverage for:
 - session history reference resolution and transcript rendering
 - startup catalog alias resolution
 - table/plain rendering for tool, skill, session, and daemon inspection views
+- demo script dry-run bootstrapping for LLVM/clang and MySQL sysbench
 
 The root-required path still depends on a host that can actually run `sudo`
 interactively or through a service manager. The repository now includes the
