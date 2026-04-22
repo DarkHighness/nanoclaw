@@ -9,6 +9,7 @@ pub mod daemon_server;
 pub mod daemon_tool;
 pub mod deployment;
 pub mod display;
+pub mod doctor;
 pub mod experiment;
 pub mod history;
 pub mod metrics;

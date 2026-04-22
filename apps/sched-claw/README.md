@@ -49,6 +49,9 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment record-candidate demo --candidate-id locality-v1 --label run-a --artifact-dir artifacts/cand-a --metric latency_ms=9.1`
     - `sched-claw experiment score demo --style table`
     - `sched-claw experiment deploy demo --candidate-id locality-v1 --style table`
+  - a product-facing readiness surface:
+    - `sched-claw doctor --style table`
+    - `sched-claw doctor --style plain`
   - local inspection and audit helpers such as:
     - `sched-claw tool list --style table`
     - `sched-claw tool show sched_ext_daemon --style plain`
@@ -77,7 +80,10 @@ Built-in skills are materialized under:
 
 They cover:
 
+- product readiness and operator dependency checks
+- workload contract definition and metric policy
 - Linux scheduler-focused evidence collection and triage
+- sched-ext build, verifier, run, score, and rollout safety loops
 - Translating workload evidence into sched-ext policy and rollout steps
 - LLVM/clang build autotune demos with direct wall-clock metrics plus IPC/CPI fallback
 - MySQL sysbench autotune demos with direct throughput and latency metrics
@@ -107,6 +113,7 @@ output styles inspired by the management surfaces in `code-agent`:
 
 The style switch applies to:
 
+- `sched-claw doctor`
 - `sched-claw template list`
 - `sched-claw template show <name>`
 - `sched-claw experiment list`
@@ -126,6 +133,7 @@ The style switch applies to:
 The REPL also supports local inspection commands:
 
 - `:format <table|plain>`
+- `:doctor`
 - `:experiments`
 - `:experiment <id>`
 - `:score <id>`
@@ -254,6 +262,25 @@ Current built-in starting points are:
 `experiment materialize` writes concrete `.bpf.c` source files under the
 experiment state directory by default and records the resulting source path,
 build command, knobs, and optional daemon argv back into the candidate spec.
+
+## Doctor
+
+`sched-claw doctor` is the operator-facing readiness surface for the host. It
+does not change the model-visible tool surface; it checks whether the current
+workspace and machine are ready for real sched-claw use.
+
+Current checks include:
+
+- selected provider credentials for the active primary model
+- builtin sched-claw skills and shared `apps/code-agent/skills` availability
+- sched-ext template catalog presence
+- privileged daemon socket reachability
+- core toolchain availability such as `clang`, `bpftool`, and `perf`
+- kernel prerequisites such as BTF and cgroup v2
+- demo scripts plus LLVM and MySQL demo prerequisites
+
+Use it before claiming the product is ready, and after an operator changes the
+host to clear a blocking gap.
 
 ## Demo scripts
 

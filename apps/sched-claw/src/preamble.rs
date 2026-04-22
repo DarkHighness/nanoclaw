@@ -25,6 +25,8 @@ pub fn build_system_preamble(
             .to_string(),
         "Before collecting or interpreting Linux performance data, inspect the skill index below and load the relevant skill with skill_view. Err on the side of loading."
             .to_string(),
+        "When the task is host setup, dependency validation, or operator readiness, use the product-readiness skill and the local `sched-claw doctor` surface instead of guessing prerequisites."
+            .to_string(),
         "Keep workflows skill-driven, not host-driven. Use the active skill SOP to decide which experiment, template, build, and rollout steps matter for the current workload."
             .to_string(),
         "When a task is workload-driven, use the sched-claw experiment substrate whenever it helps keep workload contracts, candidates, baseline runs, deployments, and scores structured instead of living only in transcript text."

@@ -3,6 +3,7 @@ use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot,
     SchedExtDaemonResponse,
 };
+use crate::doctor::DoctorReport;
 use crate::experiment::{
     ExperimentArtifact, ExperimentScoreReport, ExperimentSummary, GuardrailStatus, LoadedExperiment,
 };
@@ -498,6 +499,93 @@ pub fn render_session_export_artifact(artifact: &SessionExportArtifact) -> Strin
         artifact.output_path.display(),
         artifact.item_count
     )
+}
+
+pub fn render_doctor_report(report: &DoctorReport, style: OutputStyle) -> String {
+    let counts = report.counts();
+    let overview = vec![
+        (
+            "Workspace Root".to_string(),
+            report.workspace_root.display().to_string(),
+        ),
+        (
+            "App State Dir".to_string(),
+            report.app_state_dir.display().to_string(),
+        ),
+        (
+            "Daemon Socket".to_string(),
+            report.daemon_socket.display().to_string(),
+        ),
+        (
+            "Primary Model".to_string(),
+            format!(
+                "{} / {} / {}",
+                report.provider, report.model_alias, report.model_name
+            ),
+        ),
+        (
+            "Overall".to_string(),
+            report.overall_status().as_str().to_string(),
+        ),
+        ("Checks".to_string(), report.checks.len().to_string()),
+        ("Pass".to_string(), counts.pass.to_string()),
+        ("Warn".to_string(), counts.warn.to_string()),
+        ("Fail".to_string(), counts.fail.to_string()),
+        ("Templates".to_string(), report.template_count.to_string()),
+        (
+            "Configured Skill Roots".to_string(),
+            join_or_none(
+                report
+                    .configured_skill_roots
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+            ),
+        ),
+    ];
+
+    let appendix = match style {
+        OutputStyle::Table => render_grid(
+            Some(format!("Doctor Checks · {}", report.checks.len())),
+            &["Category", "Check", "Status", "Detail", "Remediation"],
+            &report
+                .checks
+                .iter()
+                .map(|check| {
+                    vec![
+                        check.category.to_string(),
+                        check.name.to_string(),
+                        check.status.as_str().to_string(),
+                        check.detail.clone(),
+                        check
+                            .remediation
+                            .clone()
+                            .unwrap_or_else(|| "<none>".to_string()),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        OutputStyle::Plain => {
+            let mut out = String::new();
+            let _ = writeln!(&mut out, "Checks:");
+            for check in &report.checks {
+                let _ = writeln!(
+                    &mut out,
+                    "- [{}] {} / {}",
+                    check.status.as_str(),
+                    check.category,
+                    check.name
+                );
+                let _ = writeln!(&mut out, "  detail: {}", check.detail);
+                if let Some(remediation) = &check.remediation {
+                    let _ = writeln!(&mut out, "  remediation: {remediation}");
+                }
+            }
+            out.trim_end().to_string()
+        }
+    };
+
+    render_sections("Doctor", &[("Overview", overview)], style, Some(appendix))
 }
 
 pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyle) -> String {
@@ -1636,13 +1724,14 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputStyle, render_candidate_build_capture, render_daemon_status,
+        OutputStyle, render_candidate_build_capture, render_daemon_status, render_doctor_report,
         render_experiment_artifact, render_experiment_list, render_experiment_score,
         render_session_export_artifact, render_session_list, render_skill_list,
         render_template_list, render_tool_list, render_workload_run_capture,
     };
     use crate::candidate_templates::template_specs;
     use crate::daemon_protocol::DaemonStatusSnapshot;
+    use crate::doctor::{DoctorCheck, DoctorReport, DoctorStatus};
     use crate::experiment::{
         CandidateBuildRecord, CandidateDecision, CandidateScore, CommandStatus, ExperimentArtifact,
         ExperimentScoreReport, ExperimentSummary, StepCommandRecord, VerifierBackend,
@@ -1721,6 +1810,42 @@ mod tests {
         assert!(rendered.contains("Daemon Status"));
         assert!(rendered.contains("Daemon PID: 42"));
         assert!(rendered.contains("State: none"));
+    }
+
+    #[test]
+    fn renders_doctor_report_summary() {
+        let rendered = render_doctor_report(
+            &DoctorReport {
+                workspace_root: PathBuf::from("/repo"),
+                app_state_dir: PathBuf::from("/repo/.nanoclaw/apps/sched-claw"),
+                daemon_socket: PathBuf::from("/repo/.nanoclaw/apps/sched-claw/sched-claw.sock"),
+                provider: "openai".to_string(),
+                model_alias: "gpt_5_4_default".to_string(),
+                model_name: "gpt-5.4".to_string(),
+                template_count: 4,
+                configured_skill_roots: vec![PathBuf::from("/repo/apps/code-agent/skills")],
+                checks: vec![
+                    DoctorCheck {
+                        category: "runtime",
+                        name: "selected provider credentials",
+                        status: DoctorStatus::Pass,
+                        detail: "OPENAI_API_KEY is configured".to_string(),
+                        remediation: None,
+                    },
+                    DoctorCheck {
+                        category: "daemon",
+                        name: "privileged sched-ext daemon",
+                        status: DoctorStatus::Fail,
+                        detail: "socket missing".to_string(),
+                        remediation: Some("start the daemon".to_string()),
+                    },
+                ],
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Doctor"));
+        assert!(rendered.contains("Overall: fail"));
+        assert!(rendered.contains("[fail] daemon / privileged sched-ext daemon"));
     }
 
     #[test]

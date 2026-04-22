@@ -33,6 +33,7 @@ pub struct RuntimeBootstrap {
 }
 
 pub struct BuiltRuntime {
+    pub config: SchedClawConfig,
     pub runtime: AgentRuntime,
     pub startup_catalog: StartupCatalog,
     pub daemon_client: SchedExtDaemonClient,
@@ -96,6 +97,7 @@ impl RuntimeBootstrap {
             .skill_catalog(self.skill_catalog)
             .build();
         Ok(BuiltRuntime {
+            config: self.config,
             runtime,
             startup_catalog: self.startup_catalog,
             daemon_client: self.daemon_client,

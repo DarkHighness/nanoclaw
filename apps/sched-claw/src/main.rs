@@ -10,13 +10,14 @@ use sched_claw::daemon_client::SchedExtDaemonClient;
 use sched_claw::daemon_protocol::{SchedExtDaemonRequest, SchedExtDaemonResponse};
 use sched_claw::deployment::{DeployOverrides, build_activation_plan};
 use sched_claw::display::{
-    OutputStyle, render_candidate_build_capture, render_daemon_response,
+    OutputStyle, render_candidate_build_capture, render_daemon_response, render_doctor_report,
     render_experiment_artifact, render_experiment_detail, render_experiment_list,
     render_experiment_score, render_session_detail, render_session_export_artifact,
     render_session_list, render_session_search_results, render_skill_detail, render_skill_list,
     render_template_detail, render_template_list, render_tool_detail, render_tool_list,
     render_workload_run_capture,
 };
+use sched_claw::doctor::collect_doctor_report;
 use sched_claw::experiment::{
     CandidateRecord, CandidateSpec, CommandStatus, DeploymentRecord, ExperimentCatalog,
     ExperimentInitSpec, RecordedRun, SchedulerKind,
@@ -70,6 +71,7 @@ enum Command {
     Template(TemplateArgs),
     Tool(ToolArgs),
     Skill(SkillArgs),
+    Doctor(DoctorArgs),
     Daemon(DaemonArgs),
 }
 
@@ -420,6 +422,12 @@ struct SkillShowArgs {
 }
 
 #[derive(Debug, Args)]
+struct DoctorArgs {
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
 struct DaemonArgs {
     #[command(subcommand)]
     command: DaemonCommand,
@@ -503,6 +511,9 @@ async fn main() -> Result<()> {
         Some(Command::Template(args)) => run_template_command(args).await?,
         Some(Command::Tool(args)) => run_tool_command(&workspace_root, &overrides, args).await?,
         Some(Command::Skill(args)) => run_skill_command(&workspace_root, &overrides, args).await?,
+        Some(Command::Doctor(args)) => {
+            run_doctor_command(&workspace_root, &overrides, args).await?
+        }
         Some(Command::Daemon(args)) => {
             run_daemon_command(&workspace_root, &overrides, args).await?
         }
@@ -1101,6 +1112,17 @@ async fn run_tool_command(
     Ok(())
 }
 
+async fn run_doctor_command(
+    workspace_root: &Path,
+    overrides: &CliOverrides,
+    args: DoctorArgs,
+) -> Result<()> {
+    let config = SchedClawConfig::load_from_dir(workspace_root, overrides)?;
+    let report = collect_doctor_report(workspace_root, &config).await?;
+    println!("{}", render_doctor_report(&report, args.output.style));
+    Ok(())
+}
+
 async fn run_skill_command(
     workspace_root: &Path,
     overrides: &CliOverrides,
@@ -1340,6 +1362,18 @@ mod tests {
                 assert_eq!(args.output.style, OutputStyle::Plain);
             }
             other => panic!("expected sessions command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_doctor_command() {
+        let cli = Cli::try_parse_from(["sched-claw", "doctor", "--style", "plain"]).unwrap();
+
+        match cli.command {
+            Some(Command::Doctor(args)) => {
+                assert_eq!(args.output.style, OutputStyle::Plain);
+            }
+            other => panic!("expected doctor command, got {other:?}"),
         }
     }
 

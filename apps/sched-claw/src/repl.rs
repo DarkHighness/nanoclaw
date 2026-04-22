@@ -7,18 +7,19 @@ use crate::bootstrap::BuiltRuntime;
 use crate::candidate_templates::{find_template, template_specs};
 use crate::daemon_protocol::SchedExtDaemonRequest;
 use crate::display::{
-    OutputStyle, render_daemon_response, render_experiment_detail, render_experiment_list,
-    render_experiment_score, render_session_detail, render_session_list,
+    OutputStyle, render_daemon_response, render_doctor_report, render_experiment_detail,
+    render_experiment_list, render_experiment_score, render_session_detail, render_session_list,
     render_session_search_results, render_skill_detail, render_skill_list, render_template_detail,
     render_template_list, render_tool_detail, render_tool_list,
 };
+use crate::doctor::collect_doctor_report;
 use crate::experiment::ExperimentCatalog;
 use crate::history::SessionHistory;
 
 pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) -> Result<()> {
     println!("sched-claw repl");
     println!(
-        "Commands: :help, :format <table|plain>, :experiments, :experiment <id>, :score <id>, :templates, :template <name>, :tools, :tool <name>, :skills, :skill <name>, :sessions [query], :session <id>, :resume <id>, :daemon status, :daemon logs [N], :quit"
+        "Commands: :help, :format <table|plain>, :doctor, :experiments, :experiment <id>, :score <id>, :templates, :template <name>, :tools, :tool <name>, :skills, :skill <name>, :sessions [query], :session <id>, :resume <id>, :daemon status, :daemon logs [N], :quit"
     );
     let stdin = io::stdin();
     let mut line = String::new();
@@ -35,6 +36,7 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
             ReplCommand::Help => {
                 println!("Type a normal prompt to run a turn.");
                 println!(":format <table|plain>  switch local inspection output style");
+                println!(":doctor                inspect host readiness for sched-claw");
                 println!(":experiments           list experiment manifests");
                 println!(":experiment <id>       inspect one experiment manifest");
                 println!(":score <id>            score one experiment manifest");
@@ -54,6 +56,10 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
             ReplCommand::SetFormat(style) => {
                 output_style = style;
                 println!("output format: {}", output_style.as_str());
+            }
+            ReplCommand::Doctor => {
+                let report = collect_doctor_report(&host.workspace_root, &host.config).await?;
+                println!("{}", render_doctor_report(&report, output_style));
             }
             ReplCommand::Experiments => {
                 let catalog = open_experiments(host)?;
@@ -173,6 +179,7 @@ enum ReplCommand {
     Help,
     Quit,
     SetFormat(OutputStyle),
+    Doctor,
     Experiments,
     ExperimentShow(String),
     ExperimentScore(String),
@@ -204,6 +211,7 @@ fn parse_repl_command(input: &str) -> Result<ReplCommand> {
     match command {
         ":quit" | ":exit" => Ok(ReplCommand::Quit),
         ":help" => Ok(ReplCommand::Help),
+        ":doctor" => Ok(ReplCommand::Doctor),
         ":experiments" => Ok(ReplCommand::Experiments),
         ":templates" => Ok(ReplCommand::Templates),
         ":tools" => Ok(ReplCommand::Tools),
@@ -355,6 +363,11 @@ mod tests {
             parse_repl_command(":format plain").unwrap(),
             ReplCommand::SetFormat(OutputStyle::Plain)
         );
+    }
+
+    #[test]
+    fn parses_doctor_command() {
+        assert_eq!(parse_repl_command(":doctor").unwrap(), ReplCommand::Doctor);
     }
 
     #[test]
