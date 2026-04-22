@@ -19,9 +19,11 @@ use sched_claw::display::{
 };
 use sched_claw::doctor::collect_doctor_report;
 use sched_claw::experiment::{
-    AnalysisConfidence, AnalysisRecord, CandidateRecord, CandidateSpec, CommandStatus,
-    DeploymentRecord, DesignRecord, EvaluationPolicy, EvidenceKind, EvidenceRecord,
-    ExperimentCatalog, ExperimentInitSpec, RecordedRun, SchedulerKind,
+    AnalysisConfidence, AnalysisRecord, CandidateDecision, CandidateDecisionRecord,
+    CandidateLineage, CandidateRecord, CandidateSpec, CommandStatus, DeploymentRecord,
+    DesignRecord, EvaluationPolicy, EvidenceKind, EvidenceRecord, ExperimentCatalog,
+    ExperimentInitSpec, RecordedRun, SchedulerKind, SearchPolicy, ensure_candidate_build_allowed,
+    ensure_candidate_run_allowed,
 };
 use sched_claw::history::SessionHistory;
 use sched_claw::metrics::{
@@ -142,17 +144,20 @@ enum ExperimentCommand {
     Init(ExperimentInitArgs),
     Show(ExperimentShowArgs),
     SetEvaluationPolicy(ExperimentSetEvaluationPolicyArgs),
+    SetSearchPolicy(ExperimentSetSearchPolicyArgs),
     RecordEvidence(ExperimentRecordEvidenceArgs),
     RecordAnalysis(ExperimentRecordAnalysisArgs),
     RecordDesign(ExperimentRecordDesignArgs),
     AddCandidate(ExperimentAddCandidateArgs),
     SetCandidate(ExperimentAddCandidateArgs),
+    ForkCandidate(ExperimentForkCandidateArgs),
     Materialize(ExperimentMaterializeArgs),
     Build(ExperimentBuildArgs),
     Run(ExperimentRunArgs),
     RecordBaseline(ExperimentRecordBaselineArgs),
     RecordCandidate(ExperimentRecordCandidateArgs),
     Score(ExperimentShowArgs),
+    RecordDecision(ExperimentRecordDecisionArgs),
     Deploy(ExperimentDeployArgs),
 }
 
@@ -230,6 +235,24 @@ struct ExperimentSetEvaluationPolicyArgs {
     min_primary_improvement_pct: Option<f64>,
     #[arg(long, value_name = "PCT")]
     max_primary_relative_spread_pct: Option<f64>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentSetSearchPolicyArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "N")]
+    max_candidates: Option<usize>,
+    #[arg(long, value_name = "N")]
+    max_total_candidate_runs: Option<usize>,
+    #[arg(long, value_name = "N")]
+    max_runs_per_candidate: Option<usize>,
+    #[arg(long, value_name = "N")]
+    max_total_builds: Option<usize>,
+    #[arg(long, value_name = "BOOL")]
+    stop_after_first_promote: Option<bool>,
+    #[arg(long, value_name = "TEXT")]
+    notes: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -324,6 +347,16 @@ struct ExperimentAddCandidateArgs {
     source_path: Option<String>,
     #[arg(long, value_name = "PATH")]
     object_path: Option<String>,
+    #[arg(long, value_name = "ID")]
+    parent_candidate_id: Option<String>,
+    #[arg(long = "lineage-evidence-id", value_name = "ID")]
+    lineage_evidence_ids: Vec<String>,
+    #[arg(long = "lineage-analysis-id", value_name = "ID")]
+    lineage_analysis_ids: Vec<String>,
+    #[arg(long = "lineage-design-id", value_name = "ID")]
+    lineage_design_ids: Vec<String>,
+    #[arg(long, value_name = "TEXT")]
+    mutation_note: Option<String>,
     #[arg(long, value_name = "TEXT")]
     build_command: Option<String>,
     #[arg(long = "daemon-arg", value_name = "ARG", allow_hyphen_values = true)]
@@ -334,6 +367,30 @@ struct ExperimentAddCandidateArgs {
     daemon_env: Vec<(String, String)>,
     #[arg(long = "knob", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
     knobs: Vec<(String, String)>,
+    #[arg(long, value_name = "TEXT")]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentForkCandidateArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long = "from-candidate", value_name = "ID")]
+    from_candidate_id: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "NAME")]
+    template: Option<String>,
+    #[arg(long = "knob", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    knobs: Vec<(String, String)>,
+    #[arg(long = "lineage-evidence-id", value_name = "ID")]
+    lineage_evidence_ids: Vec<String>,
+    #[arg(long = "lineage-analysis-id", value_name = "ID")]
+    lineage_analysis_ids: Vec<String>,
+    #[arg(long = "lineage-design-id", value_name = "ID")]
+    lineage_design_ids: Vec<String>,
+    #[arg(long, value_name = "TEXT")]
+    mutation_note: Option<String>,
     #[arg(long, value_name = "TEXT")]
     notes: Option<String>,
 }
@@ -438,6 +495,28 @@ struct ExperimentRecordCandidateArgs {
     metrics: Vec<(String, f64)>,
     #[arg(long, value_name = "TEXT")]
     notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentRecordDecisionArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    decision_id: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "STATUS", value_parser = parse_candidate_decision_arg)]
+    decision: CandidateDecision,
+    #[arg(long = "evidence-id", value_name = "ID")]
+    evidence_ids: Vec<String>,
+    #[arg(long = "analysis-id", value_name = "ID")]
+    analysis_ids: Vec<String>,
+    #[arg(long = "design-id", value_name = "ID")]
+    design_ids: Vec<String>,
+    #[arg(long, value_name = "PCT")]
+    primary_improvement_pct: Option<f64>,
+    #[arg(long, value_name = "TEXT")]
+    rationale: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -705,6 +784,7 @@ async fn run_experiment_command(
                 primary_metric,
                 performance_policy,
                 evaluation_policy,
+                search_policy: SearchPolicy::default(),
                 guardrails: args.guardrails,
             })?;
             println!("{}", render_experiment_artifact(&artifact));
@@ -732,6 +812,30 @@ async fn run_experiment_command(
                 policy.max_primary_relative_spread_pct = Some(value);
             }
             let artifact = catalog.set_evaluation_policy(&args.experiment_ref, policy)?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::SetSearchPolicy(args) => {
+            let experiment = catalog.load(&args.experiment_ref)?;
+            let mut policy = experiment.manifest.search_policy;
+            if let Some(value) = args.max_candidates {
+                policy.max_candidates = Some(value);
+            }
+            if let Some(value) = args.max_total_candidate_runs {
+                policy.max_total_candidate_runs = Some(value);
+            }
+            if let Some(value) = args.max_runs_per_candidate {
+                policy.max_runs_per_candidate = Some(value);
+            }
+            if let Some(value) = args.max_total_builds {
+                policy.max_total_builds = Some(value);
+            }
+            if let Some(value) = args.stop_after_first_promote {
+                policy.stop_after_first_promote = value;
+            }
+            if let Some(notes) = args.notes {
+                policy.notes = Some(notes);
+            }
+            let artifact = catalog.set_search_policy(&args.experiment_ref, policy)?;
             println!("{}", render_experiment_artifact(&artifact));
         }
         ExperimentCommand::RecordEvidence(args) => {
@@ -798,6 +902,13 @@ async fn run_experiment_command(
                 CandidateSpec {
                     candidate_id: args.candidate_id,
                     template: args.template,
+                    lineage: build_candidate_lineage(
+                        args.parent_candidate_id,
+                        args.lineage_evidence_ids,
+                        args.lineage_analysis_ids,
+                        args.lineage_design_ids,
+                        args.mutation_note,
+                    ),
                     source_path: args.source_path,
                     object_path: args.object_path,
                     build_command: args.build_command,
@@ -816,6 +927,13 @@ async fn run_experiment_command(
                 CandidateSpec {
                     candidate_id: args.candidate_id,
                     template: args.template,
+                    lineage: build_candidate_lineage(
+                        args.parent_candidate_id,
+                        args.lineage_evidence_ids,
+                        args.lineage_analysis_ids,
+                        args.lineage_design_ids,
+                        args.mutation_note,
+                    ),
                     source_path: args.source_path,
                     object_path: args.object_path,
                     build_command: args.build_command,
@@ -823,6 +941,49 @@ async fn run_experiment_command(
                     daemon_cwd: args.daemon_cwd,
                     daemon_env: args.daemon_env.into_iter().collect(),
                     knobs: args.knobs.into_iter().collect(),
+                    notes: args.notes,
+                },
+            )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::ForkCandidate(args) => {
+            let experiment = catalog.load(&args.experiment_ref)?;
+            let parent = experiment
+                .manifest
+                .candidates
+                .iter()
+                .find(|candidate| candidate.spec.candidate_id == args.from_candidate_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown candidate {} in experiment {}",
+                        args.from_candidate_id,
+                        experiment.manifest.experiment_id
+                    )
+                })?;
+            let mut knobs = parent.spec.knobs.clone();
+            knobs.extend(args.knobs.into_iter());
+            let artifact = catalog.fork_candidate(
+                &args.experiment_ref,
+                &args.from_candidate_id,
+                CandidateSpec {
+                    candidate_id: args.candidate_id,
+                    template: args
+                        .template
+                        .unwrap_or_else(|| parent.spec.template.clone()),
+                    lineage: build_candidate_lineage(
+                        Some(args.from_candidate_id.clone()),
+                        args.lineage_evidence_ids,
+                        args.lineage_analysis_ids,
+                        args.lineage_design_ids,
+                        args.mutation_note,
+                    ),
+                    source_path: None,
+                    object_path: None,
+                    build_command: None,
+                    daemon_argv: parent.spec.daemon_argv.clone(),
+                    daemon_cwd: parent.spec.daemon_cwd.clone(),
+                    daemon_env: parent.spec.daemon_env.clone(),
+                    knobs,
                     notes: args.notes,
                 },
             )?;
@@ -867,6 +1028,7 @@ async fn run_experiment_command(
             let mut candidate = existing.unwrap_or(CandidateSpec {
                 candidate_id: args.candidate_id.clone(),
                 template: template.name.to_string(),
+                lineage: CandidateLineage::default(),
                 source_path: None,
                 object_path: None,
                 build_command: None,
@@ -935,6 +1097,7 @@ async fn run_experiment_command(
                         experiment.manifest.experiment_id
                     )
                 })?;
+            ensure_candidate_build_allowed(&experiment.manifest)?;
             let record = capture_candidate_build(
                 workspace_root,
                 &experiment.manifest.experiment_id,
@@ -987,6 +1150,7 @@ async fn run_experiment_command(
                             experiment.manifest.experiment_id
                         )
                     })?;
+                ensure_candidate_run_allowed(&experiment.manifest, candidate)?;
                 ensure_candidate_ready_for_rollout(candidate, args.allow_unverified_build)?;
                 let plan = build_activation_plan(
                     &experiment.manifest.experiment_id,
@@ -1130,6 +1294,23 @@ async fn run_experiment_command(
             let report = catalog.score(&args.experiment_ref)?;
             println!("{}", render_experiment_score(&report, args.output.style));
         }
+        ExperimentCommand::RecordDecision(args) => {
+            let artifact = catalog.record_decision(
+                &args.experiment_ref,
+                CandidateDecisionRecord {
+                    decision_id: args.decision_id,
+                    candidate_id: args.candidate_id,
+                    recorded_at_unix_ms: sched_claw::experiment::now_unix_ms(),
+                    decision: args.decision,
+                    evidence_ids: args.evidence_ids,
+                    analysis_ids: args.analysis_ids,
+                    design_ids: args.design_ids,
+                    primary_improvement_pct: args.primary_improvement_pct,
+                    rationale: args.rationale,
+                },
+            )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
         ExperimentCommand::Deploy(args) => {
             let experiment = catalog.load(&args.experiment_ref)?;
             let candidate = experiment
@@ -1144,6 +1325,7 @@ async fn run_experiment_command(
                         experiment.manifest.experiment_id
                     )
                 })?;
+            ensure_candidate_build_allowed(&experiment.manifest)?;
             ensure_candidate_ready_for_rollout(candidate, args.allow_unverified_build)?;
             let plan = build_activation_plan(
                 &experiment.manifest.experiment_id,
@@ -1508,6 +1690,22 @@ fn resolve_performance_policy(
     Ok(policy)
 }
 
+fn build_candidate_lineage(
+    parent_candidate_id: Option<String>,
+    evidence_ids: Vec<String>,
+    analysis_ids: Vec<String>,
+    design_ids: Vec<String>,
+    mutation_note: Option<String>,
+) -> CandidateLineage {
+    CandidateLineage {
+        parent_candidate_id,
+        evidence_ids,
+        analysis_ids,
+        design_ids,
+        mutation_note,
+    }
+}
+
 fn parse_key_value_arg(value: &str) -> Result<(String, String)> {
     let (key, value) = value
         .split_once('=')
@@ -1563,6 +1761,18 @@ fn parse_analysis_confidence_arg(value: &str) -> Result<AnalysisConfidence> {
     }
 }
 
+fn parse_candidate_decision_arg(value: &str) -> Result<CandidateDecision> {
+    match value {
+        "promote" => Ok(CandidateDecision::Promote),
+        "revise" => Ok(CandidateDecision::Revise),
+        "blocked" => Ok(CandidateDecision::Blocked),
+        "incomplete" => Ok(CandidateDecision::Incomplete),
+        other => anyhow::bail!(
+            "unsupported decision `{other}`; expected promote, revise, blocked, or incomplete"
+        ),
+    }
+}
+
 fn parse_guardrail_arg(value: &str) -> Result<sched_claw::metrics::Guardrail> {
     parse_guardrail(value)
 }
@@ -1594,8 +1804,9 @@ mod tests {
     };
     use clap::Parser;
     use sched_claw::experiment::{
-        AnalysisConfidence, CandidateBuildRecord, CandidateRecord, CandidateSpec, CommandStatus,
-        EvidenceKind, StepCommandRecord, VerifierBackend, VerifierCommandRecord,
+        AnalysisConfidence, CandidateBuildRecord, CandidateDecision, CandidateLineage,
+        CandidateRecord, CandidateSpec, CommandStatus, EvidenceKind, StepCommandRecord,
+        VerifierBackend, VerifierCommandRecord,
     };
     use sched_claw::metrics::{MeasurementBasis, MetricGoal, MetricTarget, PerformancePreference};
     use std::collections::BTreeMap;
@@ -1753,6 +1964,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_set_search_policy_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "set-search-policy",
+            "demo",
+            "--max-candidates",
+            "5",
+            "--max-total-candidate-runs",
+            "12",
+            "--stop-after-first-promote",
+            "true",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::SetSearchPolicy(args) => {
+                    assert_eq!(args.max_candidates, Some(5));
+                    assert_eq!(args.max_total_candidate_runs, Some(12));
+                    assert_eq!(args.stop_after_first_promote, Some(true));
+                }
+                other => panic!("expected set-search-policy command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_record_evidence_command() {
         let cli = Cli::try_parse_from([
             "sched-claw",
@@ -1850,6 +2090,68 @@ mod tests {
                     assert_eq!(args.analysis_ids, vec!["analysis-a".to_string()]);
                 }
                 other => panic!("expected record-design command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_fork_candidate_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "fork-candidate",
+            "demo",
+            "--from-candidate",
+            "cand-a",
+            "--candidate-id",
+            "cand-b",
+            "--lineage-analysis-id",
+            "analysis-a",
+            "--mutation-note",
+            "narrow slice budget",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::ForkCandidate(args) => {
+                    assert_eq!(args.from_candidate_id, "cand-a");
+                    assert_eq!(args.candidate_id, "cand-b");
+                    assert_eq!(args.lineage_analysis_ids, vec!["analysis-a".to_string()]);
+                }
+                other => panic!("expected fork-candidate command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_record_decision_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "record-decision",
+            "demo",
+            "--decision-id",
+            "decision-a",
+            "--candidate-id",
+            "cand-a",
+            "--decision",
+            "promote",
+            "--primary-improvement-pct",
+            "12.5",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::RecordDecision(args) => {
+                    assert_eq!(args.decision_id, "decision-a");
+                    assert_eq!(args.decision, CandidateDecision::Promote);
+                    assert_eq!(args.primary_improvement_pct, Some(12.5));
+                }
+                other => panic!("expected record-decision command, got {other:?}"),
             },
             other => panic!("expected experiment command, got {other:?}"),
         }
@@ -2027,6 +2329,7 @@ mod tests {
             spec: CandidateSpec {
                 candidate_id: "cand-a".to_string(),
                 template: "latency_guard".to_string(),
+                lineage: CandidateLineage::default(),
                 source_path: None,
                 object_path: None,
                 build_command: None,

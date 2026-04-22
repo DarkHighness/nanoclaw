@@ -602,6 +602,7 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
                 "Analyses",
                 "Designs",
                 "Candidates",
+                "Decisions",
                 "Deployments",
                 "Updated (ms)",
             ],
@@ -619,6 +620,7 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
                         summary.analysis_count.to_string(),
                         summary.design_count.to_string(),
                         summary.candidate_count.to_string(),
+                        summary.decision_count.to_string(),
                         summary.deployment_count.to_string(),
                         summary.updated_at_unix_ms.to_string(),
                     ]
@@ -631,7 +633,7 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
             for summary in summaries {
                 let _ = writeln!(
                     &mut out,
-                    "- {} workload={} primary_metric={} baselines={} evidence={} analyses={} designs={} candidates={} deployments={}",
+                    "- {} workload={} primary_metric={} baselines={} evidence={} analyses={} designs={} candidates={} decisions={} deployments={}",
                     summary.experiment_id,
                     summary.workload_name,
                     summary.primary_metric_name,
@@ -640,6 +642,7 @@ pub fn render_experiment_list(summaries: &[ExperimentSummary], style: OutputStyl
                     summary.analysis_count,
                     summary.design_count,
                     summary.candidate_count,
+                    summary.decision_count,
                     summary.deployment_count
                 );
             }
@@ -829,6 +832,10 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
                     manifest.evaluation_policy.summary(),
                 ),
                 (
+                    "Search Policy".to_string(),
+                    manifest.search_policy.summary(),
+                ),
+                (
                     "Guardrails".to_string(),
                     if manifest.guardrails.is_empty() {
                         "<none>".to_string()
@@ -875,6 +882,10 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
                     manifest.deployments.len().to_string(),
                 ),
                 (
+                    "Decisions".to_string(),
+                    manifest.decisions.len().to_string(),
+                ),
+                (
                     "Build Attempts".to_string(),
                     count_candidate_builds(manifest).to_string(),
                 ),
@@ -899,7 +910,7 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
     ];
 
     let appendix = format!(
-        "Baseline Labels\n{}\n{}\n\nEvidence\n{}\n{}\n\nAnalyses\n{}\n{}\n\nDesign Notes\n{}\n{}\n\nCandidates\n{}\n{}\n\nBuild Attempts\n{}\n{}\n\nDeployments\n{}\n{}",
+        "Baseline Labels\n{}\n{}\n\nEvidence\n{}\n{}\n\nAnalyses\n{}\n{}\n\nDesign Notes\n{}\n{}\n\nCandidates\n{}\n{}\n\nDecisions\n{}\n{}\n\nBuild Attempts\n{}\n{}\n\nDeployments\n{}\n{}",
         "-".repeat("Baseline Labels".len()),
         list_run_labels(&manifest.baseline_runs),
         "-".repeat("Evidence".len()),
@@ -910,6 +921,8 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
         list_design_summaries(manifest),
         "-".repeat("Candidates".len()),
         list_candidate_summaries(manifest),
+        "-".repeat("Decisions".len()),
+        list_decision_summaries(manifest),
         "-".repeat("Build Attempts".len()),
         list_build_summaries(manifest),
         "-".repeat("Deployments".len()),
@@ -1760,7 +1773,7 @@ fn list_candidate_summaries(manifest: &crate::experiment::ExperimentManifest) ->
             .iter()
             .map(|candidate| {
                 format!(
-                    "{} [{}] runs={} builds={} source={} object={} last_build={} last_verify={} daemon={} knobs={}",
+                    "{} [{}] runs={} builds={} source={} object={} last_build={} last_verify={} daemon={} knobs={} lineage={}",
                     candidate.spec.candidate_id,
                     candidate.spec.template,
                     candidate.runs.len(),
@@ -1800,7 +1813,39 @@ fn list_candidate_summaries(manifest: &crate::experiment::ExperimentManifest) ->
                             .map(|(key, value)| format!("{key}={value}"))
                             .collect::<Vec<_>>()
                             .join(", ")
-                    }
+                    },
+                    format_candidate_lineage(&candidate.spec.lineage)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn list_decision_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
+    if manifest.decisions.is_empty() {
+        "<none>".to_string()
+    } else {
+        manifest
+            .decisions
+            .iter()
+            .map(|record| {
+                format!(
+                    "{} candidate={} status={} improvement={} refs=evidence:{} analysis:{} design:{} rationale={}",
+                    record.decision_id,
+                    record.candidate_id,
+                    record.decision.as_str(),
+                    record
+                        .primary_improvement_pct
+                        .map(format_pct)
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    join_or_none(record.evidence_ids.clone()),
+                    join_or_none(record.analysis_ids.clone()),
+                    join_or_none(record.design_ids.clone()),
+                    record
+                        .rationale
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string())
                 )
             })
             .collect::<Vec<_>>()
@@ -1841,6 +1886,29 @@ fn count_candidate_builds(manifest: &crate::experiment::ExperimentManifest) -> u
         .iter()
         .map(|candidate| candidate.builds.len())
         .sum()
+}
+
+fn format_candidate_lineage(lineage: &crate::experiment::CandidateLineage) -> String {
+    if lineage.is_empty() {
+        return "<none>".to_string();
+    }
+    let mut parts = Vec::new();
+    if let Some(parent_candidate_id) = &lineage.parent_candidate_id {
+        parts.push(format!("parent={parent_candidate_id}"));
+    }
+    if !lineage.evidence_ids.is_empty() {
+        parts.push(format!("evidence={}", lineage.evidence_ids.join(",")));
+    }
+    if !lineage.analysis_ids.is_empty() {
+        parts.push(format!("analysis={}", lineage.analysis_ids.join(",")));
+    }
+    if !lineage.design_ids.is_empty() {
+        parts.push(format!("design={}", lineage.design_ids.join(",")));
+    }
+    if let Some(mutation_note) = &lineage.mutation_note {
+        parts.push(format!("note={mutation_note}"));
+    }
+    parts.join(" ")
 }
 
 fn list_deployment_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
@@ -1943,9 +2011,9 @@ mod tests {
     use crate::doctor::{DoctorCheck, DoctorReport, DoctorStatus};
     use crate::experiment::{
         AnalysisConfidence, AnalysisRecord, CandidateBuildRecord, CandidateDecision,
-        CandidateScore, CommandStatus, DesignRecord, EvaluationPolicy, EvidenceKind,
-        EvidenceRecord, ExperimentArtifact, ExperimentScoreReport, ExperimentSummary,
-        StepCommandRecord, VerifierBackend, VerifierCommandRecord,
+        CandidateDecisionRecord, CandidateLineage, CandidateScore, CommandStatus, DesignRecord,
+        EvaluationPolicy, EvidenceKind, EvidenceRecord, ExperimentArtifact, ExperimentScoreReport,
+        ExperimentSummary, SearchPolicy, StepCommandRecord, VerifierBackend, VerifierCommandRecord,
     };
     use crate::history::{SessionExportArtifact, SessionExportKind};
     use crate::metrics::{MetricGoal, MetricTarget};
@@ -2103,6 +2171,7 @@ mod tests {
                 analysis_count: 1,
                 design_count: 1,
                 candidate_count: 2,
+                decision_count: 1,
                 deployment_count: 1,
             }],
             OutputStyle::Plain,
@@ -2170,6 +2239,14 @@ mod tests {
                     },
                     performance_policy: Default::default(),
                     evaluation_policy: EvaluationPolicy::default(),
+                    search_policy: SearchPolicy {
+                        max_candidates: Some(4),
+                        max_total_candidate_runs: Some(8),
+                        max_runs_per_candidate: Some(3),
+                        max_total_builds: Some(6),
+                        stop_after_first_promote: true,
+                        notes: Some("stop after first strong candidate".to_string()),
+                    },
                     guardrails: Vec::new(),
                     baseline_runs: Vec::new(),
                     evidence: vec![EvidenceRecord {
@@ -2212,7 +2289,40 @@ mod tests {
                         fallback_criteria: vec!["rollback on throughput loss".to_string()],
                         summary: Some("first design pass".to_string()),
                     }],
-                    candidates: Vec::new(),
+                    candidates: vec![crate::experiment::CandidateRecord {
+                        spec: crate::experiment::CandidateSpec {
+                            candidate_id: "cand-a".to_string(),
+                            template: "latency_guard".to_string(),
+                            lineage: CandidateLineage {
+                                parent_candidate_id: Some("cand-base".to_string()),
+                                evidence_ids: vec!["perf-a".to_string()],
+                                analysis_ids: vec!["analysis-a".to_string()],
+                                design_ids: vec!["design-a".to_string()],
+                                mutation_note: Some("tighten locality bias".to_string()),
+                            },
+                            source_path: None,
+                            object_path: None,
+                            build_command: None,
+                            daemon_argv: Vec::new(),
+                            daemon_cwd: None,
+                            daemon_env: BTreeMap::new(),
+                            knobs: BTreeMap::new(),
+                            notes: None,
+                        },
+                        runs: Vec::new(),
+                        builds: Vec::new(),
+                    }],
+                    decisions: vec![CandidateDecisionRecord {
+                        decision_id: "decision-a".to_string(),
+                        candidate_id: "cand-a".to_string(),
+                        recorded_at_unix_ms: 4,
+                        decision: CandidateDecision::Promote,
+                        evidence_ids: vec!["perf-a".to_string()],
+                        analysis_ids: vec!["analysis-a".to_string()],
+                        design_ids: vec!["design-a".to_string()],
+                        primary_improvement_pct: Some(12.5),
+                        rationale: Some("latency improved without guardrail breach".to_string()),
+                    }],
                     deployments: Vec::new(),
                 },
             },
@@ -2222,6 +2332,9 @@ mod tests {
         assert!(rendered.contains("perf-a [perf_stat]"));
         assert!(rendered.contains("analysis-a [medium]"));
         assert!(rendered.contains("design-a candidate=cand-a"));
+        assert!(rendered.contains("Search Policy"));
+        assert!(rendered.contains("decision-a candidate=cand-a status=promote"));
+        assert!(rendered.contains("lineage=parent=cand-base"));
     }
 
     #[test]

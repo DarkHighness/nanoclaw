@@ -31,6 +31,7 @@ tags:
 4. Use `sched-claw experiment score`.
    - interpret the typed decision: `promote`, `revise`, `blocked`, `incomplete`
    - check guardrails before celebrating the primary metric
+   - if the score led to a durable keep or stop decision, persist it with `sched-claw experiment record-decision ...`
 5. End with a factual comparison.
    - what changed
    - whether the change is attributable

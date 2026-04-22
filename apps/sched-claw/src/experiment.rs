@@ -25,6 +25,8 @@ pub struct ExperimentManifest {
     pub performance_policy: PerformancePolicy,
     #[serde(default)]
     pub evaluation_policy: EvaluationPolicy,
+    #[serde(default)]
+    pub search_policy: SearchPolicy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guardrails: Vec<Guardrail>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -39,6 +41,8 @@ pub struct ExperimentManifest {
     pub designs: Vec<DesignRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<CandidateRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<CandidateDecisionRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deployments: Vec<DeploymentRecord>,
 }
@@ -56,6 +60,8 @@ pub struct CandidateRecord {
 pub struct CandidateSpec {
     pub candidate_id: String,
     pub template: String,
+    #[serde(default, skip_serializing_if = "CandidateLineage::is_empty")]
+    pub lineage: CandidateLineage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -72,6 +78,31 @@ pub struct CandidateSpec {
     pub knobs: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CandidateLineage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_candidate_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analysis_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub design_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_note: Option<String>,
+}
+
+impl CandidateLineage {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.parent_candidate_id.is_none()
+            && self.evidence_ids.is_empty()
+            && self.analysis_ids.is_empty()
+            && self.design_ids.is_empty()
+            && self.mutation_note.is_none()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -321,7 +352,68 @@ pub struct ExperimentInitSpec {
     pub primary_metric: MetricTarget,
     pub performance_policy: PerformancePolicy,
     pub evaluation_policy: EvaluationPolicy,
+    pub search_policy: SearchPolicy,
     pub guardrails: Vec<Guardrail>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SearchPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_candidates: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_candidate_runs: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_runs_per_candidate: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_builds: Option<usize>,
+    #[serde(default)]
+    pub stop_after_first_promote: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+impl SearchPolicy {
+    pub fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("max_candidates", self.max_candidates),
+            ("max_total_candidate_runs", self.max_total_candidate_runs),
+            ("max_runs_per_candidate", self.max_runs_per_candidate),
+            ("max_total_builds", self.max_total_builds),
+        ] {
+            if matches!(value, Some(0)) {
+                bail!("{name} must be at least 1 when set");
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(value) = self.max_candidates {
+            parts.push(format!("candidates<={value}"));
+        }
+        if let Some(value) = self.max_total_candidate_runs {
+            parts.push(format!("candidate_runs<={value}"));
+        }
+        if let Some(value) = self.max_runs_per_candidate {
+            parts.push(format!("runs_per_candidate<={value}"));
+        }
+        if let Some(value) = self.max_total_builds {
+            parts.push(format!("builds<={value}"));
+        }
+        if self.stop_after_first_promote {
+            parts.push("stop_after_first_promote=yes".to_string());
+        }
+        if let Some(notes) = &self.notes {
+            parts.push(format!("notes={notes}"));
+        }
+        if parts.is_empty() {
+            "open".to_string()
+        } else {
+            parts.join(" / ")
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -396,6 +488,7 @@ pub struct ExperimentSummary {
     pub analysis_count: usize,
     pub design_count: usize,
     pub candidate_count: usize,
+    pub decision_count: usize,
     pub deployment_count: usize,
 }
 
@@ -423,6 +516,24 @@ pub struct ExperimentScoreReport {
     pub baseline_primary_value: Option<f64>,
     pub baseline_primary_relative_spread_pct: Option<f64>,
     pub entries: Vec<CandidateScore>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CandidateDecisionRecord {
+    pub decision_id: String,
+    pub candidate_id: String,
+    pub recorded_at_unix_ms: u64,
+    pub decision: CandidateDecision,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analysis_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub design_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_improvement_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -455,7 +566,8 @@ pub enum GuardrailStatus {
     Missing,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CandidateDecision {
     Promote,
     Revise,
@@ -526,6 +638,7 @@ impl ExperimentCatalog {
                 analysis_count: manifest.analyses.len(),
                 design_count: manifest.designs.len(),
                 candidate_count: manifest.candidates.len(),
+                decision_count: manifest.decisions.len(),
                 deployment_count: manifest.deployments.len(),
             });
         }
@@ -542,6 +655,7 @@ impl ExperimentCatalog {
         validate_identifier("experiment id", &spec.experiment_id)?;
         spec.performance_policy.validate()?;
         spec.evaluation_policy.validate()?;
+        spec.search_policy.validate()?;
         let manifest_path = self.manifest_path_for_id(&spec.experiment_id);
         if manifest_path.exists() {
             bail!(
@@ -561,12 +675,14 @@ impl ExperimentCatalog {
             primary_metric: spec.primary_metric,
             performance_policy: spec.performance_policy,
             evaluation_policy: spec.evaluation_policy,
+            search_policy: spec.search_policy,
             guardrails: spec.guardrails,
             baseline_runs: Vec::new(),
             evidence: Vec::new(),
             analyses: Vec::new(),
             designs: Vec::new(),
             candidates: Vec::new(),
+            decisions: Vec::new(),
             deployments: Vec::new(),
         };
         write_manifest(&manifest_path, &manifest)?;
@@ -601,6 +717,7 @@ impl ExperimentCatalog {
     ) -> Result<ExperimentArtifact> {
         validate_identifier("candidate id", &spec.candidate_id)?;
         let mut loaded = self.load(reference)?;
+        enforce_candidate_add_policy(&loaded.manifest)?;
         if loaded
             .manifest
             .candidates
@@ -613,6 +730,7 @@ impl ExperimentCatalog {
                 loaded.manifest.experiment_id
             );
         }
+        validate_candidate_lineage(&loaded.manifest, &spec.lineage)?;
         loaded.manifest.candidates.push(CandidateRecord {
             spec,
             runs: Vec::new(),
@@ -636,6 +754,15 @@ impl ExperimentCatalog {
     ) -> Result<ExperimentArtifact> {
         validate_identifier("candidate id", &spec.candidate_id)?;
         let mut loaded = self.load(reference)?;
+        let exists = loaded
+            .manifest
+            .candidates
+            .iter()
+            .any(|candidate| candidate.spec.candidate_id == spec.candidate_id);
+        if !exists {
+            enforce_candidate_add_policy(&loaded.manifest)?;
+        }
+        validate_candidate_lineage(&loaded.manifest, &spec.lineage)?;
         let action = if let Some(existing) = loaded
             .manifest
             .candidates
@@ -660,6 +787,73 @@ impl ExperimentCatalog {
             manifest_path: loaded.manifest_path,
             details: vec![
                 ("candidate".to_string(), spec.candidate_id),
+                ("template".to_string(), spec.template),
+            ],
+        })
+    }
+
+    pub fn fork_candidate(
+        &self,
+        reference: &str,
+        from_candidate_id: &str,
+        mut spec: CandidateSpec,
+    ) -> Result<ExperimentArtifact> {
+        validate_identifier("candidate id", &spec.candidate_id)?;
+        let mut loaded = self.load(reference)?;
+        enforce_candidate_add_policy(&loaded.manifest)?;
+        if loaded
+            .manifest
+            .candidates
+            .iter()
+            .any(|candidate| candidate.spec.candidate_id == spec.candidate_id)
+        {
+            bail!(
+                "candidate {} already exists in experiment {}",
+                spec.candidate_id,
+                loaded.manifest.experiment_id
+            );
+        }
+        let parent = loaded
+            .manifest
+            .candidates
+            .iter()
+            .find(|candidate| candidate.spec.candidate_id == from_candidate_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "unknown candidate {} in experiment {}",
+                    from_candidate_id,
+                    loaded.manifest.experiment_id
+                )
+            })?;
+        if let Some(parent_candidate_id) = spec.lineage.parent_candidate_id.as_deref() {
+            require_candidate(&loaded.manifest, parent_candidate_id)?;
+        }
+        for evidence_id in &spec.lineage.evidence_ids {
+            require_evidence(&loaded.manifest, evidence_id)?;
+        }
+        for analysis_id in &spec.lineage.analysis_ids {
+            require_analysis(&loaded.manifest, analysis_id)?;
+        }
+        for design_id in &spec.lineage.design_ids {
+            require_design(&loaded.manifest, design_id)?;
+        }
+        if spec.template.is_empty() {
+            spec.template = parent.spec.template.clone();
+        }
+        loaded.manifest.candidates.push(CandidateRecord {
+            spec: spec.clone(),
+            runs: Vec::new(),
+            builds: Vec::new(),
+        });
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "forked candidate",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details: vec![
+                ("candidate".to_string(), spec.candidate_id),
+                ("from".to_string(), from_candidate_id.to_string()),
                 ("template".to_string(), spec.template),
             ],
         })
@@ -823,11 +1017,11 @@ impl ExperimentCatalog {
         run: RecordedRun,
     ) -> Result<ExperimentArtifact> {
         let mut loaded = self.load(reference)?;
-        let candidate = loaded
+        let candidate_index = loaded
             .manifest
             .candidates
-            .iter_mut()
-            .find(|candidate| candidate.spec.candidate_id == candidate_id)
+            .iter()
+            .position(|candidate| candidate.spec.candidate_id == candidate_id)
             .ok_or_else(|| {
                 anyhow!(
                     "unknown candidate {} in experiment {}",
@@ -835,7 +1029,11 @@ impl ExperimentCatalog {
                     loaded.manifest.experiment_id
                 )
             })?;
-        candidate.runs.push(run);
+        ensure_candidate_run_allowed(
+            &loaded.manifest,
+            &loaded.manifest.candidates[candidate_index],
+        )?;
+        loaded.manifest.candidates[candidate_index].runs.push(run);
         touch_manifest(&mut loaded.manifest);
         write_manifest(&loaded.manifest_path, &loaded.manifest)?;
         Ok(ExperimentArtifact {
@@ -853,11 +1051,11 @@ impl ExperimentCatalog {
         build: CandidateBuildRecord,
     ) -> Result<ExperimentArtifact> {
         let mut loaded = self.load(reference)?;
-        let candidate = loaded
+        let candidate_index = loaded
             .manifest
             .candidates
-            .iter_mut()
-            .find(|candidate| candidate.spec.candidate_id == candidate_id)
+            .iter()
+            .position(|candidate| candidate.spec.candidate_id == candidate_id)
             .ok_or_else(|| {
                 anyhow!(
                     "unknown candidate {} in experiment {}",
@@ -865,10 +1063,13 @@ impl ExperimentCatalog {
                     loaded.manifest.experiment_id
                 )
             })?;
+        ensure_candidate_build_allowed(&loaded.manifest)?;
         let build_status = build.build.status.as_str().to_string();
         let verify_status = build.verifier.status.as_str().to_string();
         let artifact_dir = build.artifact_dir.clone();
-        candidate.builds.push(build);
+        loaded.manifest.candidates[candidate_index]
+            .builds
+            .push(build);
         touch_manifest(&mut loaded.manifest);
         write_manifest(&loaded.manifest_path, &loaded.manifest)?;
         Ok(ExperimentArtifact {
@@ -920,6 +1121,68 @@ impl ExperimentCatalog {
             experiment_id: loaded.manifest.experiment_id,
             manifest_path: loaded.manifest_path,
             details: vec![("policy".to_string(), policy.summary())],
+        })
+    }
+
+    pub fn set_search_policy(
+        &self,
+        reference: &str,
+        policy: SearchPolicy,
+    ) -> Result<ExperimentArtifact> {
+        policy.validate()?;
+        let mut loaded = self.load(reference)?;
+        loaded.manifest.search_policy = policy.clone();
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "updated search policy",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details: vec![("policy".to_string(), policy.summary())],
+        })
+    }
+
+    pub fn record_decision(
+        &self,
+        reference: &str,
+        record: CandidateDecisionRecord,
+    ) -> Result<ExperimentArtifact> {
+        validate_identifier("decision id", &record.decision_id)?;
+        let mut loaded = self.load(reference)?;
+        if loaded
+            .manifest
+            .decisions
+            .iter()
+            .any(|entry| entry.decision_id == record.decision_id)
+        {
+            bail!(
+                "decision {} already exists in experiment {}",
+                record.decision_id,
+                loaded.manifest.experiment_id
+            );
+        }
+        require_candidate(&loaded.manifest, &record.candidate_id)?;
+        for evidence_id in &record.evidence_ids {
+            require_evidence(&loaded.manifest, evidence_id)?;
+        }
+        for analysis_id in &record.analysis_ids {
+            require_analysis(&loaded.manifest, analysis_id)?;
+        }
+        for design_id in &record.design_ids {
+            require_design(&loaded.manifest, design_id)?;
+        }
+        loaded.manifest.decisions.push(record.clone());
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "recorded decision",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details: vec![
+                ("decision".to_string(), record.decision_id),
+                ("candidate".to_string(), record.candidate_id),
+                ("status".to_string(), record.decision.as_str().to_string()),
+            ],
         })
     }
 
@@ -1063,6 +1326,127 @@ fn require_analysis(manifest: &ExperimentManifest, analysis_id: &str) -> Result<
             manifest.experiment_id
         )
     }
+}
+
+fn require_design(manifest: &ExperimentManifest, design_id: &str) -> Result<()> {
+    if manifest
+        .designs
+        .iter()
+        .any(|design| design.design_id == design_id)
+    {
+        Ok(())
+    } else {
+        bail!(
+            "unknown design {} in experiment {}",
+            design_id,
+            manifest.experiment_id
+        )
+    }
+}
+
+fn validate_candidate_lineage(
+    manifest: &ExperimentManifest,
+    lineage: &CandidateLineage,
+) -> Result<()> {
+    if let Some(parent_candidate_id) = lineage.parent_candidate_id.as_deref() {
+        require_candidate(manifest, parent_candidate_id)?;
+    }
+    for evidence_id in &lineage.evidence_ids {
+        require_evidence(manifest, evidence_id)?;
+    }
+    for analysis_id in &lineage.analysis_ids {
+        require_analysis(manifest, analysis_id)?;
+    }
+    for design_id in &lineage.design_ids {
+        require_design(manifest, design_id)?;
+    }
+    Ok(())
+}
+
+fn enforce_candidate_add_policy(manifest: &ExperimentManifest) -> Result<()> {
+    enforce_search_policy_stop(manifest)?;
+    if let Some(limit) = manifest.search_policy.max_candidates
+        && manifest.candidates.len() >= limit
+    {
+        bail!(
+            "search policy candidate limit {} reached for experiment {}; update `sched-claw experiment set-search-policy ...` before adding more candidates",
+            limit,
+            manifest.experiment_id
+        );
+    }
+    Ok(())
+}
+
+pub fn ensure_candidate_build_allowed(manifest: &ExperimentManifest) -> Result<()> {
+    enforce_search_policy_stop(manifest)?;
+    if let Some(limit) = manifest.search_policy.max_total_builds
+        && count_total_builds(manifest) >= limit
+    {
+        bail!(
+            "search policy build limit {} reached for experiment {}; update `sched-claw experiment set-search-policy ...` before recording more builds",
+            limit,
+            manifest.experiment_id
+        );
+    }
+    Ok(())
+}
+
+pub fn ensure_candidate_run_allowed(
+    manifest: &ExperimentManifest,
+    candidate: &CandidateRecord,
+) -> Result<()> {
+    enforce_search_policy_stop(manifest)?;
+    if let Some(limit) = manifest.search_policy.max_total_candidate_runs
+        && count_total_candidate_runs(manifest) >= limit
+    {
+        bail!(
+            "search policy candidate-run limit {} reached for experiment {}; update `sched-claw experiment set-search-policy ...` before recording more runs",
+            limit,
+            manifest.experiment_id
+        );
+    }
+    if let Some(limit) = manifest.search_policy.max_runs_per_candidate
+        && candidate.runs.len() >= limit
+    {
+        bail!(
+            "search policy per-candidate run limit {} reached for candidate {} in experiment {}",
+            limit,
+            candidate.spec.candidate_id,
+            manifest.experiment_id
+        );
+    }
+    Ok(())
+}
+
+fn enforce_search_policy_stop(manifest: &ExperimentManifest) -> Result<()> {
+    if manifest.search_policy.stop_after_first_promote
+        && manifest
+            .decisions
+            .iter()
+            .any(|record| matches!(record.decision, CandidateDecision::Promote))
+    {
+        bail!(
+            "search policy stop_after_first_promote is active and experiment {} already has a promoted candidate decision",
+            manifest.experiment_id
+        );
+    }
+    Ok(())
+}
+
+fn count_total_candidate_runs(manifest: &ExperimentManifest) -> usize {
+    manifest
+        .candidates
+        .iter()
+        .map(|candidate| candidate.runs.len())
+        .sum()
+}
+
+fn count_total_builds(manifest: &ExperimentManifest) -> usize {
+    manifest
+        .candidates
+        .iter()
+        .map(|candidate| candidate.builds.len())
+        .sum()
 }
 
 fn default_min_run_count() -> usize {
@@ -1299,10 +1683,10 @@ fn score_guardrail(
 mod tests {
     use super::{
         AnalysisConfidence, AnalysisRecord, CandidateBuildRecord, CandidateDecision,
-        CandidateRecord, CandidateSpec, CommandStatus, DeploymentRecord, DesignRecord,
-        EvaluationPolicy, EvidenceKind, EvidenceRecord, ExperimentCatalog, ExperimentInitSpec,
-        RecordedRun, SchedulerKind, StepCommandRecord, VerifierBackend, VerifierCommandRecord,
-        experiments_dir,
+        CandidateDecisionRecord, CandidateLineage, CandidateRecord, CandidateSpec, CommandStatus,
+        DeploymentRecord, DesignRecord, EvaluationPolicy, EvidenceKind, EvidenceRecord,
+        ExperimentCatalog, ExperimentInitSpec, RecordedRun, SchedulerKind, SearchPolicy,
+        StepCommandRecord, VerifierBackend, VerifierCommandRecord, experiments_dir,
     };
     use crate::metrics::{Guardrail, MetricGoal, MetricMap, MetricTarget, PerformancePolicy};
     use crate::workload::WorkloadContract;
@@ -1328,6 +1712,7 @@ mod tests {
                 },
                 performance_policy: PerformancePolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -1360,6 +1745,7 @@ mod tests {
                 },
                 performance_policy: PerformancePolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
                 guardrails: vec![Guardrail {
                     name: "throughput".to_string(),
                     goal: MetricGoal::Maximize,
@@ -1390,6 +1776,7 @@ mod tests {
             spec: CandidateSpec {
                 candidate_id: "cand-a".to_string(),
                 template: "locality".to_string(),
+                lineage: CandidateLineage::default(),
                 source_path: None,
                 object_path: None,
                 build_command: None,
@@ -1438,6 +1825,7 @@ mod tests {
                 },
                 performance_policy: PerformancePolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -1447,6 +1835,7 @@ mod tests {
                 CandidateSpec {
                     candidate_id: "cand-a".to_string(),
                     template: "latency_guard".to_string(),
+                    lineage: CandidateLineage::default(),
                     source_path: Some("sources/a.bpf.c".to_string()),
                     object_path: Some("sources/a.bpf.o".to_string()),
                     build_command: None,
@@ -1464,6 +1853,7 @@ mod tests {
                 CandidateSpec {
                     candidate_id: "cand-a".to_string(),
                     template: "dsq_locality".to_string(),
+                    lineage: CandidateLineage::default(),
                     source_path: Some("sources/b.bpf.c".to_string()),
                     object_path: Some("sources/b.bpf.o".to_string()),
                     build_command: Some("clang ...".to_string()),
@@ -1507,6 +1897,7 @@ mod tests {
                 },
                 performance_policy: PerformancePolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -1551,6 +1942,7 @@ mod tests {
                 },
                 performance_policy: PerformancePolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -1560,6 +1952,7 @@ mod tests {
                 CandidateSpec {
                     candidate_id: "cand-a".to_string(),
                     template: "latency_guard".to_string(),
+                    lineage: CandidateLineage::default(),
                     source_path: Some("sources/cand-a.bpf.c".to_string()),
                     object_path: Some("sources/cand-a.bpf.o".to_string()),
                     build_command: Some("clang ...".to_string()),
@@ -1631,6 +2024,7 @@ mod tests {
                 },
                 performance_policy: PerformancePolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -1640,6 +2034,7 @@ mod tests {
                 CandidateSpec {
                     candidate_id: "cand-a".to_string(),
                     template: "latency_guard".to_string(),
+                    lineage: CandidateLineage::default(),
                     source_path: Some("sources/cand-a.bpf.c".to_string()),
                     object_path: Some("sources/cand-a.bpf.o".to_string()),
                     build_command: Some("clang ...".to_string()),
@@ -1741,6 +2136,7 @@ mod tests {
                     min_primary_improvement_pct: Some(5.0),
                     max_primary_relative_spread_pct: Some(10.0),
                 },
+                search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -1763,6 +2159,7 @@ mod tests {
                 CandidateSpec {
                     candidate_id: "cand-a".to_string(),
                     template: "latency_guard".to_string(),
+                    lineage: CandidateLineage::default(),
                     source_path: None,
                     object_path: None,
                     build_command: None,
@@ -1818,6 +2215,7 @@ mod tests {
                 },
                 performance_policy: PerformancePolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
             })
             .unwrap();
@@ -1850,5 +2248,274 @@ mod tests {
                 .max_primary_relative_spread_pct,
             Some(9.0)
         );
+    }
+
+    #[test]
+    fn set_search_policy_updates_manifest() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "search-policy".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .set_search_policy(
+                "search-policy",
+                SearchPolicy {
+                    max_candidates: Some(4),
+                    max_total_candidate_runs: Some(10),
+                    max_runs_per_candidate: Some(3),
+                    max_total_builds: Some(8),
+                    stop_after_first_promote: true,
+                    notes: Some("stop once a strong candidate appears".to_string()),
+                },
+            )
+            .unwrap();
+
+        let loaded = catalog.load("search-policy").unwrap();
+        assert_eq!(loaded.manifest.search_policy.max_candidates, Some(4));
+        assert_eq!(
+            loaded.manifest.search_policy.max_total_candidate_runs,
+            Some(10)
+        );
+        assert!(loaded.manifest.search_policy.stop_after_first_promote);
+    }
+
+    #[test]
+    fn fork_candidate_records_lineage() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "fork-demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .record_evidence(
+                "fork-demo",
+                EvidenceRecord {
+                    evidence_id: "perf-a".to_string(),
+                    recorded_at_unix_ms: 1,
+                    kind: EvidenceKind::PerfStat,
+                    collector: None,
+                    focus: None,
+                    phase: None,
+                    scheduler: Some(SchedulerKind::Cfs),
+                    candidate_id: None,
+                    artifact_paths: Vec::new(),
+                    metrics: MetricMap::new(),
+                    summary: None,
+                    notes: Vec::new(),
+                },
+            )
+            .unwrap();
+        catalog
+            .record_analysis(
+                "fork-demo",
+                AnalysisRecord {
+                    analysis_id: "analysis-a".to_string(),
+                    recorded_at_unix_ms: 2,
+                    title: "Baseline".to_string(),
+                    confidence: AnalysisConfidence::Medium,
+                    evidence_ids: vec!["perf-a".to_string()],
+                    facts: vec!["ipc is low".to_string()],
+                    inferences: Vec::new(),
+                    unknowns: Vec::new(),
+                    recommendations: Vec::new(),
+                    summary: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .record_design(
+                "fork-demo",
+                DesignRecord {
+                    design_id: "design-a".to_string(),
+                    recorded_at_unix_ms: 3,
+                    title: "Locality".to_string(),
+                    candidate_id: None,
+                    evidence_ids: vec!["perf-a".to_string()],
+                    analysis_ids: vec!["analysis-a".to_string()],
+                    policy_levers: vec!["prefer same-cpu wakeups".to_string()],
+                    invariants: Vec::new(),
+                    code_targets: Vec::new(),
+                    risks: Vec::new(),
+                    fallback_criteria: Vec::new(),
+                    summary: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .set_candidate(
+                "fork-demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "latency_guard".to_string(),
+                    lineage: CandidateLineage::default(),
+                    source_path: None,
+                    object_path: None,
+                    build_command: None,
+                    daemon_argv: vec!["loader".to_string()],
+                    daemon_cwd: None,
+                    daemon_env: BTreeMap::new(),
+                    knobs: BTreeMap::from([("slice_us".to_string(), "1000".to_string())]),
+                    notes: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .fork_candidate(
+                "fork-demo",
+                "cand-a",
+                CandidateSpec {
+                    candidate_id: "cand-b".to_string(),
+                    template: "latency_guard".to_string(),
+                    lineage: CandidateLineage {
+                        parent_candidate_id: Some("cand-a".to_string()),
+                        evidence_ids: vec!["perf-a".to_string()],
+                        analysis_ids: vec!["analysis-a".to_string()],
+                        design_ids: vec!["design-a".to_string()],
+                        mutation_note: Some("narrow slice budget".to_string()),
+                    },
+                    source_path: None,
+                    object_path: None,
+                    build_command: None,
+                    daemon_argv: vec!["loader".to_string()],
+                    daemon_cwd: None,
+                    daemon_env: BTreeMap::new(),
+                    knobs: BTreeMap::from([("slice_us".to_string(), "750".to_string())]),
+                    notes: Some("forked".to_string()),
+                },
+            )
+            .unwrap();
+
+        let loaded = catalog.load("fork-demo").unwrap();
+        let child = loaded
+            .manifest
+            .candidates
+            .iter()
+            .find(|candidate| candidate.spec.candidate_id == "cand-b")
+            .unwrap();
+        assert_eq!(
+            child.spec.lineage.parent_candidate_id.as_deref(),
+            Some("cand-a")
+        );
+        assert_eq!(
+            child.spec.lineage.analysis_ids,
+            vec!["analysis-a".to_string()]
+        );
+    }
+
+    #[test]
+    fn promoted_decision_stops_candidate_search_when_policy_requires_it() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "decision-demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy {
+                    max_candidates: None,
+                    max_total_candidate_runs: None,
+                    max_runs_per_candidate: None,
+                    max_total_builds: None,
+                    stop_after_first_promote: true,
+                    notes: None,
+                },
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .set_candidate(
+                "decision-demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "latency_guard".to_string(),
+                    lineage: CandidateLineage::default(),
+                    source_path: None,
+                    object_path: None,
+                    build_command: None,
+                    daemon_argv: Vec::new(),
+                    daemon_cwd: None,
+                    daemon_env: BTreeMap::new(),
+                    knobs: BTreeMap::new(),
+                    notes: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .record_decision(
+                "decision-demo",
+                CandidateDecisionRecord {
+                    decision_id: "decision-a".to_string(),
+                    candidate_id: "cand-a".to_string(),
+                    recorded_at_unix_ms: 1,
+                    decision: CandidateDecision::Promote,
+                    evidence_ids: Vec::new(),
+                    analysis_ids: Vec::new(),
+                    design_ids: Vec::new(),
+                    primary_improvement_pct: Some(12.5),
+                    rationale: Some("latency improved".to_string()),
+                },
+            )
+            .unwrap();
+
+        let result = catalog.add_candidate(
+            "decision-demo",
+            CandidateSpec {
+                candidate_id: "cand-b".to_string(),
+                template: "latency_guard".to_string(),
+                lineage: CandidateLineage::default(),
+                source_path: None,
+                object_path: None,
+                build_command: None,
+                daemon_argv: Vec::new(),
+                daemon_cwd: None,
+                daemon_env: BTreeMap::new(),
+                knobs: BTreeMap::new(),
+                notes: None,
+            },
+        );
+        assert!(result.is_err());
     }
 }

@@ -41,11 +41,13 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment init --id demo --workload-name app --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --proxy-metric cpi:minimize`
     - `sched-claw experiment init --id demo --workload-name service --target-cgroup /sys/fs/cgroup/work.slice --primary-metric latency_ms --primary-goal minimize --guardrail throughput:maximize:5`
     - `sched-claw experiment set-evaluation-policy demo --min-baseline-runs 5 --min-candidate-runs 5 --max-primary-relative-spread-pct 8`
+    - `sched-claw experiment set-search-policy demo --max-candidates 6 --max-total-candidate-runs 24 --max-runs-per-candidate 4 --max-total-builds 12 --stop-after-first-promote true`
     - `sched-claw experiment record-evidence demo --evidence-id perf-a --kind perf_stat --scheduler cfs --artifact artifacts/evidence/perf-a.txt --metric ipc=1.23`
     - `sched-claw experiment record-analysis demo --analysis-id locality-a --title "Baseline locality diagnosis" --confidence medium --evidence-id perf-a --fact "ipc stayed low" --inference "migration churn likely hurts locality"`
     - `sched-claw experiment record-design demo --design-id cand-a-v1 --candidate-id locality-v1 --title "Locality-first candidate" --analysis-id locality-a --lever "prefer same-cpu wakeups" --invariant "do not starve remote tasks"`
     - `sched-claw experiment add-candidate demo --candidate-id locality-v1 --template dsq_local`
     - `sched-claw experiment set-candidate demo --candidate-id locality-v1 --template dsq_local --daemon-arg loader --daemon-arg {source}`
+    - `sched-claw experiment fork-candidate demo --from-candidate locality-v1 --candidate-id locality-v2 --lineage-analysis-id locality-a --mutation-note "tighten slice budget"`
     - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
     - `sched-claw experiment build demo --candidate-id locality-v1 --style table`
     - `sched-claw experiment run demo --label cfs-a --style table`
@@ -53,6 +55,7 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment record-baseline demo --label cfs-baseline --artifact-dir artifacts/baseline --metric latency_ms=12.4`
     - `sched-claw experiment record-candidate demo --candidate-id locality-v1 --label run-a --artifact-dir artifacts/cand-a --metric latency_ms=9.1`
     - `sched-claw experiment score demo --style table`
+    - `sched-claw experiment record-decision demo --decision-id decision-a --candidate-id locality-v1 --decision promote --primary-improvement-pct 12.5 --analysis-id locality-a`
     - `sched-claw experiment deploy demo --candidate-id locality-v1 --lease-seconds 300 --style table`
   - a product-facing readiness surface:
     - `sched-claw doctor --style table`
@@ -193,6 +196,8 @@ The substrate is generic on purpose. Typical commands include:
 - `experiment set-evaluation-policy`
   - tighten or relax the evidence gate after an experiment already exists
   - keep minimum run counts, minimum improvement thresholds, and primary-metric spread limits durable in the manifest
+- `experiment set-search-policy`
+  - persist search-budget and convergence controls such as candidate count, total build count, total candidate runs, per-candidate run caps, and whether search should stop after the first promoted decision
 - `experiment record-evidence`
   - persist scheduler evidence with a typed kind such as `perf_stat`, `perf_sched`, `perf_record`, `psi`, `schedstat`, `bpf_trace`, or `custom`
   - keep artifact paths, collector command, optional scheduler or candidate association, and any parsed metrics durable in the manifest
@@ -202,7 +207,9 @@ The substrate is generic on purpose. Typical commands include:
   - persist sched-ext design intent before or during code changes
   - keep candidate linkage, policy levers, invariants, risks, fallback criteria, and code targets explicit
 - `experiment add-candidate` / `experiment set-candidate`
-  - persist candidate metadata, source/object paths, daemon argv, build commands, and knobs
+  - persist candidate metadata, lineage, source/object paths, daemon argv, build commands, and knobs
+- `experiment fork-candidate`
+  - create a new candidate from an existing parent while keeping lineage, mutation note, and evidence or analysis references explicit
 - `experiment materialize`
   - turn a named sched-ext template plus knob values into concrete source under the experiment directory
 - `experiment build`
@@ -221,6 +228,8 @@ The substrate is generic on purpose. Typical commands include:
 - `experiment score`
   - compare candidate medians against the baseline and classify each candidate as `promote`, `revise`, `blocked`, or `incomplete`
   - also report the current evaluation policy, baseline spread, candidate spread, and any reasons that kept a candidate from promotion
+- `experiment record-decision`
+  - persist the operator or agent decision that followed scoring, including references back to the evidence, analysis, and design records that justified it
 - `experiment deploy`
   - activate a chosen candidate through the daemon and persist the deployment record back into the manifest
   - optional `--lease-seconds` bounds how long the privileged deployment may remain active if the client dies or forgets to stop it
@@ -247,6 +256,15 @@ The same manifest also now carries three non-run knowledge surfaces:
 
 This keeps performance collection, data analysis, and code-generation intent
 queryable and reviewable outside the transcript.
+
+It also carries governance surfaces for longer-running tuning work:
+
+- search policy
+  - explicit budget and convergence controls for candidate search
+- candidate lineage
+  - parent candidate plus evidence, analysis, and design references for a mutation
+- decision records
+  - auditable `promote`, `revise`, `blocked`, or `incomplete` outcomes after a score or operator review
 
 ## Evaluation Policy
 

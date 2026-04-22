@@ -33,6 +33,8 @@ pub fn build_system_preamble(
             .to_string(),
         "When collection artifacts, analysis conclusions, or sched-ext design intent matter, persist them with the experiment substrate instead of burying them in transcript prose."
             .to_string(),
+        "When candidate search is iterative, keep lineage, search budgets, and final decisions durable with fork-candidate, search-policy updates, and record-decision instead of relying on transcript memory."
+            .to_string(),
         "Use the experiment evaluation policy to keep promotion criteria explicit: minimum run counts, minimum primary improvement, and optional primary-metric spread gates should live in the manifest instead of ad hoc transcript rules."
             .to_string(),
         "When defining a workload contract, keep the target selector explicit: script, pid, uid, gid, or cgroup."
@@ -47,7 +49,7 @@ pub fn build_system_preamble(
             .to_string(),
         "When you generate a new sched-ext scheduler, keep the rollout loop explicit: baseline evidence, code change, privileged activation, verification, and rollback criteria."
             .to_string(),
-        "The host provides generic local commands such as experiment record-evidence, experiment record-analysis, experiment record-design, experiment materialize, experiment build, experiment run, experiment deploy, template list/show, and experiment score. Choose among them based on the current evidence and skill guidance."
+        "The host provides generic local commands such as experiment set-search-policy, experiment fork-candidate, experiment record-evidence, experiment record-analysis, experiment record-design, experiment materialize, experiment build, experiment run, experiment record-decision, experiment deploy, template list/show, and experiment score. Choose among them based on the current evidence and skill guidance."
             .to_string(),
     ];
     if let Some(system_prompt) = profile

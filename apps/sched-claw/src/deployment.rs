@@ -164,6 +164,7 @@ mod tests {
         let candidate = CandidateSpec {
             candidate_id: "cand-a".to_string(),
             template: "latency_guard".to_string(),
+            lineage: Default::default(),
             source_path: Some("artifacts/cand-a.bpf.c".to_string()),
             object_path: Some("artifacts/cand-a.bpf.o".to_string()),
             build_command: None,
@@ -182,6 +183,7 @@ mod tests {
         let candidate = CandidateSpec {
             candidate_id: "cand-a".to_string(),
             template: "latency_guard".to_string(),
+            lineage: Default::default(),
             source_path: Some("artifacts/cand-a.bpf.c".to_string()),
             object_path: Some("artifacts/cand-a.bpf.o".to_string()),
             build_command: None,

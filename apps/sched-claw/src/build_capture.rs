@@ -516,6 +516,7 @@ mod tests {
         let candidate = CandidateSpec {
             candidate_id: "cand-a".to_string(),
             template: "latency_guard".to_string(),
+            lineage: Default::default(),
             source_path: Some(source_path.to_string()),
             object_path: Some(
                 ".nanoclaw/apps/sched-claw/experiments/demo/sources/cand-a.bpf.o".to_string(),
@@ -568,6 +569,7 @@ mod tests {
         let candidate = CandidateSpec {
             candidate_id: "cand-a".to_string(),
             template: "latency_guard".to_string(),
+            lineage: Default::default(),
             source_path: Some(source_path.to_string()),
             object_path: Some(
                 ".nanoclaw/apps/sched-claw/experiments/demo/sources/cand-a.bpf.o".to_string(),

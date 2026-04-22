@@ -29,6 +29,7 @@ tags:
    - include candidate id, policy levers, invariants, risks, fallback criteria, and code targets
 3. Choose the narrowest implementation surface.
    - reuse an existing candidate when the change is iterative
+   - when the change is a mutation of an earlier idea, prefer `sched-claw experiment fork-candidate ...` so lineage and mutation notes stay explicit
    - materialize a template only when it genuinely reduces boilerplate
 4. Keep the code change scoped to the chosen levers.
    - wakeup placement
