@@ -40,7 +40,10 @@ pub fn build_activation_plan(
     env.extend(overrides.env.clone());
 
     let source_path = candidate.source_path.clone();
-    let object_path = source_path.as_deref().map(default_object_path);
+    let object_path = candidate
+        .object_path
+        .clone()
+        .or_else(|| source_path.as_deref().map(default_object_path));
     let argv = if let Some(loader) = &overrides.loader {
         resolve_loader_argv(
             loader,
@@ -159,6 +162,7 @@ mod tests {
             candidate_id: "cand-a".to_string(),
             template: "latency_guard".to_string(),
             source_path: Some("artifacts/cand-a.bpf.c".to_string()),
+            object_path: Some("artifacts/cand-a.bpf.o".to_string()),
             build_command: None,
             daemon_argv: vec!["loader".to_string(), "{source}".to_string()],
             daemon_cwd: None,
@@ -176,6 +180,7 @@ mod tests {
             candidate_id: "cand-a".to_string(),
             template: "latency_guard".to_string(),
             source_path: Some("artifacts/cand-a.bpf.c".to_string()),
+            object_path: Some("artifacts/cand-a.bpf.o".to_string()),
             build_command: None,
             daemon_argv: Vec::new(),
             daemon_cwd: None,

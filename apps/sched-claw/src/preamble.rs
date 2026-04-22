@@ -39,7 +39,7 @@ pub fn build_system_preamble(
             .to_string(),
         "When you generate a new sched-ext scheduler, keep the rollout loop explicit: baseline evidence, code change, privileged activation, verification, and rollback criteria."
             .to_string(),
-        "The host provides generic local commands such as experiment materialize, experiment deploy, template list/show, and experiment score. Choose among them based on the current evidence and skill guidance."
+        "The host provides generic local commands such as experiment materialize, experiment build, experiment deploy, template list/show, and experiment score. Choose among them based on the current evidence and skill guidance."
             .to_string(),
     ];
     if let Some(system_prompt) = profile

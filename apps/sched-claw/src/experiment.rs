@@ -36,6 +36,8 @@ pub struct CandidateRecord {
     pub spec: CandidateSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<RecordedRun>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builds: Vec<CandidateBuildRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,6 +46,8 @@ pub struct CandidateSpec {
     pub template: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_command: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -56,6 +60,81 @@ pub struct CandidateSpec {
     pub knobs: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CandidateBuildRecord {
+    pub requested_at_unix_ms: u64,
+    pub artifact_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_path: Option<String>,
+    pub build: StepCommandRecord,
+    pub verifier: VerifierCommandRecord,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StepCommandRecord {
+    pub status: CommandStatus,
+    pub command: String,
+    pub command_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub stdout_path: String,
+    pub stderr_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VerifierCommandRecord {
+    pub backend: VerifierBackend,
+    pub status: CommandStatus,
+    pub command: String,
+    pub command_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub stdout_path: String,
+    pub stderr_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandStatus {
+    Success,
+    Failed,
+    Skipped,
+}
+
+impl CommandStatus {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifierBackend {
+    BpftoolProgLoadall,
+}
+
+impl VerifierBackend {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BpftoolProgLoadall => "bpftool_prog_loadall",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -330,6 +409,7 @@ impl ExperimentCatalog {
         loaded.manifest.candidates.push(CandidateRecord {
             spec,
             runs: Vec::new(),
+            builds: Vec::new(),
         });
         let candidate_id = candidate_id(&loaded.manifest).to_string();
         touch_manifest(&mut loaded.manifest);
@@ -361,6 +441,7 @@ impl ExperimentCatalog {
             loaded.manifest.candidates.push(CandidateRecord {
                 spec: spec.clone(),
                 runs: Vec::new(),
+                builds: Vec::new(),
             });
             "added candidate"
         };
@@ -417,6 +498,44 @@ impl ExperimentCatalog {
             experiment_id: loaded.manifest.experiment_id,
             manifest_path: loaded.manifest_path,
             details: vec![("candidate".to_string(), candidate_id.to_string())],
+        })
+    }
+
+    pub fn record_candidate_build(
+        &self,
+        reference: &str,
+        candidate_id: &str,
+        build: CandidateBuildRecord,
+    ) -> Result<ExperimentArtifact> {
+        let mut loaded = self.load(reference)?;
+        let candidate = loaded
+            .manifest
+            .candidates
+            .iter_mut()
+            .find(|candidate| candidate.spec.candidate_id == candidate_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "unknown candidate {} in experiment {}",
+                    candidate_id,
+                    loaded.manifest.experiment_id
+                )
+            })?;
+        let build_status = build.build.status.as_str().to_string();
+        let verify_status = build.verifier.status.as_str().to_string();
+        let artifact_dir = build.artifact_dir.clone();
+        candidate.builds.push(build);
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "recorded build",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details: vec![
+                ("candidate".to_string(), candidate_id.to_string()),
+                ("build".to_string(), build_status),
+                ("verify".to_string(), verify_status),
+                ("artifact_dir".to_string(), artifact_dir),
+            ],
         })
     }
 
@@ -664,8 +783,9 @@ fn score_guardrail(
 #[cfg(test)]
 mod tests {
     use super::{
-        CandidateDecision, CandidateRecord, CandidateSpec, DeploymentRecord, ExperimentCatalog,
-        ExperimentInitSpec, RecordedRun, SchedulerKind, experiments_dir,
+        CandidateBuildRecord, CandidateDecision, CandidateRecord, CandidateSpec, CommandStatus,
+        DeploymentRecord, ExperimentCatalog, ExperimentInitSpec, RecordedRun, SchedulerKind,
+        StepCommandRecord, VerifierBackend, VerifierCommandRecord, experiments_dir,
     };
     use crate::metrics::{Guardrail, MetricGoal, MetricMap, MetricTarget, PerformancePolicy};
     use crate::workload::WorkloadContract;
@@ -752,6 +872,7 @@ mod tests {
                 candidate_id: "cand-a".to_string(),
                 template: "locality".to_string(),
                 source_path: None,
+                object_path: None,
                 build_command: None,
                 daemon_argv: Vec::new(),
                 daemon_cwd: None,
@@ -770,6 +891,7 @@ mod tests {
                 ]),
                 notes: None,
             }],
+            builds: Vec::new(),
         });
         super::write_manifest(&catalog.manifest_path_for_id("score-demo"), &manifest).unwrap();
 
@@ -806,6 +928,7 @@ mod tests {
                     candidate_id: "cand-a".to_string(),
                     template: "latency_guard".to_string(),
                     source_path: Some("sources/a.bpf.c".to_string()),
+                    object_path: Some("sources/a.bpf.o".to_string()),
                     build_command: None,
                     daemon_argv: vec!["loader".to_string()],
                     daemon_cwd: None,
@@ -822,6 +945,7 @@ mod tests {
                     candidate_id: "cand-a".to_string(),
                     template: "dsq_locality".to_string(),
                     source_path: Some("sources/b.bpf.c".to_string()),
+                    object_path: Some("sources/b.bpf.o".to_string()),
                     build_command: Some("clang ...".to_string()),
                     daemon_argv: vec!["loader".to_string(), "sources/b.bpf.c".to_string()],
                     daemon_cwd: Some("/tmp".to_string()),
@@ -837,6 +961,10 @@ mod tests {
         assert_eq!(
             loaded.manifest.candidates[0].spec.source_path.as_deref(),
             Some("sources/b.bpf.c")
+        );
+        assert_eq!(
+            loaded.manifest.candidates[0].spec.object_path.as_deref(),
+            Some("sources/b.bpf.o")
         );
     }
 
@@ -880,5 +1008,84 @@ mod tests {
         let loaded = catalog.load("demo").unwrap();
         assert_eq!(loaded.manifest.deployments.len(), 1);
         assert_eq!(loaded.manifest.deployments[0].daemon_pid, 1001);
+    }
+
+    #[test]
+    fn records_candidate_build_history() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .set_candidate(
+                "demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "latency_guard".to_string(),
+                    source_path: Some("sources/cand-a.bpf.c".to_string()),
+                    object_path: Some("sources/cand-a.bpf.o".to_string()),
+                    build_command: Some("clang ...".to_string()),
+                    daemon_argv: Vec::new(),
+                    daemon_cwd: None,
+                    daemon_env: BTreeMap::new(),
+                    knobs: BTreeMap::new(),
+                    notes: None,
+                },
+            )
+            .unwrap();
+        catalog
+            .record_candidate_build(
+                "demo",
+                "cand-a",
+                CandidateBuildRecord {
+                    requested_at_unix_ms: 10,
+                    artifact_dir: "artifacts/builds/cand-a/10".to_string(),
+                    source_path: Some("sources/cand-a.bpf.c".to_string()),
+                    object_path: Some("sources/cand-a.bpf.o".to_string()),
+                    build: StepCommandRecord {
+                        status: CommandStatus::Success,
+                        command: "clang ...".to_string(),
+                        command_path: "artifacts/builds/cand-a/10/build.command.txt".to_string(),
+                        exit_code: Some(0),
+                        duration_ms: 12,
+                        stdout_path: "artifacts/builds/cand-a/10/build.stdout.log".to_string(),
+                        stderr_path: "artifacts/builds/cand-a/10/build.stderr.log".to_string(),
+                        summary: Some("build completed successfully".to_string()),
+                    },
+                    verifier: VerifierCommandRecord {
+                        backend: VerifierBackend::BpftoolProgLoadall,
+                        status: CommandStatus::Failed,
+                        command: "bpftool ...".to_string(),
+                        command_path: "artifacts/builds/cand-a/10/verify.command.txt".to_string(),
+                        exit_code: Some(1),
+                        duration_ms: 5,
+                        stdout_path: "artifacts/builds/cand-a/10/verify.stdout.log".to_string(),
+                        stderr_path: "artifacts/builds/cand-a/10/verify.stderr.log".to_string(),
+                        summary: Some("libbpf: verifier rejected fake object".to_string()),
+                    },
+                },
+            )
+            .unwrap();
+        let loaded = catalog.load("demo").unwrap();
+        assert_eq!(loaded.manifest.candidates[0].builds.len(), 1);
+        assert_eq!(
+            loaded.manifest.candidates[0].builds[0].verifier.backend,
+            VerifierBackend::BpftoolProgLoadall
+        );
     }
 }

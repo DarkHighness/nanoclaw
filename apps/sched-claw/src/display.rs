@@ -765,6 +765,10 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
                     manifest.deployments.len().to_string(),
                 ),
                 (
+                    "Build Attempts".to_string(),
+                    count_candidate_builds(manifest).to_string(),
+                ),
+                (
                     "Host Kernel".to_string(),
                     manifest
                         .host
@@ -785,11 +789,13 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
     ];
 
     let appendix = format!(
-        "Baseline Labels\n{}\n{}\n\nCandidates\n{}\n{}\n\nDeployments\n{}\n{}",
+        "Baseline Labels\n{}\n{}\n\nCandidates\n{}\n{}\n\nBuild Attempts\n{}\n{}\n\nDeployments\n{}\n{}",
         "-".repeat("Baseline Labels".len()),
         list_run_labels(&manifest.baseline_runs),
         "-".repeat("Candidates".len()),
         list_candidate_summaries(manifest),
+        "-".repeat("Build Attempts".len()),
+        list_build_summaries(manifest),
         "-".repeat("Deployments".len()),
         list_deployment_summaries(manifest)
     );
@@ -915,6 +921,122 @@ pub fn render_experiment_artifact(artifact: &ExperimentArtifact) -> String {
         let _ = write!(&mut line, " [{details}]");
     }
     line
+}
+
+pub fn render_candidate_build_capture(
+    experiment_id: &str,
+    candidate_id: &str,
+    manifest_path: &std::path::Path,
+    record: &crate::experiment::CandidateBuildRecord,
+    style: OutputStyle,
+) -> String {
+    let sections = vec![
+        (
+            "Overview",
+            vec![
+                ("Experiment".to_string(), experiment_id.to_string()),
+                ("Candidate".to_string(), candidate_id.to_string()),
+                ("Manifest".to_string(), manifest_path.display().to_string()),
+                ("Artifact Dir".to_string(), record.artifact_dir.clone()),
+                (
+                    "Source".to_string(),
+                    record
+                        .source_path
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "Object".to_string(),
+                    record
+                        .object_path
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+            ],
+        ),
+        (
+            "Build",
+            vec![
+                (
+                    "Status".to_string(),
+                    record.build.status.as_str().to_string(),
+                ),
+                (
+                    "Exit Code".to_string(),
+                    record
+                        .build
+                        .exit_code
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "Duration (ms)".to_string(),
+                    record.build.duration_ms.to_string(),
+                ),
+                ("Command".to_string(), record.build.command.clone()),
+                (
+                    "Command File".to_string(),
+                    record.build.command_path.clone(),
+                ),
+                ("Stdout".to_string(), record.build.stdout_path.clone()),
+                ("Stderr".to_string(), record.build.stderr_path.clone()),
+                (
+                    "Summary".to_string(),
+                    record
+                        .build
+                        .summary
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+            ],
+        ),
+        (
+            "Verifier",
+            vec![
+                (
+                    "Backend".to_string(),
+                    record.verifier.backend.as_str().to_string(),
+                ),
+                (
+                    "Status".to_string(),
+                    record.verifier.status.as_str().to_string(),
+                ),
+                (
+                    "Exit Code".to_string(),
+                    record
+                        .verifier
+                        .exit_code
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "Duration (ms)".to_string(),
+                    record.verifier.duration_ms.to_string(),
+                ),
+                ("Command".to_string(), record.verifier.command.clone()),
+                (
+                    "Command File".to_string(),
+                    record.verifier.command_path.clone(),
+                ),
+                ("Stdout".to_string(), record.verifier.stdout_path.clone()),
+                ("Stderr".to_string(), record.verifier.stderr_path.clone()),
+                (
+                    "Summary".to_string(),
+                    record
+                        .verifier
+                        .summary
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+            ],
+        ),
+    ];
+    render_sections(
+        &format!("Build Capture · {} / {}", experiment_id, candidate_id),
+        &sections,
+        style,
+        None,
+    )
 }
 
 pub fn render_daemon_status(snapshot: &DaemonStatusSnapshot, style: OutputStyle) -> String {
@@ -1278,14 +1400,30 @@ fn list_candidate_summaries(manifest: &crate::experiment::ExperimentManifest) ->
             .iter()
             .map(|candidate| {
                 format!(
-                    "{} [{}] runs={} source={} daemon={} knobs={}",
+                    "{} [{}] runs={} builds={} source={} object={} last_build={} last_verify={} daemon={} knobs={}",
                     candidate.spec.candidate_id,
                     candidate.spec.template,
                     candidate.runs.len(),
+                    candidate.builds.len(),
                     candidate
                         .spec
                         .source_path
                         .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    candidate
+                        .spec
+                        .object_path
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    candidate
+                        .builds
+                        .last()
+                        .map(|build| build.build.status.as_str().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    candidate
+                        .builds
+                        .last()
+                        .map(|build| build.verifier.status.as_str().to_string())
                         .unwrap_or_else(|| "<none>".to_string()),
                     if candidate.spec.daemon_argv.is_empty() {
                         "<none>".to_string()
@@ -1308,6 +1446,41 @@ fn list_candidate_summaries(manifest: &crate::experiment::ExperimentManifest) ->
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+fn list_build_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
+    let entries = manifest
+        .candidates
+        .iter()
+        .flat_map(|candidate| {
+            candidate.builds.iter().map(move |build| {
+                format!(
+                    "{} build={} verify={} artifact={} object={}",
+                    candidate.spec.candidate_id,
+                    build.build.status.as_str(),
+                    build.verifier.status.as_str(),
+                    build.artifact_dir,
+                    build
+                        .object_path
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string())
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        "<none>".to_string()
+    } else {
+        entries.join("\n")
+    }
+}
+
+fn count_candidate_builds(manifest: &crate::experiment::ExperimentManifest) -> usize {
+    manifest
+        .candidates
+        .iter()
+        .map(|candidate| candidate.builds.len())
+        .sum()
 }
 
 fn list_deployment_summaries(manifest: &crate::experiment::ExperimentManifest) -> String {
@@ -1396,15 +1569,17 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputStyle, render_daemon_status, render_experiment_artifact, render_experiment_list,
-        render_experiment_score, render_session_export_artifact, render_session_list,
-        render_skill_list, render_template_list, render_tool_list,
+        OutputStyle, render_candidate_build_capture, render_daemon_status,
+        render_experiment_artifact, render_experiment_list, render_experiment_score,
+        render_session_export_artifact, render_session_list, render_skill_list,
+        render_template_list, render_tool_list,
     };
     use crate::candidate_templates::template_specs;
     use crate::daemon_protocol::DaemonStatusSnapshot;
     use crate::experiment::{
-        CandidateDecision, CandidateScore, ExperimentArtifact, ExperimentScoreReport,
-        ExperimentSummary,
+        CandidateBuildRecord, CandidateDecision, CandidateScore, CommandStatus, ExperimentArtifact,
+        ExperimentScoreReport, ExperimentSummary, StepCommandRecord, VerifierBackend,
+        VerifierCommandRecord,
     };
     use crate::history::{SessionExportArtifact, SessionExportKind};
     use crate::metrics::{MetricGoal, MetricTarget};
@@ -1572,6 +1747,46 @@ mod tests {
         });
         assert!(rendered.contains("initialized experiment demo"));
         assert!(rendered.contains("candidate=cand-a"));
+    }
+
+    #[test]
+    fn renders_candidate_build_capture_sections() {
+        let rendered = render_candidate_build_capture(
+            "demo",
+            "cand-a",
+            std::path::Path::new("/tmp/demo/experiment.toml"),
+            &CandidateBuildRecord {
+                requested_at_unix_ms: 1,
+                artifact_dir: "artifacts/builds/cand-a/1".to_string(),
+                source_path: Some("sources/cand-a.bpf.c".to_string()),
+                object_path: Some("sources/cand-a.bpf.o".to_string()),
+                build: StepCommandRecord {
+                    status: CommandStatus::Success,
+                    command: "clang ...".to_string(),
+                    command_path: "build.command.txt".to_string(),
+                    exit_code: Some(0),
+                    duration_ms: 12,
+                    stdout_path: "build.stdout.log".to_string(),
+                    stderr_path: "build.stderr.log".to_string(),
+                    summary: Some("build completed successfully".to_string()),
+                },
+                verifier: VerifierCommandRecord {
+                    backend: VerifierBackend::BpftoolProgLoadall,
+                    status: CommandStatus::Failed,
+                    command: "bpftool ...".to_string(),
+                    command_path: "verify.command.txt".to_string(),
+                    exit_code: Some(1),
+                    duration_ms: 5,
+                    stdout_path: "verify.stdout.log".to_string(),
+                    stderr_path: "verify.stderr.log".to_string(),
+                    summary: Some("libbpf: verifier rejected object".to_string()),
+                },
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Build Capture"));
+        assert!(rendered.contains("bpftool_prog_loadall"));
+        assert!(rendered.contains("build completed successfully"));
     }
 
     #[test]

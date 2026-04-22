@@ -1,5 +1,6 @@
 pub mod app_config;
 pub mod bootstrap;
+pub mod build_capture;
 pub mod builtin_skills;
 pub mod candidate_templates;
 pub mod daemon_client;

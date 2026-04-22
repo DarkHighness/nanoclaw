@@ -42,6 +42,7 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment add-candidate demo --candidate-id locality-v1 --template dsq_local`
     - `sched-claw experiment set-candidate demo --candidate-id locality-v1 --template dsq_local --daemon-arg loader --daemon-arg {source}`
     - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
+    - `sched-claw experiment build demo --candidate-id locality-v1 --style table`
     - `sched-claw experiment record-baseline demo --label cfs-baseline --artifact-dir artifacts/baseline --metric latency_ms=12.4`
     - `sched-claw experiment record-candidate demo --candidate-id locality-v1 --label run-a --artifact-dir artifacts/cand-a --metric latency_ms=9.1`
     - `sched-claw experiment score demo --style table`
@@ -172,9 +173,14 @@ The substrate is generic on purpose. Typical commands include:
 - `experiment init`
   - define the workload contract, target selector, primary metric, performance policy, and guardrails
 - `experiment add-candidate` / `experiment set-candidate`
-  - persist candidate metadata, daemon argv, build commands, and knobs
+  - persist candidate metadata, source/object paths, daemon argv, build commands, and knobs
 - `experiment materialize`
   - turn a named sched-ext template plus knob values into concrete source under the experiment directory
+- `experiment build`
+  - execute the candidate build command from the workspace root
+  - capture build stdout/stderr, exit code, and a short failure summary under the experiment artifact tree
+  - run a verifier probe through `bpftool -d -L prog loadall` by default so libbpf and verifier logs are captured without pinning persistent bpffs state
+  - persist the build and verifier records back into the candidate manifest entry
 - `experiment record-baseline`
   - store one or more CFS baseline runs with artifact paths and measured metrics
 - `experiment record-candidate`
@@ -190,6 +196,10 @@ the visible tool surface stays minimal.
 
 Which commands to use, and in what order, is not host policy. The active skill
 SOP should decide the loop; the host only makes the state durable and reusable.
+
+Materialized candidates now also persist both `source_path` and `object_path`,
+so the build and rollout layers share one concrete artifact contract instead of
+re-deriving object names ad hoc.
 
 ## Workload selectors and performance policy
 
@@ -342,6 +352,7 @@ Automated validation currently includes:
 Recent additions also have unit coverage for:
 
 - experiment manifest persistence and guardrail scoring
+- build and verifier capture for materialized sched-ext candidates
 - REPL command parsing
 - session history reference resolution and transcript rendering
 - startup catalog alias resolution

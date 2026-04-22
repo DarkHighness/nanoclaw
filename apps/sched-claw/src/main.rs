@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use sched_claw::app_config::{CliOverrides, SchedClawConfig};
 use sched_claw::bootstrap::load_bootstrap;
+use sched_claw::build_capture::{BuildCaptureOptions, CliVerifierBackend, capture_candidate_build};
 use sched_claw::candidate_templates::{
     find_template, materialize_template, render_build_command, template_specs,
 };
@@ -9,11 +10,11 @@ use sched_claw::daemon_client::SchedExtDaemonClient;
 use sched_claw::daemon_protocol::{SchedExtDaemonRequest, SchedExtDaemonResponse};
 use sched_claw::deployment::{DeployOverrides, build_activation_plan};
 use sched_claw::display::{
-    OutputStyle, render_daemon_response, render_experiment_artifact, render_experiment_detail,
-    render_experiment_list, render_experiment_score, render_session_detail,
-    render_session_export_artifact, render_session_list, render_session_search_results,
-    render_skill_detail, render_skill_list, render_template_detail, render_template_list,
-    render_tool_detail, render_tool_list,
+    OutputStyle, render_candidate_build_capture, render_daemon_response,
+    render_experiment_artifact, render_experiment_detail, render_experiment_list,
+    render_experiment_score, render_session_detail, render_session_export_artifact,
+    render_session_list, render_session_search_results, render_skill_detail, render_skill_list,
+    render_template_detail, render_template_list, render_tool_detail, render_tool_list,
 };
 use sched_claw::experiment::{
     CandidateSpec, DeploymentRecord, ExperimentCatalog, ExperimentInitSpec, RecordedRun,
@@ -136,6 +137,7 @@ enum ExperimentCommand {
     AddCandidate(ExperimentAddCandidateArgs),
     SetCandidate(ExperimentAddCandidateArgs),
     Materialize(ExperimentMaterializeArgs),
+    Build(ExperimentBuildArgs),
     RecordBaseline(ExperimentRecordBaselineArgs),
     RecordCandidate(ExperimentRecordCandidateArgs),
     Score(ExperimentShowArgs),
@@ -206,6 +208,8 @@ struct ExperimentAddCandidateArgs {
     template: String,
     #[arg(long, value_name = "PATH")]
     source_path: Option<String>,
+    #[arg(long, value_name = "PATH")]
+    object_path: Option<String>,
     #[arg(long, value_name = "TEXT")]
     build_command: Option<String>,
     #[arg(long = "daemon-arg", value_name = "ARG", allow_hyphen_values = true)]
@@ -244,6 +248,22 @@ struct ExperimentMaterializeArgs {
     daemon_env: Vec<(String, String)>,
     #[arg(long, value_name = "TEXT")]
     notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentBuildArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: String,
+    #[arg(long)]
+    skip_verifier: bool,
+    #[arg(long, value_name = "PATH", default_value = "bpftool")]
+    bpftool: String,
+    #[arg(long, value_enum, default_value_t = CliVerifierBackend::BpftoolProgLoadall)]
+    verifier_backend: CliVerifierBackend,
+    #[command(flatten)]
+    output: OutputArgs,
 }
 
 #[derive(Debug, Args)]
@@ -537,6 +557,7 @@ async fn run_experiment_command(
                     candidate_id: args.candidate_id,
                     template: args.template,
                     source_path: args.source_path,
+                    object_path: args.object_path,
                     build_command: args.build_command,
                     daemon_argv: args.daemon_args,
                     daemon_cwd: args.daemon_cwd,
@@ -554,6 +575,7 @@ async fn run_experiment_command(
                     candidate_id: args.candidate_id,
                     template: args.template,
                     source_path: args.source_path,
+                    object_path: args.object_path,
                     build_command: args.build_command,
                     daemon_argv: args.daemon_args,
                     daemon_cwd: args.daemon_cwd,
@@ -604,6 +626,7 @@ async fn run_experiment_command(
                 candidate_id: args.candidate_id.clone(),
                 template: template.name.to_string(),
                 source_path: None,
+                object_path: None,
                 build_command: None,
                 daemon_argv: Vec::new(),
                 daemon_cwd: None,
@@ -613,6 +636,7 @@ async fn run_experiment_command(
             });
             candidate.template = template.name.to_string();
             candidate.source_path = Some(materialized.relative_source_path.clone());
+            candidate.object_path = Some(materialized.relative_object_path.clone());
             candidate.knobs = materialized.applied_knobs.clone();
             candidate.build_command = Some(args.build_command.unwrap_or_else(|| {
                 render_build_command(
@@ -654,6 +678,46 @@ async fn run_experiment_command(
                 .details
                 .push(("object".to_string(), materialized.relative_object_path));
             println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::Build(args) => {
+            let experiment = catalog.load(&args.experiment_ref)?;
+            let candidate = experiment
+                .manifest
+                .candidates
+                .iter()
+                .find(|candidate| candidate.spec.candidate_id == args.candidate_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown candidate {} in experiment {}",
+                        args.candidate_id,
+                        experiment.manifest.experiment_id
+                    )
+                })?;
+            let record = capture_candidate_build(
+                workspace_root,
+                &experiment.manifest.experiment_id,
+                &candidate.spec,
+                &BuildCaptureOptions {
+                    skip_verifier: args.skip_verifier,
+                    bpftool_path: args.bpftool,
+                    verifier_backend: args.verifier_backend,
+                },
+            )?;
+            let artifact = catalog.record_candidate_build(
+                &args.experiment_ref,
+                &args.candidate_id,
+                record.clone(),
+            )?;
+            println!(
+                "{}",
+                render_candidate_build_capture(
+                    &experiment.manifest.experiment_id,
+                    &args.candidate_id,
+                    &artifact.manifest_path,
+                    &record,
+                    args.output.style,
+                )
+            );
         }
         ExperimentCommand::RecordBaseline(args) => {
             let artifact = catalog.record_baseline(
@@ -1141,6 +1205,34 @@ mod tests {
 
         match cli.command {
             Some(Command::Experiment(_)) => {}
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_experiment_build_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "build",
+            "demo",
+            "--candidate-id",
+            "cand-a",
+            "--bpftool",
+            "/tmp/bpftool",
+            "--skip-verifier",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::Build(args) => {
+                    assert_eq!(args.candidate_id, "cand-a");
+                    assert!(args.skip_verifier);
+                    assert_eq!(args.bpftool, "/tmp/bpftool");
+                }
+                other => panic!("expected build command, got {other:?}"),
+            },
             other => panic!("expected experiment command, got {other:?}"),
         }
     }
