@@ -27,6 +27,7 @@ tags:
 2. Persist the design intent before editing.
    - keep a short design note near the candidate source or artifact directory
    - `scripts/scaffold_design_brief.sh` is a good default when you want a durable bridge from evidence and analysis into a concrete edit brief
+   - `scripts/scaffold_edit_checklist.sh` is a good default when you want that brief reduced into explicit code touchpoints, hook coverage, and rollout guards before editing
    - include policy levers, invariants, risks, fallback criteria, and code targets
 3. Choose the narrowest implementation surface.
    - reuse an existing candidate directory when the change is iterative
@@ -73,3 +74,6 @@ tags:
 - `scripts/scaffold_design_brief.sh`
   - creates a design brief that links evidence refs, analysis refs, levers, invariants, risks, and fallback criteria
   - keeps the evidence-to-code bridge durable without moving that policy into the host
+- `scripts/scaffold_edit_checklist.sh`
+  - creates an edit checklist that narrows the candidate change into code touchpoints, hook coverage, DSQ or map changes, build steps, and rollout guards
+  - keeps implementation intent explicit without teaching the host one mutation workflow

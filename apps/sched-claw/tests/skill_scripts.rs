@@ -18,6 +18,7 @@ fn shell_helper_scripts_have_valid_bash_syntax() -> Result<()> {
         repo_root().join("skills/sched-perf-analysis/scripts/render_perf_report.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_design_brief.sh"),
+        repo_root().join("skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh"),
     ];
 
     for script in scripts {
@@ -196,6 +197,53 @@ fn design_brief_helper_writes_markdown() -> Result<()> {
     assert!(rendered.contains("# sched-ext design brief: cand-a"));
     assert!(rendered.contains("evidence/perf-a.md"));
     assert!(rendered.contains("stronger locality bias"));
+    Ok(())
+}
+
+#[test]
+fn edit_checklist_helper_writes_markdown() -> Result<()> {
+    let dir = tempdir()?;
+    let output = dir.path().join("edit-checklist.md");
+    let script = repo_root().join("skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh");
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--output",
+            output.to_str().unwrap(),
+            "--candidate-id",
+            "cand-a",
+            "--design-brief",
+            "candidates/cand-a/design-brief.md",
+            "--source-target",
+            "candidates/cand-a/cand-a.bpf.c",
+            "--touchpoint",
+            "adjust wakeup CPU selection path",
+            "--hook",
+            "enqueue",
+            "--hook",
+            "dispatch",
+            "--map",
+            "per-task latency class map",
+            "--dsq",
+            "split latency-sensitive work into a dedicated DSQ",
+            "--guard",
+            "rollback if throughput drops more than 5%",
+            "--build-command",
+            "./build.sh",
+            "--verify-command",
+            "bpftool -d -L prog loadall cand-a.bpf.o /tmp/cand-a",
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "edit checklist helper failed");
+
+    let rendered = std::fs::read_to_string(output)?;
+    assert!(rendered.contains("# sched-ext edit checklist: cand-a"));
+    assert!(rendered.contains("adjust wakeup CPU selection path"));
+    assert!(rendered.contains("split latency-sensitive work into a dedicated DSQ"));
+    assert!(rendered.contains("rollback if throughput drops more than 5%"));
+    assert!(rendered.contains("bpftool -d -L prog loadall cand-a.bpf.o /tmp/cand-a"));
     Ok(())
 }
 

@@ -67,6 +67,7 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/render_perf_report.sh`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_design_brief.sh`
+    - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh`
   - local inspection and audit helpers such as:
     - `sched-claw tool list --style table`
     - `sched-claw tool show sched_ext_daemon --style plain`
@@ -195,7 +196,8 @@ The preferred path is:
   `skills/sched-perf-analysis/scripts/render_perf_report.sh`
 - sched-ext code scaffolding via repo-local scripts such as
   `skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh` and
-  `skills/sched-ext-codegen/scripts/scaffold_design_brief.sh`
+  `skills/sched-ext-codegen/scripts/scaffold_design_brief.sh` and
+  `skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh`
 - privileged rollout only through `sched_ext_daemon`
 - bounded privileged perf attachment also goes through `sched_ext_daemon`; do
   not replace it with `sudo perf ...` shell escapes
