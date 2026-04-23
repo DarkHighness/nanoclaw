@@ -101,6 +101,10 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("sched-ext-codegen/scripts/scaffold_design_brief.sh")
+                .is_file()
+        );
+        assert!(
             root.join("sched-ext-build-verify/references/build-and-verifier-checklist.md")
                 .is_file()
         );
@@ -126,6 +130,14 @@ mod tests {
         );
         assert!(
             root.join("sched-perf-analysis/scripts/analyze_perf_csv.py")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-analysis/scripts/compose_perf_evidence.py")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-analysis/scripts/render_perf_report.sh")
                 .is_file()
         );
         assert!(

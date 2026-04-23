@@ -34,10 +34,12 @@ tags:
 4. Use scriptable analysis helpers when the raw files are too wide to inspect directly.
    - `scripts/bootstrap_uv_env.sh` creates a uv-managed Python environment
    - `scripts/analyze_perf_csv.py` reduces one or more `perf stat` CSV captures and can emit JSON, Markdown, or a plot
+   - `scripts/compose_perf_evidence.py` turns a raw perf capture directory into a durable Markdown or JSON evidence note
    - `scripts/render_perf_report.sh` turns `perf.data` into `perf report --stdio` and optional `perf script` artifacts
    - `scripts/summarize_metrics.py` remains useful for `metrics.env` style files
 5. Persist the conclusion as normal artifacts or notes.
    - include the evidence paths, facts, inferences, unknowns, recommendations, and confidence
+   - `scripts/compose_perf_evidence.py` is a good default when you want a durable evidence note without inventing a one-off Markdown shape
    - keep the reduction method explicit instead of assuming a host-provided scorer is authoritative
 6. End with a decision surface.
    - is the next step another capture, a sched-ext code change, or a rollout stop?
@@ -64,6 +66,9 @@ tags:
 - `scripts/analyze_perf_csv.py`
   - summarizes one or more `perf stat` CSV captures
   - can emit JSON, Markdown, and a matplotlib chart
+- `scripts/compose_perf_evidence.py`
+  - converts a raw perf capture directory into a durable Markdown or JSON evidence note
+  - keeps facts, inferences, unknowns, recommendations, and artifact paths explicit
 - `scripts/render_perf_report.sh`
   - renders `perf.data` into `perf report --stdio`
   - can also emit `perf script` output for deeper call-chain inspection

@@ -38,6 +38,7 @@ steps that match the current evidence and question.
    - Inference: what those facts imply about wakeup placement, slice sizing, migration cost, preemption timing, or class interference.
    - Unknown: what still needs another phase, another workload slice, or another kernel signal.
    - Persist those conclusions in normal notes, JSON, or Markdown artifacts next to the raw evidence.
+   - `../sched-perf-analysis/scripts/compose_perf_evidence.py` is a good default when the raw perf capture already exists and you want a durable evidence note quickly
 6. Rank scheduler-specific hypotheses.
    - Distinguish scheduler pathologies from generic CPU, memory, or IO pressure.
    - If PSI or vmstat indicates the dominant bottleneck is not CPU scheduling, say so explicitly instead of forcing a scheduler conclusion.

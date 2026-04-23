@@ -37,6 +37,7 @@ repository scripts do the collection, editing, build, and comparison work.
    - What state lives in BPF maps, DSQs, or per-task/per-cpu storage
    - What invariant should hold after each scheduling decision
    - Persist the evidence-to-design bridge in a note or sidecar file when the design intent, risks, or fallback criteria matter beyond one turn
+   - `../sched-ext-codegen/scripts/scaffold_design_brief.sh` is a good default when you want a reusable design brief next to the candidate
    - Use `apps/sched-claw/templates/sched_ext/*.tmpl` as reference material when a concrete scheduler scaffold helps
    - Use `../sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh` when you need a fresh candidate directory and build stub
 4. Keep the implementation loop explicit.

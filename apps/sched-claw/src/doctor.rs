@@ -141,6 +141,14 @@ pub async fn collect_doctor_report(
     ));
     checks.push(helper_script_check(
         workspace_root
+            .join("apps/sched-claw/skills/sched-perf-analysis/scripts/compose_perf_evidence.py"),
+        "analysis",
+        "perf evidence composition helper",
+        false,
+        "used to turn raw perf capture artifacts into a durable evidence note",
+    ));
+    checks.push(helper_script_check(
+        workspace_root
             .join("apps/sched-claw/skills/sched-perf-analysis/scripts/render_perf_report.sh"),
         "analysis",
         "perf report rendering helper",
@@ -155,6 +163,14 @@ pub async fn collect_doctor_report(
         "sched-ext code scaffold helper",
         false,
         "used to seed candidate directories and build stubs without host-owned workflow code",
+    ));
+    checks.push(helper_script_check(
+        workspace_root
+            .join("apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_design_brief.sh"),
+        "codegen",
+        "sched-ext design brief helper",
+        false,
+        "used to connect evidence and analysis notes to a concrete code-edit brief",
     ));
     checks.push(daemon_check(config).await);
     checks.push(kernel_release_check(kernel_release.as_ref()));

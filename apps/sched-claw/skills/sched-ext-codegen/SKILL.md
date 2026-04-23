@@ -26,6 +26,7 @@ tags:
    - identify the evidence ids and analysis ids that justify the code change
 2. Persist the design intent before editing.
    - keep a short design note near the candidate source or artifact directory
+   - `scripts/scaffold_design_brief.sh` is a good default when you want a durable bridge from evidence and analysis into a concrete edit brief
    - include policy levers, invariants, risks, fallback criteria, and code targets
 3. Choose the narrowest implementation surface.
    - reuse an existing candidate directory when the change is iterative
@@ -69,3 +70,6 @@ tags:
 - `scripts/scaffold_sched_ext_candidate.sh`
   - creates a candidate source file, build stub, and notes file
   - can optionally seed the source from an existing template file
+- `scripts/scaffold_design_brief.sh`
+  - creates a design brief that links evidence refs, analysis refs, levers, invariants, risks, and fallback criteria
+  - keeps the evidence-to-code bridge durable without moving that policy into the host
