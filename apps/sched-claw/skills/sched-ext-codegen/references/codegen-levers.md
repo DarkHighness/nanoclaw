@@ -10,7 +10,7 @@ Map evidence to the smallest plausible scheduler change.
 - Levers:
   - stronger same-cpu wakeup bias
   - stricter migration thresholds
-  - per-CPU or LLC-aware DSQ structure
+  - per-CPU, per-LLC, or topology-aware DSQ structure
 
 ## Tail-latency sensitivity
 - Signals:
@@ -38,6 +38,15 @@ Map evidence to the smallest plausible scheduler change.
   - class-aware DSQs
   - cgroup-tagged dispatch
   - quota or starvation protection per workload class
+
+## Industrial anchors
+- `sched_ext` exposes DSQ topology, wakeup placement, enqueue, and dispatch as
+  first-class hooks, so those are the preferred mutation surfaces.
+- `scx_lavd` shows an industrial-quality example of mapping latency-criticality
+  into both deadline urgency and slice sizing instead of a single score.
+- `scx_loader` shows that operator intent is often expressed as a small set of
+  runtime modes, not arbitrary root operations. Candidate code should be
+  narrow enough to fit controlled rollout and rollback surfaces.
 
 ## Durable design record
 Before editing code, keep these fields explicit:

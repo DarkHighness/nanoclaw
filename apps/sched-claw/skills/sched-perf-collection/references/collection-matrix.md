@@ -7,13 +7,19 @@ Use the lightest collector that can falsify the current hypothesis.
   - Is retiring efficiency low?
   - Are cycles or stalled frontend/backend dominating?
   - Did IPC or CPI move in the expected direction?
+- Preferred host path:
+  - persist a `perf_stat` collection policy in the experiment manifest
+  - let `sched-claw experiment run` auto-capture the `perf.stat.csv` artifact
+    and an accompanying `perf_stat` evidence record
 - Typical commands:
-  - `perf stat -d -d -- <workload>`
-  - `perf stat -p <pid> -d -d sleep 10`
+  - `perf stat -x, --no-big-num -- <workload>`
+  - `perf stat -x, --no-big-num -p <pid> --timeout 10000`
+  - `perf stat -x, --no-big-num -a -G <cgroup> --timeout 10000`
 - Record:
   - collector command
   - target selector
   - direct metrics such as `ipc`, `cpi`, `cycles`, `instructions`
+  - whether the metric basis is direct or proxy-only
 
 ## `schedstat`
 - Questions:
@@ -80,3 +86,11 @@ Use the lightest collector that can falsify the current hypothesis.
   - collector
   - artifacts
   - summary
+
+## Research anchors
+- `perf-stat(1)` documents the machine-readable `-x` CSV-style output plus
+  `-p`, `-G`, and `--timeout`, which makes `perf stat` the right low-overhead
+  first-pass collector for `sched-claw`.
+- The kernel `sched_ext` docs justify starting with low-overhead evidence first:
+  scheduler switching is dynamic and safe fallback exists, so short controlled
+  evidence windows are better than always-on tracing.

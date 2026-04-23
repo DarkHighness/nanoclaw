@@ -20,10 +20,10 @@ use sched_claw::display::{
 use sched_claw::doctor::collect_doctor_report;
 use sched_claw::experiment::{
     AnalysisConfidence, AnalysisRecord, CandidateDecision, CandidateDecisionRecord,
-    CandidateLineage, CandidateRecord, CandidateSpec, CommandStatus, DeploymentRecord,
-    DesignRecord, EvaluationPolicy, EvidenceKind, EvidenceRecord, ExperimentCatalog,
-    ExperimentInitSpec, RecordedRun, SchedulerKind, SearchPolicy, ensure_candidate_build_allowed,
-    ensure_candidate_run_allowed,
+    CandidateLineage, CandidateRecord, CandidateSpec, CollectionPolicy, CommandStatus,
+    DeploymentRecord, DesignRecord, EvaluationPolicy, EvidenceKind, EvidenceRecord,
+    ExperimentCatalog, ExperimentInitSpec, PerfStatPolicy, PerfStatProfile, RecordedRun,
+    SchedulerKind, SearchPolicy, ensure_candidate_build_allowed, ensure_candidate_run_allowed,
 };
 use sched_claw::history::SessionHistory;
 use sched_claw::metrics::{
@@ -32,7 +32,8 @@ use sched_claw::metrics::{
 };
 use sched_claw::repl::{run_exec, run_repl};
 use sched_claw::run_capture::{
-    RunFailureMode, WorkloadRunOptions, attach_daemon_logs, capture_workload_run,
+    PerfStatRunOptions, RunFailureMode, WorkloadRunOptions, attach_daemon_logs,
+    capture_workload_run,
 };
 use sched_claw::workload::{WorkloadContract, WorkloadTarget};
 use std::collections::BTreeMap;
@@ -143,6 +144,7 @@ enum ExperimentCommand {
     List(OutputArgs),
     Init(ExperimentInitArgs),
     Show(ExperimentShowArgs),
+    SetCollectionPolicy(ExperimentSetCollectionPolicyArgs),
     SetEvaluationPolicy(ExperimentSetEvaluationPolicyArgs),
     SetSearchPolicy(ExperimentSetSearchPolicyArgs),
     RecordEvidence(ExperimentRecordEvidenceArgs),
@@ -211,6 +213,12 @@ struct ExperimentInitArgs {
     proxy_metrics: Vec<MetricTarget>,
     #[arg(long, value_name = "TEXT")]
     performance_notes: Option<String>,
+    #[arg(long, value_name = "PROFILE", value_parser = parse_perf_stat_profile_arg)]
+    perf_stat_profile: Option<PerfStatProfile>,
+    #[arg(long = "perf-stat-event", value_name = "EVENT")]
+    perf_stat_events: Vec<String>,
+    #[arg(long, value_name = "TEXT")]
+    perf_stat_notes: Option<String>,
     #[arg(long = "guardrail", value_name = "NAME:GOAL:MAX_REGRESSION_PCT", value_parser = parse_guardrail_arg)]
     guardrails: Vec<sched_claw::metrics::Guardrail>,
     #[arg(long, value_name = "N", default_value_t = 1usize)]
@@ -221,6 +229,20 @@ struct ExperimentInitArgs {
     min_primary_improvement_pct: Option<f64>,
     #[arg(long, value_name = "PCT")]
     max_primary_relative_spread_pct: Option<f64>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentSetCollectionPolicyArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long, value_name = "PROFILE", value_parser = parse_perf_stat_profile_arg)]
+    perf_stat_profile: Option<PerfStatProfile>,
+    #[arg(long = "perf-stat-event", value_name = "EVENT")]
+    perf_stat_events: Vec<String>,
+    #[arg(long, value_name = "TEXT")]
+    perf_stat_notes: Option<String>,
+    #[arg(long)]
+    disable_perf_stat: bool,
 }
 
 #[derive(Debug, Args)]
@@ -451,6 +473,8 @@ struct ExperimentRunArgs {
     metrics_file: String,
     #[arg(long, value_name = "SECONDS")]
     timeout_seconds: Option<u64>,
+    #[arg(long, value_name = "PATH", default_value = "perf")]
+    perf_bin: String,
     #[arg(long, value_name = "SECONDS")]
     lease_seconds: Option<u64>,
     #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
@@ -762,6 +786,11 @@ async fn run_experiment_command(
                 &args.guardrails,
                 args.proxy_metrics,
             )?;
+            let collection_policy = build_collection_policy(
+                args.perf_stat_profile,
+                args.perf_stat_events,
+                args.perf_stat_notes,
+            )?;
             let evaluation_policy = EvaluationPolicy {
                 min_baseline_runs: args.min_baseline_runs,
                 min_candidate_runs: args.min_candidate_runs,
@@ -783,6 +812,7 @@ async fn run_experiment_command(
                 },
                 primary_metric,
                 performance_policy,
+                collection_policy,
                 evaluation_policy,
                 search_policy: SearchPolicy::default(),
                 guardrails: args.guardrails,
@@ -795,6 +825,34 @@ async fn run_experiment_command(
                 "{}",
                 render_experiment_detail(&experiment, args.output.style)
             );
+        }
+        ExperimentCommand::SetCollectionPolicy(args) => {
+            let experiment = catalog.load(&args.experiment_ref)?;
+            let mut policy = experiment.manifest.collection_policy;
+            if args.disable_perf_stat {
+                policy.perf_stat = None;
+            } else if args.perf_stat_profile.is_some()
+                || !args.perf_stat_events.is_empty()
+                || args.perf_stat_notes.is_some()
+            {
+                let mut perf_stat = policy.perf_stat.unwrap_or(PerfStatPolicy {
+                    profile: PerfStatProfile::ProxyBasic,
+                    events: Vec::new(),
+                    notes: None,
+                });
+                if let Some(profile) = args.perf_stat_profile {
+                    perf_stat.profile = profile;
+                }
+                if !args.perf_stat_events.is_empty() {
+                    perf_stat.events = args.perf_stat_events;
+                }
+                if let Some(notes) = args.perf_stat_notes {
+                    perf_stat.notes = Some(notes);
+                }
+                policy.perf_stat = Some(perf_stat);
+            }
+            let artifact = catalog.set_collection_policy(&args.experiment_ref, policy)?;
+            println!("{}", render_experiment_artifact(&artifact));
         }
         ExperimentCommand::SetEvaluationPolicy(args) => {
             let experiment = catalog.load(&args.experiment_ref)?;
@@ -1136,6 +1194,15 @@ async fn run_experiment_command(
                         format!("baseline-{}", sched_claw::experiment::now_unix_ms())
                     })
             });
+            let perf_stat = experiment
+                .manifest
+                .collection_policy
+                .perf_stat
+                .clone()
+                .map(|policy| PerfStatRunOptions {
+                    perf_bin: args.perf_bin.clone(),
+                    policy,
+                });
 
             let capture = if let Some(candidate_id) = &args.candidate_id {
                 let candidate = experiment
@@ -1193,6 +1260,7 @@ async fn run_experiment_command(
                         metrics_file_name: args.metrics_file.clone(),
                         timeout_seconds: args.timeout_seconds,
                         extra_env: args.env.clone().into_iter().collect(),
+                        perf_stat: perf_stat.clone(),
                     },
                 )
                 .await;
@@ -1230,6 +1298,7 @@ async fn run_experiment_command(
                         metrics_file_name: args.metrics_file.clone(),
                         timeout_seconds: args.timeout_seconds,
                         extra_env: args.env.clone().into_iter().collect(),
+                        perf_stat: perf_stat.clone(),
                     },
                 )
                 .await?;
@@ -1238,6 +1307,16 @@ async fn run_experiment_command(
                 println!("{}", render_experiment_artifact(&artifact));
                 capture
             };
+
+            if capture.perf_stat.is_some() {
+                let evidence = build_run_perf_evidence(
+                    &capture,
+                    experiment.manifest.workload.phase.clone(),
+                    args.candidate_id.clone(),
+                );
+                let artifact = catalog.record_evidence(&args.experiment_ref, evidence)?;
+                println!("{}", render_experiment_artifact(&artifact));
+            }
 
             println!(
                 "{}",
@@ -1690,6 +1769,21 @@ fn resolve_performance_policy(
     Ok(policy)
 }
 
+fn build_collection_policy(
+    perf_stat_profile: Option<PerfStatProfile>,
+    perf_stat_events: Vec<String>,
+    perf_stat_notes: Option<String>,
+) -> Result<CollectionPolicy> {
+    let perf_stat = perf_stat_profile.map(|profile| PerfStatPolicy {
+        profile,
+        events: perf_stat_events,
+        notes: perf_stat_notes,
+    });
+    let policy = CollectionPolicy { perf_stat };
+    policy.validate()?;
+    Ok(policy)
+}
+
 fn build_candidate_lineage(
     parent_candidate_id: Option<String>,
     evidence_ids: Vec<String>,
@@ -1703,6 +1797,41 @@ fn build_candidate_lineage(
         analysis_ids,
         design_ids,
         mutation_note,
+    }
+}
+
+fn build_run_perf_evidence(
+    capture: &sched_claw::run_capture::WorkloadRunCapture,
+    phase: Option<String>,
+    candidate_id: Option<String>,
+) -> EvidenceRecord {
+    let perf_stat = capture
+        .perf_stat
+        .as_ref()
+        .expect("perf stat evidence requested without perf capture");
+    EvidenceRecord {
+        evidence_id: format!(
+            "perf-stat-{}-{}",
+            capture.run.scheduler.as_str(),
+            capture.run.recorded_at_unix_ms
+        ),
+        recorded_at_unix_ms: capture.run.recorded_at_unix_ms,
+        kind: EvidenceKind::PerfStat,
+        collector: Some(perf_stat.collector.clone()),
+        focus: Some(format!("auto-captured perf stat for run {}", capture.run.label)),
+        phase,
+        scheduler: Some(capture.run.scheduler),
+        candidate_id,
+        artifact_paths: vec![perf_stat.artifact_path.clone()],
+        metrics: perf_stat.metrics.clone(),
+        summary: Some(format!(
+            "auto evidence from experiment run {}",
+            capture.run.label
+        )),
+        notes: vec![
+            "recorded automatically by `sched-claw experiment run` from the active collection policy"
+                .to_string(),
+        ],
     }
 }
 
@@ -1727,6 +1856,16 @@ fn parse_performance_preference_arg(value: &str) -> Result<PerformancePreference
 
 fn parse_measurement_basis_arg(value: &str) -> Result<MeasurementBasis> {
     value.parse::<MeasurementBasis>()
+}
+
+fn parse_perf_stat_profile_arg(value: &str) -> Result<PerfStatProfile> {
+    match value {
+        "proxy_basic" => Ok(PerfStatProfile::ProxyBasic),
+        "scheduler_basic" => Ok(PerfStatProfile::SchedulerBasic),
+        other => anyhow::bail!(
+            "unsupported perf stat profile `{other}`; expected proxy_basic or scheduler_basic"
+        ),
+    }
 }
 
 fn parse_evidence_kind_arg(value: &str) -> Result<EvidenceKind> {
@@ -1805,8 +1944,8 @@ mod tests {
     use clap::Parser;
     use sched_claw::experiment::{
         AnalysisConfidence, CandidateBuildRecord, CandidateDecision, CandidateLineage,
-        CandidateRecord, CandidateSpec, CommandStatus, EvidenceKind, StepCommandRecord,
-        VerifierBackend, VerifierCommandRecord,
+        CandidateRecord, CandidateSpec, CommandStatus, EvidenceKind, PerfStatProfile,
+        StepCommandRecord, VerifierBackend, VerifierCommandRecord,
     };
     use sched_claw::metrics::{MeasurementBasis, MetricGoal, MetricTarget, PerformancePreference};
     use std::collections::BTreeMap;
@@ -1993,6 +2132,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_set_collection_policy_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "set-collection-policy",
+            "demo",
+            "--perf-stat-profile",
+            "scheduler_basic",
+            "--perf-stat-event",
+            "stalled-cycles-frontend",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::SetCollectionPolicy(args) => {
+                    assert_eq!(
+                        args.perf_stat_profile,
+                        Some(PerfStatProfile::SchedulerBasic)
+                    );
+                    assert_eq!(
+                        args.perf_stat_events,
+                        vec!["stalled-cycles-frontend".to_string()]
+                    );
+                }
+                other => panic!("expected set-collection-policy command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_record_evidence_command() {
         let cli = Cli::try_parse_from([
             "sched-claw",
@@ -2167,6 +2338,8 @@ mod tests {
             "--candidate-id",
             "cand-a",
             "--allow-unverified-build",
+            "--perf-bin",
+            "/tmp/perf",
             "--lease-seconds",
             "30",
             "--on-failure",
@@ -2179,6 +2352,7 @@ mod tests {
                 ExperimentCommand::Run(args) => {
                     assert_eq!(args.candidate_id.as_deref(), Some("cand-a"));
                     assert!(args.allow_unverified_build);
+                    assert_eq!(args.perf_bin, "/tmp/perf");
                     assert_eq!(args.lease_seconds, Some(30));
                     assert_eq!(args.on_failure, RunFailureMode::Strict);
                 }
@@ -2281,6 +2455,9 @@ mod tests {
             performance_basis: None,
             proxy_metrics: Vec::new(),
             performance_notes: None,
+            perf_stat_profile: None,
+            perf_stat_events: Vec::new(),
+            perf_stat_notes: None,
             guardrails: Vec::new(),
             min_baseline_runs: 1,
             min_candidate_runs: 1,

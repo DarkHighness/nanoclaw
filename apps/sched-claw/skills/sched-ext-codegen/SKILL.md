@@ -37,6 +37,9 @@ tags:
    - slice budgeting
    - migration policy
    - workload isolation
+   - when industrial references such as `scx_lavd` or cgroup schedulers are
+     relevant, extract the narrow lever and rationale instead of cloning the
+     whole scheduler shape
 5. Move immediately into build and verifier capture.
    - `sched-claw experiment build <experiment> --candidate-id <id>`
    - verifier or libbpf failures are part of the design loop, not an afterthought

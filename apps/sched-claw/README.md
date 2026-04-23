@@ -40,6 +40,8 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment init --id demo --workload-name bench --primary-metric latency_ms --primary-goal minimize --min-baseline-runs 3 --min-candidate-runs 3 --min-primary-improvement-pct 2 --max-primary-relative-spread-pct 10`
     - `sched-claw experiment init --id demo --workload-name app --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --proxy-metric cpi:minimize`
     - `sched-claw experiment init --id demo --workload-name service --target-cgroup /sys/fs/cgroup/work.slice --primary-metric latency_ms --primary-goal minimize --guardrail throughput:maximize:5`
+    - `sched-claw experiment init --id demo --workload-name service --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --perf-stat-profile proxy_basic`
+    - `sched-claw experiment set-collection-policy demo --perf-stat-profile scheduler_basic --perf-stat-event stalled-cycles-frontend`
     - `sched-claw experiment set-evaluation-policy demo --min-baseline-runs 5 --min-candidate-runs 5 --max-primary-relative-spread-pct 8`
     - `sched-claw experiment set-search-policy demo --max-candidates 6 --max-total-candidate-runs 24 --max-runs-per-candidate 4 --max-total-builds 12 --stop-after-first-promote true`
     - `sched-claw experiment record-evidence demo --evidence-id perf-a --kind perf_stat --scheduler cfs --artifact artifacts/evidence/perf-a.txt --metric ipc=1.23`
@@ -51,6 +53,7 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
     - `sched-claw experiment build demo --candidate-id locality-v1 --style table`
     - `sched-claw experiment run demo --label cfs-a --style table`
+    - `sched-claw experiment run demo --label cfs-a --timeout-seconds 15 --perf-bin /usr/bin/perf --style table`
     - `sched-claw experiment run demo --candidate-id locality-v1 --label cand-a --timeout-seconds 60 --lease-seconds 60 --style table`
     - `sched-claw experiment record-baseline demo --label cfs-baseline --artifact-dir artifacts/baseline --metric latency_ms=12.4`
     - `sched-claw experiment record-candidate demo --candidate-id locality-v1 --label run-a --artifact-dir artifacts/cand-a --metric latency_ms=9.1`
@@ -196,6 +199,11 @@ The substrate is generic on purpose. Typical commands include:
 - `experiment set-evaluation-policy`
   - tighten or relax the evidence gate after an experiment already exists
   - keep minimum run counts, minimum improvement thresholds, and primary-metric spread limits durable in the manifest
+- `experiment set-collection-policy`
+  - persist low-overhead collection intent such as `perf_stat` profiles and
+    additional PMU events directly in the manifest
+  - keep first-pass PMU evidence durable instead of rediscovering collector
+    commands in every transcript
 - `experiment set-search-policy`
   - persist search-budget and convergence controls such as candidate count, total build count, total candidate runs, per-candidate run caps, and whether search should stop after the first promoted decision
 - `experiment record-evidence`
@@ -219,6 +227,11 @@ The substrate is generic on purpose. Typical commands include:
   - persist the build and verifier records back into the candidate manifest entry
 - `experiment run`
   - execute the script workload contract and capture stdout/stderr, metrics, and artifact paths under the experiment artifact tree
+  - when the collection policy enables `perf_stat`, also capture
+    `perf.stat.csv`, derive proxy metrics such as `ipc` or `cpi`, and
+    automatically record a typed `perf_stat` evidence entry
+  - existing `pid`, `uid`, `gid`, and `cgroup` targets can be observed through
+    the same `perf_stat` path, using the run timeout as the observation window
   - for candidate runs, activate the sched-ext loader through the daemon, stop it after the workload finishes, and persist daemon logs next to the run artifacts
   - refuse candidate rollout by default when the latest build or verifier record is not successful; use `--allow-unverified-build` only as an explicit override
 - `experiment record-baseline`
@@ -256,6 +269,11 @@ The same manifest also now carries three non-run knowledge surfaces:
 
 This keeps performance collection, data analysis, and code-generation intent
 queryable and reviewable outside the transcript.
+
+The external design references that currently shape these substrate choices are
+tracked in:
+
+- `docs/sched-ext-industrial-and-autotuning-notes.md`
 
 It also carries governance surfaces for longer-running tuning work:
 

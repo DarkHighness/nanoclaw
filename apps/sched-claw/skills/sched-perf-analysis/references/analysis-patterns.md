@@ -2,6 +2,14 @@
 
 These are heuristics, not automatic truths. Treat them as candidate interpretations.
 
+## Metric policy
+- Direct latency or throughput metrics outrank proxy CPU metrics.
+- IPC, CPI, and top-down style counters are proxy signals. Use them when the
+  workload has no trustworthy direct service metric, or when they explain why a
+  direct metric moved.
+- If direct metrics and proxy metrics disagree, do not silently override the
+  workload outcome with PMU counters.
+
 ## Low IPC / high CPI with heavy migration churn
 - Plausible meaning:
   - locality is weak
@@ -48,3 +56,10 @@ These are heuristics, not automatic truths. Treat them as candidate interpretati
   - what still requires collection
 - recommendations:
   - next capture, code change, or rollback gate
+
+## Research anchors
+- The Top-Down analysis paper motivates using structured PMU hierarchies to
+  separate frontend, backend, bad speculation, and retiring bottlenecks instead
+  of reading raw counters in isolation.
+- `perf-stat(1)` documents `--topdown` and the caveats around root rights,
+  interval mode, and inconsistent bottlenecks on changing workloads.

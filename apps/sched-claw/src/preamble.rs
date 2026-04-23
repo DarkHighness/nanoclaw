@@ -31,6 +31,8 @@ pub fn build_system_preamble(
             .to_string(),
         "When a task is workload-driven, use the sched-claw experiment substrate whenever it helps keep workload contracts, candidates, baseline runs, deployments, and scores structured instead of living only in transcript text."
             .to_string(),
+        "When the experiment manifest enables a perf_stat collection policy, prefer `sched-claw experiment run` so the host can capture `perf.stat.csv`, derive proxy metrics such as IPC or CPI, and auto-record typed evidence."
+            .to_string(),
         "When collection artifacts, analysis conclusions, or sched-ext design intent matter, persist them with the experiment substrate instead of burying them in transcript prose."
             .to_string(),
         "When candidate search is iterative, keep lineage, search budgets, and final decisions durable with fork-candidate, search-policy updates, and record-decision instead of relying on transcript memory."

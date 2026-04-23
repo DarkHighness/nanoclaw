@@ -24,6 +24,8 @@ pub struct ExperimentManifest {
     #[serde(default)]
     pub performance_policy: PerformancePolicy,
     #[serde(default)]
+    pub collection_policy: CollectionPolicy,
+    #[serde(default)]
     pub evaluation_policy: EvaluationPolicy,
     #[serde(default)]
     pub search_policy: SearchPolicy,
@@ -351,9 +353,87 @@ pub struct ExperimentInitSpec {
     pub workload: WorkloadContract,
     pub primary_metric: MetricTarget,
     pub performance_policy: PerformancePolicy,
+    pub collection_policy: CollectionPolicy,
     pub evaluation_policy: EvaluationPolicy,
     pub search_policy: SearchPolicy,
     pub guardrails: Vec<Guardrail>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CollectionPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perf_stat: Option<PerfStatPolicy>,
+}
+
+impl CollectionPolicy {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(policy) = &self.perf_stat {
+            policy.validate()?;
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(policy) = &self.perf_stat {
+            parts.push(format!("perf_stat={}", policy.summary()));
+        }
+        if parts.is_empty() {
+            "disabled".to_string()
+        } else {
+            parts.join(" / ")
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PerfStatPolicy {
+    pub profile: PerfStatProfile,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+impl PerfStatPolicy {
+    pub fn validate(&self) -> Result<()> {
+        for event in &self.events {
+            if event.trim().is_empty() {
+                bail!("perf_stat events cannot contain empty strings");
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut parts = vec![self.profile.as_str().to_string()];
+        if !self.events.is_empty() {
+            parts.push(format!("events={}", self.events.join(",")));
+        }
+        if let Some(notes) = &self.notes {
+            parts.push(format!("notes={notes}"));
+        }
+        parts.join(" / ")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PerfStatProfile {
+    ProxyBasic,
+    SchedulerBasic,
+}
+
+impl PerfStatProfile {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProxyBasic => "proxy_basic",
+            Self::SchedulerBasic => "scheduler_basic",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -654,6 +734,7 @@ impl ExperimentCatalog {
     pub fn init(&self, spec: ExperimentInitSpec) -> Result<ExperimentArtifact> {
         validate_identifier("experiment id", &spec.experiment_id)?;
         spec.performance_policy.validate()?;
+        spec.collection_policy.validate()?;
         spec.evaluation_policy.validate()?;
         spec.search_policy.validate()?;
         let manifest_path = self.manifest_path_for_id(&spec.experiment_id);
@@ -674,6 +755,7 @@ impl ExperimentCatalog {
             workload: spec.workload,
             primary_metric: spec.primary_metric,
             performance_policy: spec.performance_policy,
+            collection_policy: spec.collection_policy,
             evaluation_policy: spec.evaluation_policy,
             search_policy: spec.search_policy,
             guardrails: spec.guardrails,
@@ -1118,6 +1200,24 @@ impl ExperimentCatalog {
         write_manifest(&loaded.manifest_path, &loaded.manifest)?;
         Ok(ExperimentArtifact {
             action: "updated evaluation policy",
+            experiment_id: loaded.manifest.experiment_id,
+            manifest_path: loaded.manifest_path,
+            details: vec![("policy".to_string(), policy.summary())],
+        })
+    }
+
+    pub fn set_collection_policy(
+        &self,
+        reference: &str,
+        policy: CollectionPolicy,
+    ) -> Result<ExperimentArtifact> {
+        policy.validate()?;
+        let mut loaded = self.load(reference)?;
+        loaded.manifest.collection_policy = policy.clone();
+        touch_manifest(&mut loaded.manifest);
+        write_manifest(&loaded.manifest_path, &loaded.manifest)?;
+        Ok(ExperimentArtifact {
+            action: "updated collection policy",
             experiment_id: loaded.manifest.experiment_id,
             manifest_path: loaded.manifest_path,
             details: vec![("policy".to_string(), policy.summary())],
@@ -1683,10 +1783,11 @@ fn score_guardrail(
 mod tests {
     use super::{
         AnalysisConfidence, AnalysisRecord, CandidateBuildRecord, CandidateDecision,
-        CandidateDecisionRecord, CandidateLineage, CandidateRecord, CandidateSpec, CommandStatus,
-        DeploymentRecord, DesignRecord, EvaluationPolicy, EvidenceKind, EvidenceRecord,
-        ExperimentCatalog, ExperimentInitSpec, RecordedRun, SchedulerKind, SearchPolicy,
-        StepCommandRecord, VerifierBackend, VerifierCommandRecord, experiments_dir,
+        CandidateDecisionRecord, CandidateLineage, CandidateRecord, CandidateSpec,
+        CollectionPolicy, CommandStatus, DeploymentRecord, DesignRecord, EvaluationPolicy,
+        EvidenceKind, EvidenceRecord, ExperimentCatalog, ExperimentInitSpec, PerfStatPolicy,
+        PerfStatProfile, RecordedRun, SchedulerKind, SearchPolicy, StepCommandRecord,
+        VerifierBackend, VerifierCommandRecord, experiments_dir,
     };
     use crate::metrics::{Guardrail, MetricGoal, MetricMap, MetricTarget, PerformancePolicy};
     use crate::workload::WorkloadContract;
@@ -1711,6 +1812,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
@@ -1744,6 +1846,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy::default(),
                 guardrails: vec![Guardrail {
@@ -1824,6 +1927,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
@@ -1896,6 +2000,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
@@ -1941,6 +2046,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
@@ -2023,6 +2129,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
@@ -2130,6 +2237,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy {
                     min_baseline_runs: 2,
                     min_candidate_runs: 2,
@@ -2214,6 +2322,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
@@ -2251,6 +2360,52 @@ mod tests {
     }
 
     #[test]
+    fn set_collection_policy_updates_manifest() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "collection-policy".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "ipc".to_string(),
+                    goal: MetricGoal::Maximize,
+                    unit: None,
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .set_collection_policy(
+                "collection-policy",
+                CollectionPolicy {
+                    perf_stat: Some(PerfStatPolicy {
+                        profile: PerfStatProfile::SchedulerBasic,
+                        events: vec!["stalled-cycles-frontend".to_string()],
+                        notes: Some("capture scheduler-sensitive PMU signals".to_string()),
+                    }),
+                },
+            )
+            .unwrap();
+
+        let loaded = catalog.load("collection-policy").unwrap();
+        let perf_stat = loaded.manifest.collection_policy.perf_stat.unwrap();
+        assert_eq!(perf_stat.profile, PerfStatProfile::SchedulerBasic);
+        assert_eq!(
+            perf_stat.events,
+            vec!["stalled-cycles-frontend".to_string()]
+        );
+    }
+
+    #[test]
     fn set_search_policy_updates_manifest() {
         let dir = tempdir().unwrap();
         let catalog = ExperimentCatalog::open(dir.path()).unwrap();
@@ -2268,6 +2423,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
@@ -2314,6 +2470,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
@@ -2453,6 +2610,7 @@ mod tests {
                     notes: None,
                 },
                 performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
                 evaluation_policy: EvaluationPolicy::default(),
                 search_policy: SearchPolicy {
                     max_candidates: None,

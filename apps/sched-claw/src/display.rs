@@ -828,6 +828,10 @@ pub fn render_experiment_detail(experiment: &LoadedExperiment, style: OutputStyl
                     manifest.performance_policy.summary(),
                 ),
                 (
+                    "Collection Policy".to_string(),
+                    manifest.collection_policy.summary(),
+                ),
+                (
                     "Evaluation Policy".to_string(),
                     manifest.evaluation_policy.summary(),
                 ),
@@ -1231,6 +1235,14 @@ pub fn render_workload_run_capture(
                     capture.manifest_artifact_dir.clone(),
                 ),
                 ("Metrics File".to_string(), capture.metrics_path.clone()),
+                (
+                    "Perf Stat".to_string(),
+                    capture
+                        .perf_stat
+                        .as_ref()
+                        .map(|capture| capture.artifact_path.clone())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
             ],
         ),
         (
@@ -2238,6 +2250,7 @@ mod tests {
                         notes: None,
                     },
                     performance_policy: Default::default(),
+                    collection_policy: Default::default(),
                     evaluation_policy: EvaluationPolicy::default(),
                     search_policy: SearchPolicy {
                         max_candidates: Some(4),
@@ -2333,6 +2346,7 @@ mod tests {
         assert!(rendered.contains("analysis-a [medium]"));
         assert!(rendered.contains("design-a candidate=cand-a"));
         assert!(rendered.contains("Search Policy"));
+        assert!(rendered.contains("Collection Policy"));
         assert!(rendered.contains("decision-a candidate=cand-a status=promote"));
         assert!(rendered.contains("lineage=parent=cand-base"));
     }
@@ -2409,6 +2423,11 @@ mod tests {
                 stdout_path: "workload.stdout.log".to_string(),
                 stderr_path: "workload.stderr.log".to_string(),
                 metrics_path: "metrics.env".to_string(),
+                perf_stat: Some(crate::run_capture::PerfStatCapture {
+                    artifact_path: "perf.stat.csv".to_string(),
+                    collector: "perf stat -x, --no-big-num -e cycles,instructions".to_string(),
+                    metrics: BTreeMap::from([("ipc".to_string(), 1.5)]),
+                }),
                 daemon_logs_path: Some("daemon.logs.txt".to_string()),
                 summary: "status=success".to_string(),
             },
@@ -2416,6 +2435,7 @@ mod tests {
         );
         assert!(rendered.contains("Workload Run"));
         assert!(rendered.contains("daemon.logs.txt"));
+        assert!(rendered.contains("perf.stat.csv"));
         assert!(rendered.contains("latency_ms"));
     }
 

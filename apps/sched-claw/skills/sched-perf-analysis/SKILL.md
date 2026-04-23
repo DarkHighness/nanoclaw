@@ -27,6 +27,8 @@ tags:
    - facts come from counters, traces, logs, and metrics
    - inferences explain what those facts imply about scheduler behavior
    - unknowns state what still blocks a confident conclusion
+   - when IPC, CPI, or top-down counters are involved, state explicitly that
+     they are proxy indicators unless the workload contract says otherwise
 3. Check whether the workload contract still matches the evidence.
    - if the collected phase or selector was wrong, say so instead of over-interpreting the data
 4. Persist the conclusion.

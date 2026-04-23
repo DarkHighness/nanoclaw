@@ -25,12 +25,16 @@ tags:
    - keep the target selector explicit: script, pid, uid, gid, or cgroup
    - decide whether the bad phase is startup, steady-state, burst, or shutdown
 2. Prefer low-overhead summaries first.
+   - start with the manifest-backed collection policy when `perf stat` is enough:
+     - `sched-claw experiment set-collection-policy <experiment> --perf-stat-profile proxy_basic`
+     - `sched-claw experiment run <experiment> ...`
    - `perf stat`, `/proc/schedstat`, `/proc/<pid>/schedstat`, PSI, `pidstat -w`, `mpstat -P ALL`, and `vmstat`
    - collect just enough to answer whether the issue looks like queueing, migration, wakeup latency, or plain saturation
 3. Escalate only when the summary leaves a scheduler-specific gap.
    - use `perf sched` when ordering, wakeup chains, or migration churn are the open question
    - use `perf record` or focused BPF tracing only when the low-overhead view cannot distinguish competing hypotheses
 4. Persist evidence as typed experiment records.
+   - `sched-claw experiment run` already auto-records `perf_stat` evidence when the active collection policy enables it
    - `sched-claw experiment record-evidence <experiment> --evidence-id ... --kind ...`
    - include artifact paths, collector command, phase, scheduler, candidate id, and any directly measured metrics
 5. Keep each evidence record narrow.
