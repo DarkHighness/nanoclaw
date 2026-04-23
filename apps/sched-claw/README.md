@@ -188,7 +188,10 @@ The REPL also supports local inspection commands:
 - `:sessions [query]`
 - `:session <id>`
 - `:resume <id>`
+- `:daemon list`
+- `:daemon show <projection|capability>`
 - `:daemon status`
+- `:daemon capabilities`
 - `:daemon logs [N]`
 
 ## Session history and resume

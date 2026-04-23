@@ -3,6 +3,22 @@ use crate::daemon_protocol::{
     find_expected_daemon_capability,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DaemonInspectionTarget {
+    Projection(DaemonProjectionName),
+    Capability(DaemonCapabilityName),
+}
+
+impl DaemonInspectionTarget {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Projection(name) => name.as_str(),
+            Self::Capability(name) => name.as_str(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum DaemonProjectionName {
     Status,
@@ -151,6 +167,28 @@ pub fn parse_daemon_projection_name(query: &str) -> Option<DaemonProjectionName>
     }
 }
 
+#[must_use]
+pub fn parse_daemon_inspection_target(query: &str) -> Option<DaemonInspectionTarget> {
+    if let Some(name) = parse_daemon_projection_name(query) {
+        return Some(DaemonInspectionTarget::Projection(name));
+    }
+    match query.trim() {
+        "deployment_control" => Some(DaemonInspectionTarget::Capability(
+            DaemonCapabilityName::DeploymentControl,
+        )),
+        "perf_stat_capture" => Some(DaemonInspectionTarget::Capability(
+            DaemonCapabilityName::PerfStatCapture,
+        )),
+        "perf_record_capture" => Some(DaemonInspectionTarget::Capability(
+            DaemonCapabilityName::PerfRecordCapture,
+        )),
+        "scheduler_trace_capture" => Some(DaemonInspectionTarget::Capability(
+            DaemonCapabilityName::SchedulerTraceCapture,
+        )),
+        _ => None,
+    }
+}
+
 fn selectors_for_capabilities(capabilities: &[DaemonCapabilityName]) -> Vec<DaemonSelectorKind> {
     let mut selectors = Vec::new();
     for capability in capabilities {
@@ -179,9 +217,9 @@ pub fn find_projection_capabilities(
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonProjectionKind, DaemonProjectionName, expected_daemon_projections,
-        find_expected_daemon_projection, find_projection_capabilities,
-        parse_daemon_projection_name,
+        DaemonInspectionTarget, DaemonProjectionKind, DaemonProjectionName,
+        expected_daemon_projections, find_expected_daemon_projection, find_projection_capabilities,
+        parse_daemon_inspection_target, parse_daemon_projection_name,
     };
     use crate::daemon_protocol::DaemonCapabilityName;
 
@@ -219,6 +257,23 @@ mod tests {
             Some(DaemonProjectionName::CollectPerf)
         );
         assert_eq!(parse_daemon_projection_name("unknown"), None);
+    }
+
+    #[test]
+    fn parses_inspection_targets() {
+        assert_eq!(
+            parse_daemon_inspection_target("activate"),
+            Some(DaemonInspectionTarget::Projection(
+                DaemonProjectionName::Activate
+            ))
+        );
+        assert_eq!(
+            parse_daemon_inspection_target("perf_record_capture"),
+            Some(DaemonInspectionTarget::Capability(
+                DaemonCapabilityName::PerfRecordCapture
+            ))
+        );
+        assert_eq!(parse_daemon_inspection_target("unknown"), None);
     }
 
     #[test]

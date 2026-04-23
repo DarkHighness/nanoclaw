@@ -4,11 +4,16 @@ use std::io::{self, Write};
 
 use crate::app_config::CliOverrides;
 use crate::bootstrap::BuiltRuntime;
-use crate::daemon_protocol::SchedClawDaemonRequest;
+use crate::daemon_projection::{
+    DaemonInspectionTarget, expected_daemon_projections, find_expected_daemon_projection,
+    parse_daemon_inspection_target,
+};
+use crate::daemon_protocol::{SchedClawDaemonRequest, find_expected_daemon_capability};
 use crate::display::{
-    OutputStyle, render_daemon_response, render_doctor_report, render_session_detail,
-    render_session_list, render_session_search_results, render_skill_detail, render_skill_list,
-    render_tool_detail, render_tool_list,
+    OutputStyle, render_daemon_capability_detail, render_daemon_projection_detail,
+    render_daemon_projection_list, render_daemon_response, render_doctor_report,
+    render_session_detail, render_session_list, render_session_search_results, render_skill_detail,
+    render_skill_list, render_tool_detail, render_tool_list,
 };
 use crate::doctor::collect_doctor_report;
 use crate::history::SessionHistory;
@@ -16,7 +21,7 @@ use crate::history::SessionHistory;
 pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) -> Result<()> {
     println!("sched-claw repl");
     println!(
-        "Commands: :help, :format <table|plain>, :doctor, :tools, :tool <name>, :skills, :skill <name>, :sessions [query], :session <id>, :resume <id>, :daemon status, :daemon logs [N], :quit"
+        "Commands: :help, :format <table|plain>, :doctor, :tools, :tool <name>, :skills, :skill <name>, :sessions [query], :session <id>, :resume <id>, :daemon list, :daemon show <name>, :daemon status, :daemon capabilities, :daemon logs [N], :quit"
     );
     let stdin = io::stdin();
     let mut line = String::new();
@@ -41,7 +46,10 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
                 println!(":sessions [query]      list persisted sessions or search them");
                 println!(":session <id>          inspect one persisted session");
                 println!(":resume <id>           attach the repl to a persisted session");
+                println!(":daemon list           inspect the local daemon wrapper catalog");
+                println!(":daemon show <name>    inspect one daemon projection or capability");
                 println!(":daemon status         inspect the privileged daemon snapshot");
+                println!(":daemon capabilities   inspect the live daemon capability set");
                 println!(":daemon logs [N]       inspect daemon logs with an optional tail size");
                 println!(":quit                  exit the repl");
             }
@@ -101,10 +109,43 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
                 host.runtime.resume_session(runtime_session).await?;
                 println!("resumed session {}", summary.session_id);
             }
+            ReplCommand::DaemonList => {
+                println!(
+                    "{}",
+                    render_daemon_projection_list(&expected_daemon_projections(), output_style)
+                );
+            }
+            ReplCommand::DaemonShow(target) => match target {
+                DaemonInspectionTarget::Projection(name) => {
+                    let projection = find_expected_daemon_projection(name).ok_or_else(|| {
+                        anyhow::anyhow!("unknown daemon projection `{}`", name.as_str())
+                    })?;
+                    println!(
+                        "{}",
+                        render_daemon_projection_detail(&projection, output_style)
+                    );
+                }
+                DaemonInspectionTarget::Capability(name) => {
+                    let capability = find_expected_daemon_capability(name).ok_or_else(|| {
+                        anyhow::anyhow!("unknown daemon capability `{}`", name.as_str())
+                    })?;
+                    println!(
+                        "{}",
+                        render_daemon_capability_detail(&capability, output_style)
+                    );
+                }
+            },
             ReplCommand::DaemonStatus => {
                 let response = host
                     .daemon_client
                     .send(&SchedClawDaemonRequest::Status {})
+                    .await?;
+                println!("{}", render_daemon_response(&response, output_style));
+            }
+            ReplCommand::DaemonCapabilities => {
+                let response = host
+                    .daemon_client
+                    .send(&SchedClawDaemonRequest::Capabilities {})
                     .await?;
                 println!("{}", render_daemon_response(&response, output_style));
             }
@@ -152,7 +193,10 @@ enum ReplCommand {
     Sessions { query: Option<String> },
     SessionShow(String),
     Resume(String),
+    DaemonList,
+    DaemonShow(DaemonInspectionTarget),
     DaemonStatus,
+    DaemonCapabilities,
     DaemonLogs { tail_lines: Option<usize> },
     Prompt(String),
 }
@@ -220,7 +264,18 @@ fn parse_repl_command(input: &str) -> Result<ReplCommand> {
             Ok(ReplCommand::Resume(session_ref.to_string()))
         }
         ":daemon" => match parts.next() {
+            Some("list") => Ok(ReplCommand::DaemonList),
+            Some("show") => {
+                let name = parts.next().ok_or_else(|| {
+                    anyhow::anyhow!("usage: :daemon show <projection|capability>")
+                })?;
+                let target = parse_daemon_inspection_target(name).ok_or_else(|| {
+                    anyhow::anyhow!("unknown daemon projection or capability `{}`", name)
+                })?;
+                Ok(ReplCommand::DaemonShow(target))
+            }
             Some("status") => Ok(ReplCommand::DaemonStatus),
+            Some("capabilities") => Ok(ReplCommand::DaemonCapabilities),
             Some("logs") => {
                 let tail_lines = match parts.next() {
                     Some(value) => Some(
@@ -233,7 +288,7 @@ fn parse_repl_command(input: &str) -> Result<ReplCommand> {
                 Ok(ReplCommand::DaemonLogs { tail_lines })
             }
             Some(other) => bail!("unsupported daemon command `{other}`"),
-            None => bail!("usage: :daemon <status|logs [N]>"),
+            None => bail!("usage: :daemon <list|show <name>|status|capabilities|logs [N]>"),
         },
         other => bail!("unknown repl command `{other}`; use :help"),
     }
@@ -296,6 +351,8 @@ impl RuntimeObserver for StreamingObserver {
 #[cfg(test)]
 mod tests {
     use super::{OutputStyle, ReplCommand, parse_repl_command};
+    use crate::daemon_projection::{DaemonInspectionTarget, DaemonProjectionName};
+    use crate::daemon_protocol::DaemonCapabilityName;
 
     #[test]
     fn parses_style_switch() {
@@ -317,6 +374,34 @@ mod tests {
             ReplCommand::DaemonLogs {
                 tail_lines: Some(12)
             }
+        );
+    }
+
+    #[test]
+    fn parses_daemon_list_command() {
+        assert_eq!(
+            parse_repl_command(":daemon list").unwrap(),
+            ReplCommand::DaemonList
+        );
+    }
+
+    #[test]
+    fn parses_daemon_show_projection_command() {
+        assert_eq!(
+            parse_repl_command(":daemon show activate").unwrap(),
+            ReplCommand::DaemonShow(DaemonInspectionTarget::Projection(
+                DaemonProjectionName::Activate
+            ))
+        );
+    }
+
+    #[test]
+    fn parses_daemon_show_capability_command() {
+        assert_eq!(
+            parse_repl_command(":daemon show perf_record_capture").unwrap(),
+            ReplCommand::DaemonShow(DaemonInspectionTarget::Capability(
+                DaemonCapabilityName::PerfRecordCapture
+            ))
         );
     }
 
