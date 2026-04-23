@@ -47,6 +47,8 @@ fn python_helper_scripts_compile() -> Result<()> {
         repo_root().join("skills/sched-perf-analysis/scripts/analyze_perf_csv.py"),
         repo_root().join("skills/sched-perf-analysis/scripts/compose_perf_evidence.py"),
         repo_root().join("skills/sched-perf-analysis/scripts/compose_sched_trace_evidence.py"),
+        repo_root().join("skills/sched-workload-contract/scripts/validate_workload_contract.py"),
+        repo_root().join("skills/sched-ext-build-verify/scripts/summarize_build_verifier.py"),
         repo_root().join("skills/sched-perf-analysis/scripts/summarize_sched_latency.py"),
         repo_root().join("skills/sched-perf-analysis/scripts/summarize_metrics.py"),
         repo_root().join("skills/sched-ext-run-evaluation/scripts/compare_trials.py"),
@@ -371,6 +373,52 @@ fn scaffold_workload_contract_helper_writes_toml() -> Result<()> {
 }
 
 #[test]
+fn validate_workload_contract_helper_accepts_valid_contract() -> Result<()> {
+    let dir = tempdir()?;
+    let contract = dir.path().join("contract.toml");
+    std::fs::write(
+        &contract,
+        r#"
+name = "llvm"
+selector_kind = "script"
+selector_value = "scripts/workloads/run-llvm-clang-build.sh"
+primary_metric = "build_seconds"
+primary_goal = "minimize"
+performance_basis = "direct"
+guardrails = ["throughput:maximize:5"]
+proxy_metrics = ["ipc:maximize"]
+"#,
+    )?;
+    let json_path = dir.path().join("contract.json");
+    let markdown = dir.path().join("contract.md");
+    let script =
+        repo_root().join("skills/sched-workload-contract/scripts/validate_workload_contract.py");
+
+    let status = Command::new("python3")
+        .arg(&script)
+        .args([
+            contract.to_str().unwrap(),
+            "--out-json",
+            json_path.to_str().unwrap(),
+            "--out-markdown",
+            markdown.to_str().unwrap(),
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(
+        status.success(),
+        "workload contract validation helper failed"
+    );
+
+    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(json_path)?)?;
+    assert_eq!(parsed["status"], "valid");
+    let rendered = std::fs::read_to_string(markdown)?;
+    assert!(rendered.contains("# workload contract validation"));
+    assert!(rendered.contains("selector: `script:scripts/workloads/run-llvm-clang-build.sh`"));
+    Ok(())
+}
+
+#[test]
 fn capture_build_verifier_artifacts_helper_captures_status() -> Result<()> {
     let dir = tempdir()?;
     let script = repo_root()
@@ -404,6 +452,50 @@ fn capture_build_verifier_artifacts_helper_captures_status() -> Result<()> {
 }
 
 #[test]
+fn summarize_build_verifier_helper_classifies_failure() -> Result<()> {
+    let dir = tempdir()?;
+    let artifacts = dir.path().join("artifacts");
+    std::fs::create_dir_all(&artifacts)?;
+    std::fs::write(
+        artifacts.join("context.txt"),
+        "source=cand-a.bpf.c\nobject=cand-a.bpf.o\n",
+    )?;
+    std::fs::write(
+        artifacts.join("summary.env"),
+        "build_status=0\nverify_status=1\n",
+    )?;
+    std::fs::write(
+        artifacts.join("verify.stderr.log"),
+        "libbpf: failed to load object file\nverifier rejected program due to invalid access\n",
+    )?;
+    let json_path = dir.path().join("summary.json");
+    let markdown = dir.path().join("summary.md");
+    let script =
+        repo_root().join("skills/sched-ext-build-verify/scripts/summarize_build_verifier.py");
+
+    let status = Command::new("python3")
+        .arg(&script)
+        .args([
+            artifacts.to_str().unwrap(),
+            "--out-json",
+            json_path.to_str().unwrap(),
+            "--out-markdown",
+            markdown.to_str().unwrap(),
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "build verifier summary helper failed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(json_path)?)?;
+    assert_eq!(parsed["overall_status"], "failed");
+    assert_eq!(parsed["classification"], "libbpf-load-failure");
+    let rendered = std::fs::read_to_string(markdown)?;
+    assert!(rendered.contains("## Verify Excerpt"));
+    assert!(rendered.contains("libbpf"));
+    Ok(())
+}
+
+#[test]
 fn scaffold_rollout_plan_helper_writes_markdown() -> Result<()> {
     let dir = tempdir()?;
     let output = dir.path().join("rollout.md");
@@ -431,6 +523,58 @@ fn scaffold_rollout_plan_helper_writes_markdown() -> Result<()> {
     assert!(rendered.contains("# rollout plan: cand-a"));
     assert!(rendered.contains("lease: `30s`"));
     assert!(rendered.contains("throughput must not regress"));
+    Ok(())
+}
+
+#[test]
+fn compare_trials_helper_supports_direct_metrics_files() -> Result<()> {
+    let dir = tempdir()?;
+    let baseline_a = dir.path().join("baseline-a.env");
+    let baseline_b = dir.path().join("baseline-b.env");
+    let candidate_a = dir.path().join("candidate-a.env");
+    let candidate_b = dir.path().join("candidate-b.env");
+    std::fs::write(&baseline_a, "build_seconds=10\n")?;
+    std::fs::write(&baseline_b, "build_seconds=10\n")?;
+    std::fs::write(&candidate_a, "build_seconds=8\n")?;
+    std::fs::write(&candidate_b, "build_seconds=8\n")?;
+    let json_path = dir.path().join("compare.json");
+    let markdown = dir.path().join("compare.md");
+    let script = repo_root().join("skills/sched-ext-run-evaluation/scripts/compare_trials.py");
+
+    let status = Command::new("python3")
+        .arg(&script)
+        .args([
+            "--candidate-id",
+            "cand-a",
+            "--baseline-file",
+            baseline_a.to_str().unwrap(),
+            "--baseline-file",
+            baseline_b.to_str().unwrap(),
+            "--candidate-file",
+            candidate_a.to_str().unwrap(),
+            "--candidate-file",
+            candidate_b.to_str().unwrap(),
+            "--metric",
+            "build_seconds",
+            "--goal",
+            "minimize",
+            "--out-json",
+            json_path.to_str().unwrap(),
+            "--out-markdown",
+            markdown.to_str().unwrap(),
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "compare trials helper failed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(json_path)?)?;
+    assert_eq!(parsed["mode"], "direct-files");
+    assert_eq!(parsed["baseline_count"], 2);
+    assert_eq!(parsed["candidate_count"], 2);
+    assert_eq!(parsed["improvement_pct"], 20.0);
+    let rendered = std::fs::read_to_string(markdown)?;
+    assert!(rendered.contains("# trial comparison: cand-a"));
+    assert!(rendered.contains("improvement_pct: `20.00`"));
     Ok(())
 }
 

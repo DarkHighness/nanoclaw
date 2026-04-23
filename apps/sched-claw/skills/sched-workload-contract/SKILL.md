@@ -30,6 +30,7 @@ tags:
    - record the primary metric, goal, optional guardrails, and whether the basis is direct or proxy
    - use `proxy_estimate` wording only when proxy metrics are actually needed
    - `scripts/scaffold_workload_contract.sh` is the default helper when you want a durable TOML contract instead of ad-hoc prose
+   - `scripts/validate_workload_contract.py` is the default helper when the contract exists but you need to prove the selector, metric basis, and proxy/direct split are still coherent
 4. Record the evaluation scope.
    - steady state vs startup
    - single-tenant vs noisy host
@@ -56,3 +57,6 @@ tags:
   - writes a durable TOML workload contract scaffold
   - keeps selector, direct metric policy, proxy metrics, and guardrails explicit
   - preferred when a tuning request is about to move from discussion into durable artifacts
+- `scripts/validate_workload_contract.py`
+  - validates a contract TOML file and reports selector, goal, basis, and proxy/direct mismatches
+  - can emit JSON or Markdown if the next step needs a durable validation note instead of ad-hoc transcript text

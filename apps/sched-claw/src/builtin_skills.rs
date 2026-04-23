@@ -122,6 +122,10 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("sched-ext-build-verify/scripts/summarize_build_verifier.py")
+                .is_file()
+        );
+        assert!(
             root.join("sched-ext-design-loop/references/rollout-checklist.md")
                 .is_file()
         );
@@ -135,6 +139,10 @@ mod tests {
         );
         assert!(
             root.join("sched-ext-run-evaluation/references/repetition-and-scoring.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-ext-run-evaluation/scripts/compare_trials.py")
                 .is_file()
         );
         assert!(
@@ -195,6 +203,10 @@ mod tests {
         );
         assert!(
             root.join("sched-workload-contract/scripts/scaffold_workload_contract.sh")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-workload-contract/scripts/validate_workload_contract.py")
                 .is_file()
         );
     }

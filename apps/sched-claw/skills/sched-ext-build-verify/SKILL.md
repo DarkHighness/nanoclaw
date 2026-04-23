@@ -25,6 +25,7 @@ tags:
 2. Build through normal shell commands or the scaffolded `build.sh`.
    - capture compiler stdout or stderr and verifier logs into files next to the source or artifact directory
    - `scripts/capture_build_verifier_artifacts.sh` is the default helper when you want one command to leave durable build, verify, and status files behind
+   - `scripts/summarize_build_verifier.py` is the default helper when artifacts already exist and the next question is how to classify the failure mode without relying on transcript-only notes
 3. Read the build result before changing code.
    - separate compiler failure, missing include/toolchain failure, and verifier rejection
 4. For verifier failures, narrow the cause.
@@ -56,3 +57,6 @@ tags:
   - captures build command, stdout, stderr, and exit status into a durable artifact directory
   - optionally captures verifier command, stdout, stderr, and exit status as well
   - preferred when code edits are done and the next question is whether the object and verifier evidence are durable enough for rollout discussion
+- `scripts/summarize_build_verifier.py`
+  - classifies captured build or verifier artifacts into common failure categories such as missing toolchain input, verifier rejection, or BTF mismatch
+  - can emit Markdown or JSON if the next step needs a durable diagnosis note

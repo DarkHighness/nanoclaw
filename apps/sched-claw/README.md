@@ -74,11 +74,15 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/compose_sched_trace_evidence.py`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/render_perf_report.sh`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/summarize_sched_latency.py`
+    - `apps/sched-claw/skills/sched-ext-run-evaluation/scripts/compare_trials.py`
+      with direct `metrics.env` or manifest-like inputs plus optional JSON or Markdown output
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_design_brief.sh`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh`
     - `apps/sched-claw/skills/sched-workload-contract/scripts/scaffold_workload_contract.sh`
+    - `apps/sched-claw/skills/sched-workload-contract/scripts/validate_workload_contract.py`
     - `apps/sched-claw/skills/sched-ext-build-verify/scripts/capture_build_verifier_artifacts.sh`
+    - `apps/sched-claw/skills/sched-ext-build-verify/scripts/summarize_build_verifier.py`
     - `apps/sched-claw/skills/sched-ext-rollout-safety/scripts/scaffold_rollout_plan.sh`
   - local inspection and audit helpers such as:
     - `sched-claw tool list --style table`

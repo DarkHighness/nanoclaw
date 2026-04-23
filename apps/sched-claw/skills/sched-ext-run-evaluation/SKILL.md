@@ -30,6 +30,7 @@ tags:
    - if results drift across runs, say so and lower confidence
    - do not promote from a single noisy run just because one number improved
    - when you need richer trial analysis, use `scripts/compare_trials.py` and pick the reducer and optional outlier method that fit the workload; do not assume one technique is globally correct
+   - the helper accepts either direct `metrics.env` inputs or a manifest-like sidecar, so prefer the durable artifact form that already exists instead of inventing a new host-owned data model
 4. Use explicit comparison artifacts.
    - reduce the primary metric and guardrails with the chosen reducer
    - keep the decision note next to the comparison output
@@ -56,6 +57,6 @@ tags:
 
 ## Optional Helper Script
 - `scripts/compare_trials.py`
-  - compares baseline and candidate runs from explicit result files or a manifest-like sidecar when such a file exists
+  - compares baseline and candidate runs from direct `metrics.env` files or a manifest-like sidecar when such a file exists
   - supports caller-selected reducers and optional outlier methods
-  - does not write back host policy; it is only an analysis aid
+  - can emit JSON or Markdown without writing back host policy

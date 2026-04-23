@@ -250,12 +250,39 @@ pub async fn collect_doctor_report(
     ));
     checks.push(helper_script_check(
         workspace_root.join(
+            "apps/sched-claw/skills/sched-workload-contract/scripts/validate_workload_contract.py",
+        ),
+        "contract",
+        "workload contract validation helper",
+        false,
+        "used to validate selector, basis, and proxy/direct metric policy before launches or edits reuse a saved contract",
+    ));
+    checks.push(helper_script_check(
+        workspace_root.join(
             "apps/sched-claw/skills/sched-ext-build-verify/scripts/capture_build_verifier_artifacts.sh",
         ),
         "build",
         "build and verifier capture helper",
         false,
         "used to persist compiler and verifier artifacts without promoting host workflow logic",
+    ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-ext-build-verify/scripts/summarize_build_verifier.py",
+        ),
+        "build",
+        "build and verifier summary helper",
+        false,
+        "used to classify captured compiler or verifier failures into durable diagnosis artifacts",
+    ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-ext-run-evaluation/scripts/compare_trials.py",
+        ),
+        "evaluation",
+        "trial comparison helper",
+        false,
+        "used to compare repeated baseline and candidate runs from direct metrics files or manifest-like artifacts",
     ));
     checks.push(helper_script_check(
         workspace_root.join(
