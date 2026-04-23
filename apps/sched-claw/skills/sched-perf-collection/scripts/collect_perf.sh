@@ -4,24 +4,35 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  collect_perf.sh --output DIR [--mode stat|record] [--events EVENT[,EVENT...]]
+  collect_perf.sh --output DIR [--driver host|daemon] [--mode stat|record]
+                  [--events EVENT[,EVENT...]] [--event EVENT]
                   [--pid PID[,PID...]] [--uid UID] [--gid GID] [--cgroup PATH]
-                  [--timeout SECONDS] [--perf-bin PATH] [--] command [args...]
+                  [--timeout SECONDS] [--perf-bin PATH]
+                  [--sched-claw-bin PATH] [--daemon-socket PATH]
+                  [--sample-frequency-hz HZ] [--call-graph MODE] [--overwrite]
+                  [--] command [args...]
 
 Examples:
   collect_perf.sh --output artifacts/perf --timeout 15 -- -- make -j32
   collect_perf.sh --output artifacts/perf --pid 4242 --timeout 10
   collect_perf.sh --output artifacts/perf --cgroup work.slice --mode record --timeout 20
+  collect_perf.sh --driver daemon --output artifacts/perf-root --pid 4242 --timeout 10
 EOF
 }
 
+driver="host"
 mode="stat"
 output_dir=""
-events=""
+events=()
 selector_kind=""
 selector_value=""
 timeout_seconds=""
 perf_bin="${PERF_BIN:-perf}"
+sched_claw_bin="${SCHED_CLAW_BIN:-sched-claw}"
+daemon_socket="${SCHED_CLAW_DAEMON_SOCKET:-}"
+sample_frequency_hz=""
+call_graph=""
+overwrite="false"
 command=()
 
 while (($# > 0)); do
@@ -29,6 +40,10 @@ while (($# > 0)); do
     --help|-h)
       usage
       exit 0
+      ;;
+    --driver)
+      driver="${2:?missing value for --driver}"
+      shift 2
       ;;
     --mode)
       mode="${2:?missing value for --mode}"
@@ -39,8 +54,25 @@ while (($# > 0)); do
       shift 2
       ;;
     --events)
-      events="${2:?missing value for --events}"
+      IFS=',' read -r -a parsed_events <<<"${2:?missing value for --events}"
+      events+=("${parsed_events[@]}")
       shift 2
+      ;;
+    --event)
+      events+=("${2:?missing value for --event}")
+      shift 2
+      ;;
+    --sample-frequency-hz)
+      sample_frequency_hz="${2:?missing value for --sample-frequency-hz}"
+      shift 2
+      ;;
+    --call-graph)
+      call_graph="${2:?missing value for --call-graph}"
+      shift 2
+      ;;
+    --overwrite)
+      overwrite="true"
+      shift
       ;;
     --pid|--uid|--gid|--cgroup)
       if [[ -n "$selector_kind" ]]; then
@@ -57,6 +89,14 @@ while (($# > 0)); do
       ;;
     --perf-bin)
       perf_bin="${2:?missing value for --perf-bin}"
+      shift 2
+      ;;
+    --sched-claw-bin)
+      sched_claw_bin="${2:?missing value for --sched-claw-bin}"
+      shift 2
+      ;;
+    --daemon-socket)
+      daemon_socket="${2:?missing value for --daemon-socket}"
       shift 2
       ;;
     --)
@@ -92,8 +132,23 @@ if [[ -n "$selector_kind" && -z "$timeout_seconds" ]]; then
   exit 2
 fi
 
+if [[ "$driver" != "host" && "$driver" != "daemon" ]]; then
+  echo "unsupported driver: $driver" >&2
+  exit 2
+fi
+
 if [[ "$mode" != "stat" && "$mode" != "record" ]]; then
   echo "unsupported mode: $mode" >&2
+  exit 2
+fi
+
+if [[ "$mode" == "stat" && -n "$sample_frequency_hz" ]]; then
+  echo "--sample-frequency-hz is only valid for --mode record" >&2
+  exit 2
+fi
+
+if [[ "$mode" == "stat" && -n "$call_graph" ]]; then
+  echo "--call-graph is only valid for --mode record" >&2
   exit 2
 fi
 
@@ -140,8 +195,63 @@ resolve_pids() {
   esac
 }
 
-mkdir -p "$output_dir"
+if [[ "$driver" == "daemon" ]]; then
+  if [[ -z "$selector_kind" ]]; then
+    echo "daemon driver requires --pid, --uid, --gid, or --cgroup" >&2
+    exit 2
+  fi
+  if ((${#command[@]} > 0)); then
+    echo "daemon driver does not support command execution after --; use a selector-based capture" >&2
+    exit 2
+  fi
 
+  output_parent="$(dirname "$output_dir")"
+  output_base="$(basename "$output_dir")"
+  mkdir -p "$output_parent"
+  stderr_path="$output_parent/.${output_base}.collector.stderr.log"
+  stdout_path="$output_parent/.${output_base}.collector.stdout.log"
+  command_path="$output_parent/.${output_base}.collector.command.txt"
+  selector_path="$output_parent/.${output_base}.selector.txt"
+
+  daemon_args=()
+  if [[ -n "$daemon_socket" ]]; then
+    daemon_args+=(--daemon-socket "$daemon_socket")
+  fi
+  daemon_args+=(daemon collect-perf --mode "$mode" --output-dir "$output_dir")
+  daemon_args+=(--duration-ms "$((timeout_seconds * 1000))")
+  daemon_args+=(--style plain)
+  daemon_args+=("--$selector_kind" "$selector_value")
+  if [[ "$overwrite" == "true" ]]; then
+    daemon_args+=(--overwrite)
+  fi
+  if [[ -n "$sample_frequency_hz" ]]; then
+    daemon_args+=(--sample-frequency-hz "$sample_frequency_hz")
+  fi
+  if [[ -n "$call_graph" ]]; then
+    daemon_args+=(--call-graph "$call_graph")
+  fi
+  if ((${#events[@]} > 0)); then
+    for event in "${events[@]}"; do
+      [[ -n "$event" ]] || continue
+      daemon_args+=(--event "$event")
+    done
+  fi
+
+  {
+    printf 'cwd=%s\n' "$PWD"
+    printf '%q ' "$sched_claw_bin" "${daemon_args[@]}"
+    printf '\n'
+  } >"$command_path"
+  printf 'selector=%s\nvalue=%s\n' "$selector_kind" "$selector_value" >"$selector_path"
+  "$sched_claw_bin" "${daemon_args[@]}" >"$stdout_path" 2>"$stderr_path"
+  mv "$command_path" "$output_dir/collector.command.txt"
+  mv "$selector_path" "$output_dir/selector.txt"
+  mv "$stdout_path" "$output_dir/collector.stdout.log"
+  mv "$stderr_path" "$output_dir/collector.stderr.log"
+  exit 0
+fi
+
+mkdir -p "$output_dir"
 stderr_path="$output_dir/collector.stderr.log"
 stdout_path="$output_dir/collector.stdout.log"
 command_path="$output_dir/collector.command.txt"
@@ -164,14 +274,20 @@ fi
 perf_args=()
 if [[ "$mode" == "stat" ]]; then
   perf_args+=(stat -x, --no-big-num -o "$output_dir/perf.stat.csv")
-  if [[ -n "$events" ]]; then
-    perf_args+=(-e "$events")
-  fi
 else
   perf_args+=(record -o "$output_dir/perf.data")
-  if [[ -n "$events" ]]; then
-    perf_args+=(-e "$events")
+  if [[ -n "$sample_frequency_hz" ]]; then
+    perf_args+=(--freq "$sample_frequency_hz")
   fi
+  if [[ -n "$call_graph" ]]; then
+    perf_args+=(--call-graph "$call_graph")
+  fi
+fi
+if ((${#events[@]} > 0)); then
+  for event in "${events[@]}"; do
+    [[ -n "$event" ]] || continue
+    perf_args+=(-e "$event")
+  done
 fi
 perf_args+=("${target_args[@]}")
 if ((${#command[@]} > 0)); then

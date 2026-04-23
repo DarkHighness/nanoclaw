@@ -8,10 +8,12 @@ Use the lightest collector that can falsify the current hypothesis.
   - Are cycles or stalled frontend/backend dominating?
   - Did IPC or CPI move in the expected direction?
 - Preferred path:
-  - run `scripts/collect_perf.sh --mode stat ...` or an equivalent explicit
+  - run `scripts/collect_perf.sh --driver host --mode stat ...` or an equivalent explicit
     `perf stat` command
   - when attach rights are restricted, use the daemon `collect_perf` action with
     a `pid`, `uid`, `gid`, or `cgroup` selector instead of escalating to a root shell
+  - `scripts/collect_perf.sh --driver daemon ...` is the preferred wrapper for
+    that privileged path
   - persist the resulting `perf.stat.csv`, command line, and notes next to the
     workload artifacts
 - Typical commands:

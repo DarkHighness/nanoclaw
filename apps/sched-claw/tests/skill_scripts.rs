@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 fn repo_root() -> &'static Path {
@@ -150,4 +153,143 @@ fn design_brief_helper_writes_markdown() -> Result<()> {
     assert!(rendered.contains("evidence/perf-a.md"));
     assert!(rendered.contains("stronger locality bias"));
     Ok(())
+}
+
+#[test]
+fn collect_perf_helper_supports_daemon_driver() -> Result<()> {
+    let dir = tempdir()?;
+    let workspace_root = dir.path();
+    let socket_path = workspace_root.join(".nanoclaw/apps/sched-claw/test.sock");
+    let daemon_log = workspace_root.join("daemon.log");
+    let perf_path = workspace_root.join("perf");
+    std::fs::write(
+        &perf_path,
+        r#"#!/bin/sh
+set -eu
+mode=""
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    stat|record)
+      mode="$1"
+      shift
+      ;;
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+emit() {
+  mkdir -p "$(dirname "$output")"
+  if [ "$mode" = "stat" ]; then
+    cat >"$output" <<'OUT'
+1000,,cycles,1.0,100.00,,
+OUT
+  else
+    printf 'PERF DATA\n' >"$output"
+  fi
+}
+trap 'emit; exit 0' INT TERM
+while true; do
+  sleep 0.05
+done
+"#,
+    )?;
+    let mut permissions = std::fs::metadata(&perf_path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&perf_path, permissions)?;
+
+    let busy_path = workspace_root.join("busy.sh");
+    std::fs::write(
+        &busy_path,
+        "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do\n  :\ndone\n",
+    )?;
+    let mut permissions = std::fs::metadata(&busy_path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&busy_path, permissions)?;
+
+    let mut busy_child = Command::new(&busy_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to start busy target")?;
+
+    let daemon_bin =
+        std::env::var("CARGO_BIN_EXE_sched-claw-daemon").context("missing sched-claw-daemon")?;
+    let sched_claw_bin = std::env::var("CARGO_BIN_EXE_sched-claw").context("missing sched-claw")?;
+    let mut daemon_child = Command::new(daemon_bin)
+        .arg("serve")
+        .arg("--workspace-root")
+        .arg(workspace_root)
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--allow-root")
+        .arg(workspace_root)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                workspace_root.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .stdout(std::fs::File::create(&daemon_log)?)
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to start daemon")?;
+
+    wait_until(Duration::from_secs(5), || socket_path.exists())?;
+
+    let script = repo_root().join("skills/sched-perf-collection/scripts/collect_perf.sh");
+    let output_dir = workspace_root.join("artifacts/perf-daemon");
+    let status = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--driver",
+            "daemon",
+            "--sched-claw-bin",
+            &sched_claw_bin,
+            "--daemon-socket",
+            socket_path.to_str().unwrap(),
+            "--output",
+            output_dir.to_str().unwrap(),
+            "--pid",
+            &busy_child.id().to_string(),
+            "--timeout",
+            "1",
+            "--event",
+            "cycles",
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+
+    let _ = busy_child.kill();
+    let _ = busy_child.wait();
+    let _ = daemon_child.kill();
+    let _ = daemon_child.wait();
+
+    assert!(status.success(), "daemon driver helper failed");
+    assert!(output_dir.join("perf.stat.csv").is_file());
+    assert!(output_dir.join("perf.command.json").is_file());
+    assert!(output_dir.join("collector.command.txt").is_file());
+    Ok(())
+}
+
+fn wait_until(timeout_window: Duration, mut condition: impl FnMut() -> bool) -> Result<()> {
+    let deadline = Instant::now() + timeout_window;
+    loop {
+        if condition() {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "condition did not become true within {:?}",
+            timeout_window
+        );
+        sleep(Duration::from_millis(50));
+    }
 }

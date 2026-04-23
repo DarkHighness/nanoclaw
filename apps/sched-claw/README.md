@@ -59,6 +59,7 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `sched-claw doctor --style plain`
   - skill-first helper scripts for collection and analysis:
     - `apps/sched-claw/skills/sched-perf-collection/scripts/collect_perf.sh`
+      with `--driver host|daemon`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/analyze_perf_csv.py`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/compose_perf_evidence.py`
