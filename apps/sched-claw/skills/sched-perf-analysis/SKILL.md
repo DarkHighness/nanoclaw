@@ -34,6 +34,7 @@ tags:
 4. Persist the conclusion.
    - `sched-claw experiment record-analysis <experiment> --analysis-id ...`
    - include evidence ids, facts, inferences, unknowns, recommendations, and confidence
+   - if you need quick aggregation across many `metrics.env` files before writing the analysis, use `scripts/summarize_metrics.py` as a helper instead of baking one reduction strategy into the host
 5. End with a decision surface.
    - is the next step another capture, a sched-ext code change, or a rollout stop?
 
@@ -52,3 +53,8 @@ tags:
 
 ## Reference Material
 - `references/analysis-patterns.md`
+
+## Optional Helper Script
+- `scripts/summarize_metrics.py`
+  - summarizes one or more `metrics.env` files
+  - supports caller-selected reducers instead of enforcing a fixed host policy

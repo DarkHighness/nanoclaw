@@ -29,9 +29,10 @@ tags:
    - use `sched-claw experiment run <experiment> --repeat <N> ...` instead of copying the same command by hand
    - if results drift across runs, say so and lower confidence
    - do not promote from a single noisy run just because one number improved
+   - when you need richer trial analysis, use `scripts/compare_trials.py` and pick the reducer and optional outlier method that fit the workload; do not assume one technique is globally correct
 4. Use `sched-claw experiment score`.
    - interpret the typed decision: `promote`, `revise`, `blocked`, `incomplete`
-   - read the improving-run ratio and primary outlier count, not just the median delta
+   - treat the host score as a lightweight substrate, not the only valid comparison
    - check guardrails before celebrating the primary metric
    - if the score led to a durable keep or stop decision, persist it with `sched-claw experiment record-decision ...`
 5. End with a factual comparison.
@@ -48,10 +49,14 @@ tags:
 - baseline run count
 - candidate run count
 - primary metric delta
-- improving-run ratio
-- primary outlier count
 - guardrail status
 - confidence level and next action
 
 ## Reference Material
 - `references/repetition-and-scoring.md`
+
+## Optional Helper Script
+- `scripts/compare_trials.py`
+  - compares baseline and candidate runs from an experiment manifest
+  - supports caller-selected reducers and optional outlier methods
+  - does not write back host policy; it is only an analysis aid

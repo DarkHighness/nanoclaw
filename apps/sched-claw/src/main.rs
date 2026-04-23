@@ -230,12 +230,6 @@ struct ExperimentInitArgs {
     min_primary_improvement_pct: Option<f64>,
     #[arg(long, value_name = "PCT")]
     max_primary_relative_spread_pct: Option<f64>,
-    #[arg(long, value_name = "PCT")]
-    min_improving_run_ratio_pct: Option<f64>,
-    #[arg(long, value_name = "N")]
-    max_primary_outlier_count: Option<usize>,
-    #[arg(long, value_name = "MAD")]
-    primary_outlier_mad_threshold: Option<f64>,
 }
 
 #[derive(Debug, Args)]
@@ -264,12 +258,6 @@ struct ExperimentSetEvaluationPolicyArgs {
     min_primary_improvement_pct: Option<f64>,
     #[arg(long, value_name = "PCT")]
     max_primary_relative_spread_pct: Option<f64>,
-    #[arg(long, value_name = "PCT")]
-    min_improving_run_ratio_pct: Option<f64>,
-    #[arg(long, value_name = "N")]
-    max_primary_outlier_count: Option<usize>,
-    #[arg(long, value_name = "MAD")]
-    primary_outlier_mad_threshold: Option<f64>,
 }
 
 #[derive(Debug, Args)]
@@ -847,9 +835,6 @@ async fn run_experiment_command(
                 min_candidate_runs: args.min_candidate_runs,
                 min_primary_improvement_pct: args.min_primary_improvement_pct,
                 max_primary_relative_spread_pct: args.max_primary_relative_spread_pct,
-                min_improving_run_ratio_pct: args.min_improving_run_ratio_pct,
-                max_primary_outlier_count: args.max_primary_outlier_count,
-                primary_outlier_mad_threshold: args.primary_outlier_mad_threshold,
             };
             let artifact = catalog.init(ExperimentInitSpec {
                 experiment_id: args.id,
@@ -922,15 +907,6 @@ async fn run_experiment_command(
             }
             if let Some(value) = args.max_primary_relative_spread_pct {
                 policy.max_primary_relative_spread_pct = Some(value);
-            }
-            if let Some(value) = args.min_improving_run_ratio_pct {
-                policy.min_improving_run_ratio_pct = Some(value);
-            }
-            if let Some(value) = args.max_primary_outlier_count {
-                policy.max_primary_outlier_count = Some(value);
-            }
-            if let Some(value) = args.primary_outlier_mad_threshold {
-                policy.primary_outlier_mad_threshold = Some(value);
             }
             let artifact = catalog.set_evaluation_policy(&args.experiment_ref, policy)?;
             println!("{}", render_experiment_artifact(&artifact));
@@ -2318,10 +2294,6 @@ mod tests {
             "4",
             "--min-primary-improvement-pct",
             "2.5",
-            "--min-improving-run-ratio-pct",
-            "75",
-            "--max-primary-outlier-count",
-            "1",
         ])
         .unwrap();
 
@@ -2331,8 +2303,6 @@ mod tests {
                     assert_eq!(args.min_baseline_runs, Some(3));
                     assert_eq!(args.min_candidate_runs, Some(4));
                     assert_eq!(args.min_primary_improvement_pct, Some(2.5));
-                    assert_eq!(args.min_improving_run_ratio_pct, Some(75.0));
-                    assert_eq!(args.max_primary_outlier_count, Some(1));
                 }
                 other => panic!("expected set-evaluation-policy command, got {other:?}"),
             },
@@ -2788,9 +2758,6 @@ mod tests {
             min_candidate_runs: 1,
             min_primary_improvement_pct: None,
             max_primary_relative_spread_pct: None,
-            min_improving_run_ratio_pct: None,
-            max_primary_outlier_count: None,
-            primary_outlier_mad_threshold: None,
         };
         assert!(build_workload_target(&args).is_err());
     }

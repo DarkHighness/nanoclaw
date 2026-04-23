@@ -42,7 +42,7 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment init --id demo --workload-name service --target-cgroup /sys/fs/cgroup/work.slice --primary-metric latency_ms --primary-goal minimize --guardrail throughput:maximize:5`
     - `sched-claw experiment init --id demo --workload-name service --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --perf-stat-profile proxy_basic`
     - `sched-claw experiment set-collection-policy demo --perf-stat-profile scheduler_basic --perf-stat-event stalled-cycles-frontend`
-    - `sched-claw experiment set-evaluation-policy demo --min-baseline-runs 5 --min-candidate-runs 5 --max-primary-relative-spread-pct 8 --min-improving-run-ratio-pct 80 --max-primary-outlier-count 1`
+    - `sched-claw experiment set-evaluation-policy demo --min-baseline-runs 5 --min-candidate-runs 5 --max-primary-relative-spread-pct 8`
     - `sched-claw experiment set-search-policy demo --max-candidates 6 --max-total-candidate-runs 24 --max-runs-per-candidate 4 --max-total-builds 12 --stop-after-first-promote true`
     - `sched-claw experiment record-evidence demo --evidence-id perf-a --kind perf_stat --scheduler cfs --artifact artifacts/evidence/perf-a.txt --metric ipc=1.23`
     - `sched-claw experiment record-analysis demo --analysis-id locality-a --title "Baseline locality diagnosis" --confidence medium --evidence-id perf-a --fact "ipc stayed low" --inference "migration churn likely hurts locality"`
@@ -199,7 +199,7 @@ The substrate is generic on purpose. Typical commands include:
   - define the workload contract, target selector, primary metric, performance policy, and guardrails
 - `experiment set-evaluation-policy`
   - tighten or relax the evidence gate after an experiment already exists
-  - keep minimum run counts, minimum improvement thresholds, primary-metric spread limits, improving-run ratios, and optional outlier gates durable in the manifest
+  - keep only lightweight host-side gates such as minimum run counts, minimum improvement thresholds, and primary-metric spread limits durable in the manifest
 - `experiment set-collection-policy`
   - persist low-overhead collection intent such as `perf_stat` profiles and
     additional PMU events directly in the manifest
@@ -247,7 +247,7 @@ The substrate is generic on purpose. Typical commands include:
   - store one or more sched-ext runs for a specific candidate
 - `experiment score`
   - compare candidate medians against the baseline and classify each candidate as `promote`, `revise`, `blocked`, or `incomplete`
-  - also report the current evaluation policy, baseline spread, candidate spread, improving-run ratio, primary outlier counts, and any reasons that kept a candidate from promotion
+  - also report the current evaluation policy, baseline spread, candidate spread, and any reasons that kept a candidate from promotion
 - `experiment record-decision`
   - persist the operator or agent decision that followed scoring, including references back to the evidence, analysis, and design records that justified it
 - `experiment deploy`
@@ -301,11 +301,13 @@ of implicit:
 - minimum candidate run count
 - optional minimum primary-metric improvement percent
 - optional maximum primary-metric relative spread percent
-- optional minimum improving-run ratio relative to the baseline median
-- optional maximum primary-metric outlier count using a MAD threshold
 
 If the manifest says the evidence is insufficient, `sched-claw experiment score`
 will keep the candidate `incomplete` even when a single run looked promising.
+
+If a workload needs richer noise handling, custom reducers, or a different
+anomaly technique, keep that logic in skills and shell scripts instead of
+moving it into the host substrate.
 
 ## Workload selectors and performance policy
 
