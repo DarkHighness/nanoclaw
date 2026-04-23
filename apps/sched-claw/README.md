@@ -103,16 +103,19 @@ Built-in skills are materialized under:
 
 They cover:
 
-- product readiness and operator dependency checks
-- workload contract definition and metric policy
-- scheduler-specific performance collection SOPs and evidence persistence
-- scheduler-specific performance analysis SOPs and durable fact or inference capture
-- Linux scheduler-focused evidence collection and triage
-- translating evidence and analysis into explicit sched-ext design records
-- sched-ext build, verifier, run, and rollout safety loops
-- Translating workload evidence into sched-ext policy and rollout steps
-- LLVM/clang build autotune demos with direct wall-clock metrics plus IPC/CPI fallback
-- MySQL sysbench autotune demos with direct throughput and latency metrics
+- foundational skills:
+  - product readiness and operator dependency checks
+  - workload contract definition and metric policy
+  - scheduler-specific performance collection primitives
+  - scheduler-specific performance analysis primitives
+  - scheduler policy mapping from evidence to levers
+  - sched-ext codegen, build, evaluation, and rollout primitives
+- composition skills:
+  - Linux scheduler-focused triage that chooses the next primitive skill
+  - sched-ext design-loop coordination across policy, code, evaluation, and rollout
+- workload profiles:
+  - LLVM/clang build tuning with direct wall-clock metrics plus IPC/CPI fallback
+  - MySQL sysbench tuning with direct throughput and latency metrics
 
 When the repository also contains [`apps/code-agent/skills`](./../code-agent/skills),
 `sched-claw` loads that skill root by default as well. This lets the agent reuse
@@ -121,6 +124,12 @@ without inflating the model-visible tool surface.
 
 The model is expected to load those skills with `skill_view` before inventing
 new measurement recipes.
+
+The intended shape is layered:
+
+- primitive skills should stay generic and reusable across workloads
+- composition skills should mostly decide which primitive to load next
+- workload skills should contribute workload-specific selectors, metrics, and constraints without restating the whole workflow
 
 Each builtin skill now ships with reference material under its own
 `references/` directory so the host and operator can inspect the workflow

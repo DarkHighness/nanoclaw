@@ -14,42 +14,41 @@ tags:
 ## When to use
 - Diagnose latency, throughput collapse, jitter, or unfairness that may be scheduler-related.
 - Build a baseline before writing or tuning a `sched-ext` scheduler.
-- Turn raw `perf`, `schedstat`, PSI, or run-queue evidence into a ranked set of scheduling hypotheses.
+- Turn raw `perf`, `schedstat`, PSI, or run-queue evidence into ranked scheduler hypotheses.
 
-## Workflow
-This SOP guides the loop, but the host should not hard-code it. Use only the
-steps that match the current evidence and question.
+## Role
+This is a composition skill, not a monolithic workflow. It should mostly decide
+which lower-level skill to load next and what evidence question is still open.
 
-1. Define the failure contract before collecting anything.
-   - State the workload entrypoint, the bad outcome, the affected CPUs or cgroups, and whether the bad phase is steady-state, bursty, or startup-only.
-   - Record the success metric that will later decide whether the new scheduler beats CFS.
-   - If the workload target is already known, persist it structurally in a note or artifact manifest as a script, pid, uid, gid, or cgroup target instead of leaving it only in prose.
-2. Establish a reproducible baseline directory.
-   - Unless the repository already has a stronger convention, create `.nanoclaw/apps/sched-claw/artifacts/<run-label>/`.
-   - Save commands, raw outputs, and short notes side by side so the later sched-ext comparison can replay the same evidence path.
-3. Capture low-overhead scheduler evidence first.
-   - Prefer `uname -a`, `lscpu`, `/proc/schedstat`, `/proc/<pid>/schedstat`, `/proc/pressure/{cpu,io,memory}`, `mpstat -P ALL`, `pidstat -w`, `vmstat`, and `perf stat`.
-   - Start with summaries that tell you whether the problem is queueing, migration, wakeup latency, or plain saturation.
-4. Escalate to scheduler traces only when the summaries justify it.
-   - Use `perf sched record`, `perf sched timehist`, `perf sched latency`, or focused tracing under `/sys/kernel/tracing` when you need wakeup chains, dispatch order, or migration churn.
-   - `../sched-perf-collection/scripts/collect_sched_timeline.sh` is a good default when you want that collector shape captured durably and replayably.
-   - Keep the trace window short and aligned to the bad phase.
-5. Separate fact, inference, and unknown.
-   - Fact: direct counters, trace events, latency distributions, queue lengths, PSI windows, per-CPU imbalance.
-   - Inference: what those facts imply about wakeup placement, slice sizing, migration cost, preemption timing, or class interference.
-   - Unknown: what still needs another phase, another workload slice, or another kernel signal.
-   - Persist those conclusions in normal notes, JSON, or Markdown artifacts next to the raw evidence.
-   - `../sched-perf-analysis/scripts/compose_perf_evidence.py` is a good default when the raw perf capture already exists and you want a durable evidence note quickly
-   - `../sched-perf-analysis/scripts/summarize_sched_latency.py` is a good default when `perf sched latency` is the key scheduler-specific artifact
-   - `../sched-perf-analysis/scripts/compose_sched_trace_evidence.py` is a good default when you want the whole scheduler trace bundle turned into one durable note
-6. Rank scheduler-specific hypotheses.
-   - Distinguish scheduler pathologies from generic CPU, memory, or IO pressure.
-   - If PSI or vmstat indicates the dominant bottleneck is not CPU scheduling, say so explicitly instead of forcing a scheduler conclusion.
-7. End with a scheduler design implication.
-   - State what the next `sched-ext` policy should optimize: locality, latency, fairness, throughput, tail control, or workload isolation.
-   - Also state what the policy should explicitly avoid making worse.
-   - If the next step needs concrete code scaffolding, inspect the reference files under `apps/sched-claw/templates/sched_ext/` or use the active codegen skill helper scripts.
-   - If throughput or latency are not measurable on this workload, say that explicitly and record the proxy basis you are using instead, such as IPC or CPI.
+## Compose with
+- `sched-workload-contract`
+  - when selector, direct metrics, or proxy basis are still vague
+- `sched-perf-collection`
+  - when evidence is still missing
+- `sched-perf-analysis`
+  - when raw artifacts exist but facts or inferences are not explicit yet
+- `sched-policy-mapping`
+  - when the next step is to turn triage output into concrete scheduler levers
+
+## Triage responsibilities
+1. Define the failure surface.
+   - bad phase, affected selector, and success criteria
+2. Narrow the evidence question.
+   - queueing, migration, wakeup placement, starvation, or non-scheduler pressure
+3. Decide the lightest next collector.
+   - counters first, traces only when needed
+4. Distinguish scheduler evidence from non-scheduler bottlenecks.
+5. End with ranked hypotheses and the next skill to compose.
+
+## Default helper choices
+- `../sched-perf-collection/scripts/collect_sched_timeline.sh`
+  - when scheduler ordering or migration churn is the missing evidence
+- `../sched-perf-analysis/scripts/compose_perf_evidence.py`
+  - when a raw perf bundle already exists and needs a durable note
+- `../sched-perf-analysis/scripts/summarize_sched_latency.py`
+  - when `perf sched latency` is the key artifact
+- `../sched-perf-analysis/scripts/compose_sched_trace_evidence.py`
+  - when the whole scheduler trace bundle should become one evidence note
 
 ## Artifact Checklist
 - `baseline.md` or equivalent short note with workload, metric, and bad phase definition

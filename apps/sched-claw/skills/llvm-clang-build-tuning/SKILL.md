@@ -17,32 +17,37 @@ tags:
 ## When to use
 - Demonstrate sched-claw on a compile-heavy LLVM/clang workload.
 - Tune scheduler behavior for a large parallel build where overall wall-clock build time is the main objective.
-- Need a workload launcher that writes direct metrics and can be replayed by the agent.
 
-## Direct metrics first
+## Role
+This is a workload profile, not a foundational workflow skill. It should supply
+workload-specific selectors, direct metrics, and likely scheduler levers, then
+compose the generic skills that do the actual contract, collection, analysis,
+policy mapping, codegen, and rollout work.
+
+## Compose with
+- `sched-workload-contract`
+- `sched-perf-collection`
+- `sched-perf-analysis`
+- `sched-policy-mapping`
+- `sched-ext-codegen`
+- `sched-ext-run-evaluation`
+- `sched-ext-rollout-safety`
+
+## Workload-specific facts
 - Primary direct metric: `build_seconds:minimize`
 - Secondary direct metric: `configure_seconds:minimize`
-- Preferred proxy metrics when direct timing is untrustworthy: `ipc:maximize`, `cpi:minimize`
+- Preferred fallback proxies: `ipc:maximize`, `cpi:minimize`
+- Common policy starting points: locality, migration control, and queue balance
 
-## Demo entrypoints
+## Entrypoints
 - Demo wrapper:
   - `apps/sched-claw/scripts/demos/llvm-clang-autotune.sh`
 - Workload launcher:
   - `apps/sched-claw/scripts/workloads/run-llvm-clang-build.sh`
 
-## Workflow
-1. Confirm the LLVM source tree path.
-   - The launcher accepts either the monorepo root or the `llvm/` source root.
-2. Read the demo workload context.
-   - The demo wrapper writes a workload-context note next to its artifacts with the launcher path, artifact directory, direct metrics, and proxy fallback hints.
-3. Use direct build timing unless you have a concrete reason not to.
-   - Read `metrics.env` from the workload artifact directory.
-   - Only switch to `proxy_estimate` when wall-clock timing is contaminated by unrelated host noise or the run is incomplete.
-4. Favor conservative scheduler candidates.
-   - For compile-heavy workloads, `balanced_queue` and `dsq_locality` are the normal starting points.
-   - Treat locality, migration churn, and queue balance as the main policy levers.
-5. Keep rollout criteria explicit.
-   - This demo may build for a long time. State the maximum activation window and the rollback trigger before using the daemon.
+## Guardrails
+- Keep direct build timing primary unless the workload context explicitly says it is contaminated.
+- Keep rollout windows bounded because large LLVM builds can run for a long time.
 
 ## Rules
 - Do not pretend IPC/CPI are direct business metrics. They are fallback proxies here.

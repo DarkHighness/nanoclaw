@@ -16,49 +16,38 @@ tags:
 - Decide what policy or queueing changes should replace the current CFS behavior for a target workload.
 - Activate or stop the scheduler through the daemon after code changes are built.
 
-## Workflow
-This SOP decides the loop. The host should stay thin; normal tools and
-repository scripts do the collection, editing, build, and comparison work.
+## Role
+This is a composition skill. It should decide which implementation, verification,
+evaluation, and rollout primitives to compose next instead of restating the full
+workflow each time.
 
-1. Start from the workload contract.
-   - Name the optimization target: latency, fairness, locality, throughput, tail behavior, or isolation.
-   - Record what CFS is currently doing wrong and what evidence supports that claim.
-   - Keep the target selector explicit: script, pid, uid, gid, or cgroup.
-   - When direct throughput or latency metrics are missing, state the proxy basis you are relying on, such as IPC or CPI, and keep that distinction visible in the saved artifacts.
-2. Convert evidence into policy levers.
-   - Wakeup placement and CPU selection
-   - Dispatch queue topology
-   - Time-slice budgeting or starvation protection
-   - Migration control and cache locality
-   - cgroup or workload-class separation
-   - fallback or partial-switch strategy when full replacement is too risky
-3. Make the implementation plan explicit before editing code.
-   - Which source files or scheduler examples you are borrowing from
-   - What state lives in BPF maps, DSQs, or per-task/per-cpu storage
-   - What invariant should hold after each scheduling decision
-   - Persist the evidence-to-design bridge in a note or sidecar file when the design intent, risks, or fallback criteria matter beyond one turn
-   - `../sched-ext-codegen/scripts/scaffold_design_brief.sh` is a good default when you want a reusable design brief next to the candidate
-   - `../sched-ext-codegen/scripts/scaffold_edit_checklist.sh` is a good default when the next step is a narrow code edit and you want explicit hook, DSQ, map, and rollout coverage
-   - Use `apps/sched-claw/templates/sched_ext/*.tmpl` as reference material when a concrete scheduler scaffold helps
-   - Use `../sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh` when you need a fresh candidate directory and build stub
-4. Keep the implementation loop explicit.
-   - Edit code with normal file tools.
-   - Build with normal shell tools.
-   - Capture build commands and compiler output in the artifact directory.
-   - Use `sched_ext_daemon` only for `status`, `activate`, `stop`, and `logs`.
-5. Define rollout and rollback criteria before activation.
-   - Latency threshold, throughput drop, instability, watchdog fallback, log evidence, or CPU stall conditions that invalidate the rollout.
-   - State the maximum time you are willing to leave the experimental scheduler active.
-6. Run the controlled activation loop.
-   - Confirm daemon `status`.
-   - Activate through `sched_ext_daemon` with a human-readable label.
-   - Inspect `logs` immediately for startup failures or debug dumps.
-   - Run the target workload with the exact same command set used for the CFS baseline.
-   - `stop` the scheduler as soon as the verification window ends or a rollback trigger fires.
-7. Compare against CFS using the same evidence set.
-   - If the new scheduler regresses the primary goal or introduces a new bottleneck, stop it and return to the last stable point.
-   - Separate "policy failed" from "measurement insufficient" so the next iteration is scoped correctly.
-   - Prefer explicit artifact-based comparisons and skill helper scripts so promotion or rollback decisions are based on inspectable evidence each round
+## Compose with
+- `sched-workload-contract`
+  - when objective, selector, or direct metric basis is still unclear
+- `sched-policy-mapping`
+  - when evidence exists but levers or invariants are not explicit yet
+- `sched-ext-codegen`
+  - when a candidate path or edit surface must be created
+- `sched-ext-build-verify`
+  - when source exists and build or verifier results are the next gate
+- `sched-ext-run-evaluation`
+  - when baseline vs candidate evidence must be compared
+- `sched-ext-rollout-safety`
+  - when daemon activation and rollback windows need operational control
+
+## Responsibilities
+1. Keep the target objective explicit.
+2. Choose the next primitive skill, not one giant workflow.
+3. Keep artifact links explicit between policy mapping, code, build output, run output, and rollout logs.
+4. Keep privileged daemon use narrow.
+
+## Default helper choices
+- `../sched-ext-codegen/scripts/scaffold_design_brief.sh`
+  - when evidence must become a durable code-facing brief
+- `../sched-ext-codegen/scripts/scaffold_edit_checklist.sh`
+  - when a narrow code edit needs explicit hook, DSQ, map, and rollout coverage
+- `../sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh`
+  - when a fresh candidate directory is required
 
 ## Output Checklist
 - policy summary with explicit mapping from evidence to scheduler behavior

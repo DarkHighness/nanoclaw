@@ -199,6 +199,15 @@ pub async fn collect_doctor_report(
         false,
         "used to connect evidence and analysis notes to a concrete code-edit brief",
     ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-policy-mapping/scripts/scaffold_policy_mapping.sh",
+        ),
+        "policy",
+        "scheduler policy mapping helper",
+        false,
+        "used to keep evidence-to-policy reasoning durable before candidate-specific code scaffolding begins",
+    ));
     checks.push(daemon_check(config).await);
     checks.push(kernel_release_check(kernel_release.as_ref()));
     checks.push(kernel_config_source_check(kernel_config.as_ref()));

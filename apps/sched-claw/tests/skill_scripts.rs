@@ -20,6 +20,7 @@ fn shell_helper_scripts_have_valid_bash_syntax() -> Result<()> {
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_design_brief.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh"),
+        repo_root().join("skills/sched-policy-mapping/scripts/scaffold_policy_mapping.sh"),
     ];
 
     for script in scripts {
@@ -336,6 +337,44 @@ fn edit_checklist_helper_writes_markdown() -> Result<()> {
     assert!(rendered.contains("split latency-sensitive work into a dedicated DSQ"));
     assert!(rendered.contains("rollback if throughput drops more than 5%"));
     assert!(rendered.contains("bpftool -d -L prog loadall cand-a.bpf.o /tmp/cand-a"));
+    Ok(())
+}
+
+#[test]
+fn policy_mapping_helper_writes_markdown() -> Result<()> {
+    let dir = tempdir()?;
+    let output = dir.path().join("policy-mapping.md");
+    let script = repo_root().join("skills/sched-policy-mapping/scripts/scaffold_policy_mapping.sh");
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--output",
+            output.to_str().unwrap(),
+            "--objective",
+            "minimize p99 latency without sacrificing throughput",
+            "--evidence",
+            "artifacts/evidence/sched.md",
+            "--analysis",
+            "artifacts/analysis/triage.md",
+            "--lever",
+            "favor same-cpu wakeups for the latency class",
+            "--invariant",
+            "background throughput must not drop more than 5%",
+            "--question",
+            "does migration churn fall after the wakeup change?",
+            "--invalidate",
+            "rollback if p95 latency or throughput regresses",
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "policy mapping helper failed");
+
+    let rendered = std::fs::read_to_string(output)?;
+    assert!(rendered.contains("# scheduler policy mapping"));
+    assert!(rendered.contains("minimize p99 latency without sacrificing throughput"));
+    assert!(rendered.contains("favor same-cpu wakeups for the latency class"));
+    assert!(rendered.contains("does migration churn fall after the wakeup change?"));
     Ok(())
 }
 

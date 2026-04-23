@@ -23,6 +23,8 @@ pub fn build_system_preamble(
             .to_string(),
         "Performance data collection, analysis, plotting, and code generation are skill-driven. Prefer repository-embedded skills and their scripts over host-owned workflows."
             .to_string(),
+        "Prefer primitive skills over monolithic profiles. Use workload-specific skills mainly for selectors, metrics, and constraints; use generic contract, collection, analysis, policy, codegen, evaluation, and rollout skills for the actual work."
+            .to_string(),
         "Before collecting or interpreting Linux performance data, inspect the skill index below and load the relevant skill with skill_view. Err on the side of loading."
             .to_string(),
         "Use standard development tools directly. Repository scripts, uv-managed helper environments, perf collectors, pandas or polars analysis, and matplotlib plots belong in skills and local scripts, not in the host runtime."

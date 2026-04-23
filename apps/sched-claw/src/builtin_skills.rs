@@ -69,6 +69,7 @@ mod tests {
         assert!(root.join("sched-ext-design-loop/SKILL.md").is_file());
         assert!(root.join("sched-ext-rollout-safety/SKILL.md").is_file());
         assert!(root.join("sched-ext-run-evaluation/SKILL.md").is_file());
+        assert!(root.join("sched-policy-mapping/SKILL.md").is_file());
         assert!(root.join("sched-perf-analysis/SKILL.md").is_file());
         assert!(root.join("sched-perf-collection/SKILL.md").is_file());
         assert!(root.join("sched-workload-contract/SKILL.md").is_file());
@@ -94,6 +95,14 @@ mod tests {
         );
         assert!(
             root.join("sched-ext-codegen/references/codegen-levers.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-policy-mapping/references/lever-mapping.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-policy-mapping/scripts/scaffold_policy_mapping.sh")
                 .is_file()
         );
         assert!(
