@@ -12,6 +12,7 @@ WORKLOAD_SCRIPT="$REPO_ROOT/apps/sched-claw/scripts/workloads/run-mysql-sysbench
 EXPERIMENT_ID="mysql-sysbench-$STAMP"
 WORKLOAD_ARTIFACT_DIR="$REPO_ROOT/.nanoclaw/apps/sched-claw/workloads/mysql-sysbench/artifacts/$STAMP"
 DEMO_ARTIFACT_DIR="$REPO_ROOT/.nanoclaw/apps/sched-claw/demo/mysql-sysbench/$STAMP"
+CONTEXT_PATH=""
 MODE="docker"
 MYSQL_HOST="127.0.0.1"
 MYSQL_PORT="3306"
@@ -31,12 +32,12 @@ usage() {
   cat <<'EOF'
 Usage: mysql-sysbench-autotune.sh [options]
 
-Demo wrapper that bootstraps a sched-claw experiment and then calls sched-claw
+Demo wrapper that writes a durable workload context and then calls sched-claw
 to autotune a sysbench + MySQL workload.
 
 Options:
   --sched-claw-bin <path>   sched-claw binary. Default: apps/target/debug/sched-claw
-  --experiment-id <id>      Experiment id. Default: mysql-sysbench-<unix>
+  --experiment-id <id>      Demo run label. Default: mysql-sysbench-<unix>
   --artifact-dir <path>     Artifact directory passed to the workload launcher.
   --mode <docker|host>      Workload launcher mode. Default: docker
   --mysql-host <host>       MySQL host. Default: 127.0.0.1
@@ -142,49 +143,56 @@ if [ "$DRY_RUN" = 0 ] && [ ! -x "$SCHED_CLAW_BIN" ]; then
 fi
 
 mkdir -p "$DEMO_ARTIFACT_DIR"
+CONTEXT_PATH="$DEMO_ARTIFACT_DIR/workload-context.md"
+mkdir -p "$WORKLOAD_ARTIFACT_DIR"
 
-INIT_CMD=(
-  "$SCHED_CLAW_BIN"
-  experiment init
-  --id "$EXPERIMENT_ID"
-  --workload-name mysql-sysbench-demo
-  --workload-description "sysbench + MySQL autotune demo driven by sched-claw"
-  --workload-cwd "$REPO_ROOT"
-  --workload-arg "$WORKLOAD_SCRIPT"
-  --workload-arg --mode
-  --workload-arg "$MODE"
-  --workload-arg --artifact-dir
-  --workload-arg "$WORKLOAD_ARTIFACT_DIR"
-  --workload-arg --mysql-host
-  --workload-arg "$MYSQL_HOST"
-  --workload-arg --mysql-port
-  --workload-arg "$MYSQL_PORT"
-  --workload-arg --mysql-user
-  --workload-arg "$MYSQL_USER"
-  --workload-arg --mysql-password
-  --workload-arg "$MYSQL_PASSWORD"
-  --workload-arg --mysql-db
-  --workload-arg "$MYSQL_DB"
-  --workload-arg --tables
-  --workload-arg "$TABLES"
-  --workload-arg --table-size
-  --workload-arg "$TABLE_SIZE"
-  --workload-arg --threads
-  --workload-arg "$THREADS"
-  --workload-arg --time
-  --workload-arg "$TIME_SECONDS"
-  --workload-arg --warmup
-  --workload-arg "$WARMUP_SECONDS"
-  --primary-metric transactions_per_sec
-  --primary-goal maximize
-  --guardrail p95_latency_ms:minimize:10
-  --performance-notes "Prefer direct sysbench throughput and latency. Use proxy counters only if the direct metrics are unavailable or invalid."
-)
+cat >"$CONTEXT_PATH" <<EOF
+# MySQL Sysbench Demo Workload Context
+
+- run_label: $EXPERIMENT_ID
+- skill: mysql-sysbench-tuning
+- workload_launcher: $WORKLOAD_SCRIPT
+- workload_cwd: $REPO_ROOT
+- workload_args:
+  - --mode
+  - $MODE
+  - --artifact-dir
+  - $WORKLOAD_ARTIFACT_DIR
+  - --mysql-host
+  - $MYSQL_HOST
+  - --mysql-port
+  - $MYSQL_PORT
+  - --mysql-user
+  - $MYSQL_USER
+  - --mysql-password
+  - $MYSQL_PASSWORD
+  - --mysql-db
+  - $MYSQL_DB
+  - --tables
+  - $TABLES
+  - --table-size
+  - $TABLE_SIZE
+  - --threads
+  - $THREADS
+  - --time
+  - $TIME_SECONDS
+  - --warmup
+  - $WARMUP_SECONDS
+- artifact_dir: $WORKLOAD_ARTIFACT_DIR
+- primary_metric: transactions_per_sec:maximize
+- guardrail: p95_latency_ms:minimize:10
+- optional_metric: queries_per_sec:maximize
+- notes:
+  - Prefer direct sysbench throughput and latency.
+  - Use proxy counters only when direct metrics are unavailable or invalid.
+  - Keep daemon activation bounded and conservative for mixed throughput/latency workloads.
+EOF
 
 PROMPT=$(cat <<EOF
 Load the mysql-sysbench-tuning skill before acting.
-Use experiment $EXPERIMENT_ID. This is a sched-claw demo for automatically tuning a sysbench + MySQL workload.
-The launcher script is $WORKLOAD_SCRIPT and it will write metrics under $WORKLOAD_ARTIFACT_DIR.
+Read the workload context at $CONTEXT_PATH before acting.
+This is a sched-claw demo for automatically tuning a sysbench + MySQL workload.
+Use the launcher script and artifact directory from that context file.
 Treat transactions_per_sec and p95_latency_ms as direct metrics. Prefer throughput first, but do not hide latency regressions.
 Use the daemon only after you have explicit rollout criteria and a candidate that fits mixed throughput-and-latency workloads.
 $EXTRA_PROMPT
@@ -194,18 +202,17 @@ printf '%s\n' "$PROMPT" >"$DEMO_ARTIFACT_DIR/prompt.txt"
 
 EXEC_CMD=("$SCHED_CLAW_BIN" exec "$PROMPT")
 
-printf 'experiment_id=%s\n' "$EXPERIMENT_ID"
+printf 'run_label=%s\n' "$EXPERIMENT_ID"
 printf 'demo_artifact_dir=%s\n' "$DEMO_ARTIFACT_DIR"
+printf 'context_path=%s\n' "$CONTEXT_PATH"
 
 if [ "$DRY_RUN" = 1 ]; then
-  sched_claw_print_cmd "${INIT_CMD[@]}"
   if [ "$NO_EXEC" = 0 ]; then
     sched_claw_print_cmd "${EXEC_CMD[@]}"
   fi
   exit 0
 fi
 
-"${INIT_CMD[@]}"
 if [ "$NO_EXEC" = 0 ]; then
   "${EXEC_CMD[@]}"
 fi

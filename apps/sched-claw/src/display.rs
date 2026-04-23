@@ -531,7 +531,10 @@ pub fn render_doctor_report(report: &DoctorReport, style: OutputStyle) -> String
         ("Pass".to_string(), counts.pass.to_string()),
         ("Warn".to_string(), counts.warn.to_string()),
         ("Fail".to_string(), counts.fail.to_string()),
-        ("Templates".to_string(), report.template_count.to_string()),
+        (
+            "Skill Helpers".to_string(),
+            report.helper_script_count.to_string(),
+        ),
         (
             "Configured Skill Roots".to_string(),
             join_or_none(
@@ -2112,7 +2115,7 @@ mod tests {
                 provider: "openai".to_string(),
                 model_alias: "gpt_5_4_default".to_string(),
                 model_name: "gpt-5.4".to_string(),
-                template_count: 4,
+                helper_script_count: 4,
                 configured_skill_roots: vec![PathBuf::from("/repo/apps/code-agent/skills")],
                 checks: vec![
                     DoctorCheck {

@@ -1,6 +1,6 @@
 ---
 name: "sched-perf-analysis"
-description: "Use when collected scheduler evidence needs to be turned into explicit facts, inferences, unknowns, and candidate design implications. Covers durable analysis records instead of burying conclusions inside transcript prose."
+description: "Use when collected scheduler evidence needs to be turned into explicit facts, inferences, unknowns, and candidate design implications. Covers repo helper scripts for uv-managed analysis environments, pandas or polars summaries, and matplotlib plots."
 aliases:
   - "perf-analysis"
 tags:
@@ -31,11 +31,14 @@ tags:
      they are proxy indicators unless the workload contract says otherwise
 3. Check whether the workload contract still matches the evidence.
    - if the collected phase or selector was wrong, say so instead of over-interpreting the data
-4. Persist the conclusion.
-   - `sched-claw experiment record-analysis <experiment> --analysis-id ...`
-   - include evidence ids, facts, inferences, unknowns, recommendations, and confidence
-   - if you need quick aggregation across many `metrics.env` files before writing the analysis, use `scripts/summarize_metrics.py` as a helper instead of baking one reduction strategy into the host
-5. End with a decision surface.
+4. Use scriptable analysis helpers when the raw files are too wide to inspect directly.
+   - `scripts/bootstrap_uv_env.sh` creates a uv-managed Python environment
+   - `scripts/analyze_perf_csv.py` reduces one or more `perf stat` CSV captures and can emit JSON, Markdown, or a plot
+   - `scripts/summarize_metrics.py` remains useful for `metrics.env` style files
+5. Persist the conclusion as normal artifacts or notes.
+   - include the evidence paths, facts, inferences, unknowns, recommendations, and confidence
+   - keep the reduction method explicit instead of assuming a host-provided scorer is authoritative
+6. End with a decision surface.
    - is the next step another capture, a sched-ext code change, or a rollout stop?
 
 ## Rules
@@ -54,7 +57,12 @@ tags:
 ## Reference Material
 - `references/analysis-patterns.md`
 
-## Optional Helper Script
+## Optional Helper Scripts
+- `scripts/bootstrap_uv_env.sh`
+  - provisions a uv-managed Python environment for analysis helpers
+- `scripts/analyze_perf_csv.py`
+  - summarizes one or more `perf stat` CSV captures
+  - can emit JSON, Markdown, and a matplotlib chart
 - `scripts/summarize_metrics.py`
   - summarizes one or more `metrics.env` files
   - supports caller-selected reducers instead of enforcing a fixed host policy

@@ -1,6 +1,6 @@
 ---
 name: "sched-ext-run-evaluation"
-description: "Use when baseline and candidate runs need to be executed and compared with reproducible artifacts instead of free-form notes. Covers repeated runs, metrics import, noise handling, and score interpretation."
+description: "Use when baseline and candidate runs need to be executed and compared with reproducible artifacts instead of free-form notes. Covers repeated runs, metrics import, noise handling, and script-driven comparison instead of host-owned scoring."
 aliases:
   - "run-evaluation"
 tags:
@@ -22,19 +22,18 @@ tags:
 ## Workflow
 1. Establish the baseline first.
    - run at least one clean CFS baseline with the same launcher and metrics file contract
-2. Run candidates through the experiment substrate.
-   - `sched-claw experiment run <experiment> ...`
-   - let the substrate capture workload logs, metrics, and daemon logs
+2. Run candidates through the same launcher contract.
+   - keep workload logs, metrics files, and daemon logs side by side under a stable artifact directory
+   - if you need a repetitive wrapper, add or reuse a local script instead of expecting the host to own the loop
 3. Prefer repeated runs when variance is visible.
-   - use `sched-claw experiment run <experiment> --repeat <N> ...` instead of copying the same command by hand
+   - repeat the same launcher command with explicit labels instead of changing the method between runs
    - if results drift across runs, say so and lower confidence
    - do not promote from a single noisy run just because one number improved
    - when you need richer trial analysis, use `scripts/compare_trials.py` and pick the reducer and optional outlier method that fit the workload; do not assume one technique is globally correct
-4. Use `sched-claw experiment score`.
-   - interpret the typed decision: `promote`, `revise`, `blocked`, `incomplete`
-   - treat the host score as a lightweight substrate, not the only valid comparison
+4. Use explicit comparison artifacts.
+   - reduce the primary metric and guardrails with the chosen reducer
+   - keep the decision note next to the comparison output
    - check guardrails before celebrating the primary metric
-   - if the score led to a durable keep or stop decision, persist it with `sched-claw experiment record-decision ...`
 5. End with a factual comparison.
    - what changed
    - whether the change is attributable
@@ -57,6 +56,6 @@ tags:
 
 ## Optional Helper Script
 - `scripts/compare_trials.py`
-  - compares baseline and candidate runs from an experiment manifest
+  - compares baseline and candidate runs from an experiment manifest when that legacy format exists
   - supports caller-selected reducers and optional outlier methods
   - does not write back host policy; it is only an analysis aid

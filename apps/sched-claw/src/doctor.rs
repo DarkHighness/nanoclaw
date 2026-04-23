@@ -1,5 +1,4 @@
 use crate::app_config::{SchedClawConfig, app_state_dir};
-use crate::candidate_templates::template_specs;
 use crate::daemon_client::SchedExtDaemonClient;
 use agent_env::vars;
 use anyhow::Result;
@@ -49,7 +48,7 @@ pub struct DoctorReport {
     pub provider: String,
     pub model_alias: String,
     pub model_name: String,
-    pub template_count: usize,
+    pub helper_script_count: usize,
     pub configured_skill_roots: Vec<PathBuf>,
     pub checks: Vec<DoctorCheck>,
 }
@@ -94,7 +93,38 @@ pub async fn collect_doctor_report(
         false,
         "shared code-agent skills",
     ));
-    checks.push(template_catalog_check());
+    checks.push(helper_script_check(
+        workspace_root.join("apps/sched-claw/skills/sched-perf-collection/scripts/collect_perf.sh"),
+        "collection",
+        "perf collection helper",
+        true,
+        "used by scheduler evidence collection skills for reproducible perf capture",
+    ));
+    checks.push(helper_script_check(
+        workspace_root
+            .join("apps/sched-claw/skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh"),
+        "analysis",
+        "uv analysis bootstrap",
+        true,
+        "used to prepare a reproducible Python analysis environment",
+    ));
+    checks.push(helper_script_check(
+        workspace_root
+            .join("apps/sched-claw/skills/sched-perf-analysis/scripts/analyze_perf_csv.py"),
+        "analysis",
+        "perf csv analysis helper",
+        true,
+        "used for pandas or polars summaries and matplotlib plots",
+    ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh",
+        ),
+        "codegen",
+        "sched-ext code scaffold helper",
+        false,
+        "used to seed candidate directories and build stubs without host-owned workflow code",
+    ));
     checks.push(daemon_check(config).await);
     checks.push(path_presence_check(
         "kernel",
@@ -110,7 +140,7 @@ pub async fn collect_doctor_report(
         Path::new("/sys/fs/cgroup/cgroup.controllers"),
         false,
         "used when workload contracts or sched-ext candidates target cgroups",
-        Some("mount cgroup v2 or avoid cgroup-targeted experiments on this host".to_string()),
+        Some("mount cgroup v2 or avoid cgroup-targeted captures on this host".to_string()),
     ));
 
     let path_value = config.env_map.get_raw("PATH");
@@ -120,7 +150,7 @@ pub async fn collect_doctor_report(
         "clang",
         true,
         "required for sched-ext candidate builds",
-        Some("install clang and keep it on PATH for experiment build runs".to_string()),
+        Some("install clang and keep it on PATH for sched-ext candidate builds".to_string()),
     ));
     checks.push(command_check(
         path_value,
@@ -128,7 +158,29 @@ pub async fn collect_doctor_report(
         "bpftool",
         true,
         "required for verifier probes and libbpf log capture",
-        Some("install bpftool and keep it on PATH for experiment build runs".to_string()),
+        Some(
+            "install bpftool and keep it on PATH for verifier probes and candidate builds"
+                .to_string(),
+        ),
+    ));
+    checks.push(command_check(
+        path_value,
+        "analysis",
+        "uv",
+        false,
+        "used by skill helper scripts to provision pandas, polars, and matplotlib environments",
+        Some(
+            "install uv if you want the built-in analysis environment bootstrap helpers"
+                .to_string(),
+        ),
+    ));
+    checks.push(command_check(
+        path_value,
+        "analysis",
+        "python3",
+        false,
+        "used by skill helper scripts for metrics analysis and plotting",
+        Some("install python3 if you want the built-in analysis helper scripts".to_string()),
     ));
     checks.push(command_check(
         path_value,
@@ -204,7 +256,7 @@ pub async fn collect_doctor_report(
         provider: provider_label(&config.primary_profile.model.provider).to_string(),
         model_alias: config.primary_profile.model.alias.clone(),
         model_name: config.primary_profile.model.model.clone(),
-        template_count: template_specs().len(),
+        helper_script_count: count_helper_scripts(&workspace_root.join("apps/sched-claw/skills")),
         configured_skill_roots: config.skill_roots.clone(),
         checks,
     })
@@ -275,27 +327,38 @@ fn skill_source_check(root: PathBuf, required: bool, label: &'static str) -> Doc
     }
 }
 
-fn template_catalog_check() -> DoctorCheck {
-    let count = template_specs().len();
-    if count == 0 {
-        DoctorCheck {
-            category: "templates",
-            name: "sched-ext template catalog",
-            status: DoctorStatus::Fail,
-            detail: "no local sched-ext templates are registered".to_string(),
-            remediation: Some(
-                "restore template_specs() entries before running candidate materialization"
-                    .to_string(),
-            ),
-        }
-    } else {
-        DoctorCheck {
-            category: "templates",
-            name: "sched-ext template catalog",
+fn helper_script_check(
+    path: PathBuf,
+    category: &'static str,
+    name: &'static str,
+    required: bool,
+    detail: &'static str,
+) -> DoctorCheck {
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => DoctorCheck {
+            category,
+            name,
             status: DoctorStatus::Pass,
-            detail: format!("{count} sched-ext templates are available"),
+            detail: format!("{detail}: {}", path.display()),
             remediation: None,
-        }
+        },
+        _ if required => DoctorCheck {
+            category,
+            name,
+            status: DoctorStatus::Fail,
+            detail: format!("required helper is missing: {}", path.display()),
+            remediation: Some(format!("restore {}", path.display())),
+        },
+        _ => DoctorCheck {
+            category,
+            name,
+            status: DoctorStatus::Warn,
+            detail: format!("optional helper is missing: {}", path.display()),
+            remediation: Some(format!(
+                "restore {} if you want that helper flow",
+                path.display()
+            )),
+        },
     }
 }
 
@@ -448,6 +511,25 @@ fn count_skills(root: &Path) -> Option<usize> {
     Some(count)
 }
 
+fn count_helper_scripts(root: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| fs::read_dir(entry.path().join("scripts")).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| matches!(value, "sh" | "py"))
+                .unwrap_or(false)
+        })
+        .count()
+}
+
 fn provider_label(provider: &ProviderKind) -> &'static str {
     match provider {
         ProviderKind::OpenAi => "openai",
@@ -491,8 +573,8 @@ fn is_executable_mode(_metadata: &fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DoctorCheck, DoctorReport, DoctorStatus, count_skills, find_command_on_path,
-        is_executable_file,
+        DoctorCheck, DoctorReport, DoctorStatus, count_helper_scripts, count_skills,
+        find_command_on_path, is_executable_file,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -506,6 +588,22 @@ mod tests {
         fs::write(dir.path().join("two/SKILL.md"), "body").unwrap();
 
         assert_eq!(count_skills(dir.path()), Some(2));
+    }
+
+    #[test]
+    fn counts_helper_scripts_under_skill_dirs() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("one/scripts")).unwrap();
+        fs::create_dir_all(dir.path().join("two/scripts")).unwrap();
+        fs::write(dir.path().join("one/scripts/a.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(
+            dir.path().join("two/scripts/b.py"),
+            "#!/usr/bin/env python3\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("two/scripts/c.txt"), "ignored").unwrap();
+
+        assert_eq!(count_helper_scripts(dir.path()), 2);
     }
 
     #[test]
@@ -536,7 +634,7 @@ mod tests {
             provider: "openai".to_string(),
             model_alias: "gpt_5_4_default".to_string(),
             model_name: "gpt-5.4".to_string(),
-            template_count: 4,
+            helper_script_count: 4,
             configured_skill_roots: Vec::new(),
             checks: vec![
                 DoctorCheck {

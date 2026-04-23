@@ -35,9 +35,9 @@ tags:
 1. Pick the MySQL source.
    - `--mode docker` is the self-contained demo path.
    - `--mode host` is for an already-running MySQL instance.
-2. Keep throughput and latency explicit.
-   - The demo wrapper initializes the experiment with `transactions_per_sec` as primary and `p95_latency_ms` as a guardrail.
-   - Do not collapse both into a single vague “performance” label.
+2. Read the demo workload context.
+   - The demo wrapper writes a workload-context note next to its artifacts with the launcher path, direct metrics, guardrails, and rollback notes.
+   - Do not collapse throughput and latency into a single vague “performance” label.
 3. Prefer direct sysbench metrics.
    - Read `metrics.env` from the workload artifact directory.
    - Only fall back to proxy counters if sysbench output is unavailable or invalid.

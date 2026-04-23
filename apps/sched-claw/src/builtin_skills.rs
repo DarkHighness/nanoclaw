@@ -89,7 +89,15 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("sched-claw-product-readiness/references/harness-engineering.md")
+                .is_file()
+        );
+        assert!(
             root.join("sched-ext-codegen/references/codegen-levers.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh")
                 .is_file()
         );
         assert!(
@@ -113,7 +121,19 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("sched-perf-analysis/scripts/bootstrap_uv_env.sh")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-analysis/scripts/analyze_perf_csv.py")
+                .is_file()
+        );
+        assert!(
             root.join("sched-perf-collection/references/collection-matrix.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-collection/scripts/collect_perf.sh")
                 .is_file()
         );
         assert!(

@@ -14,6 +14,7 @@ EXPERIMENT_ID="llvm-clang-$STAMP"
 BUILD_DIR="$REPO_ROOT/.nanoclaw/apps/sched-claw/workloads/llvm-clang-build/build-$STAMP"
 WORKLOAD_ARTIFACT_DIR="$REPO_ROOT/.nanoclaw/apps/sched-claw/workloads/llvm-clang-build/artifacts/$STAMP"
 DEMO_ARTIFACT_DIR="$REPO_ROOT/.nanoclaw/apps/sched-claw/demo/llvm-clang-build/$STAMP"
+CONTEXT_PATH=""
 JOBS=$(sched_claw_nproc)
 TARGET="clang"
 NO_EXEC=0
@@ -24,13 +25,13 @@ usage() {
   cat <<'EOF'
 Usage: llvm-clang-autotune.sh --llvm-src <path> [options]
 
-Demo wrapper that bootstraps a sched-claw experiment and then calls sched-claw
+Demo wrapper that writes a durable workload context and then calls sched-claw
 to autotune an LLVM/clang build workload.
 
 Options:
   --llvm-src <path>         LLVM monorepo root or llvm/ source root.
   --sched-claw-bin <path>   sched-claw binary. Default: apps/target/debug/sched-claw
-  --experiment-id <id>      Experiment id. Default: llvm-clang-<unix>
+  --experiment-id <id>      Demo run label. Default: llvm-clang-<unix>
   --build-dir <path>        CMake build directory passed to the workload launcher.
   --artifact-dir <path>     Artifact directory passed to the workload launcher.
   --jobs <n>                Parallel build jobs. Default: detected CPU count
@@ -102,37 +103,45 @@ if [ "$DRY_RUN" = 0 ] && [ ! -x "$SCHED_CLAW_BIN" ]; then
 fi
 
 mkdir -p "$DEMO_ARTIFACT_DIR"
+CONTEXT_PATH="$DEMO_ARTIFACT_DIR/workload-context.md"
+mkdir -p "$WORKLOAD_ARTIFACT_DIR"
 
-INIT_CMD=(
-  "$SCHED_CLAW_BIN"
-  experiment init
-  --id "$EXPERIMENT_ID"
-  --workload-name llvm-clang-build-demo
-  --workload-description "LLVM/clang autotune demo driven by sched-claw"
-  --workload-cwd "$REPO_ROOT"
-  --workload-arg "$WORKLOAD_SCRIPT"
-  --workload-arg --llvm-src
-  --workload-arg "$LLVM_SRC"
-  --workload-arg --build-dir
-  --workload-arg "$BUILD_DIR"
-  --workload-arg --artifact-dir
-  --workload-arg "$WORKLOAD_ARTIFACT_DIR"
-  --workload-arg --jobs
-  --workload-arg "$JOBS"
-  --workload-arg --target
-  --workload-arg "$TARGET"
-  --primary-metric build_seconds
-  --primary-goal minimize
-  --proxy-metric ipc:maximize
-  --proxy-metric cpi:minimize
-  --performance-notes "Prefer direct build wall-clock time. Switch to proxy_estimate only when the build timing is not trustworthy."
-)
+cat >"$CONTEXT_PATH" <<EOF
+# LLVM/Clang Demo Workload Context
+
+- run_label: $EXPERIMENT_ID
+- skill: llvm-clang-build-tuning
+- workload_launcher: $WORKLOAD_SCRIPT
+- workload_cwd: $REPO_ROOT
+- workload_args:
+  - --llvm-src
+  - $LLVM_SRC
+  - --build-dir
+  - $BUILD_DIR
+  - --artifact-dir
+  - $WORKLOAD_ARTIFACT_DIR
+  - --jobs
+  - $JOBS
+  - --target
+  - $TARGET
+- artifact_dir: $WORKLOAD_ARTIFACT_DIR
+- primary_metric: build_seconds:minimize
+- secondary_metric: configure_seconds:minimize
+- proxy_metrics:
+  - ipc:maximize
+  - cpi:minimize
+- notes:
+  - Prefer direct build wall-clock time.
+  - Switch to proxy_estimate only when timing is contaminated or incomplete.
+  - Keep daemon activation bounded and conservative for long-running builds.
+EOF
 
 PROMPT=$(cat <<EOF
 Load the llvm-clang-build-tuning skill before acting.
-Use experiment $EXPERIMENT_ID. This is a sched-claw demo for automatically tuning an LLVM/clang build workload.
-The launcher script is $WORKLOAD_SCRIPT and it will write metrics under $WORKLOAD_ARTIFACT_DIR.
-Treat build_seconds as the primary direct metric. If direct timing is noisy or unavailable, explicitly record a proxy_estimate basis and use ipc/cpi instead.
+Read the workload context at $CONTEXT_PATH before acting.
+This is a sched-claw demo for automatically tuning an LLVM/clang build workload.
+Use the launcher script and artifact directory from that context file.
+Treat build_seconds as the primary direct metric. If direct timing is noisy or unavailable, explicitly state that you are using proxy_estimate and use ipc/cpi instead.
 Prefer conservative sched-ext candidates that fit compile-heavy CPU-bound workloads, and keep rollout criteria explicit before touching the daemon.
 $EXTRA_PROMPT
 EOF
@@ -141,18 +150,17 @@ printf '%s\n' "$PROMPT" >"$DEMO_ARTIFACT_DIR/prompt.txt"
 
 EXEC_CMD=("$SCHED_CLAW_BIN" exec "$PROMPT")
 
-printf 'experiment_id=%s\n' "$EXPERIMENT_ID"
+printf 'run_label=%s\n' "$EXPERIMENT_ID"
 printf 'demo_artifact_dir=%s\n' "$DEMO_ARTIFACT_DIR"
+printf 'context_path=%s\n' "$CONTEXT_PATH"
 
 if [ "$DRY_RUN" = 1 ]; then
-  sched_claw_print_cmd "${INIT_CMD[@]}"
   if [ "$NO_EXEC" = 0 ]; then
     sched_claw_print_cmd "${EXEC_CMD[@]}"
   fi
   exit 0
 fi
 
-"${INIT_CMD[@]}"
 if [ "$NO_EXEC" = 0 ]; then
   "${EXEC_CMD[@]}"
 fi

@@ -1,6 +1,6 @@
 ---
 name: "sched-ext-codegen"
-description: "Use when workload evidence has to be turned into concrete sched-ext code changes, template choices, policy levers, and buildable candidate state. Covers design recording, template materialization, and narrow code generation grounded in prior analysis."
+description: "Use when workload evidence has to be turned into concrete sched-ext code changes, reference scaffolds, policy levers, and buildable candidate state. Covers narrow code generation grounded in prior analysis without requiring the host to orchestrate codegen."
 aliases:
   - "codegen"
   - "sched-codegen"
@@ -25,13 +25,12 @@ tags:
 1. Start from durable evidence, not from a blank file.
    - identify the evidence ids and analysis ids that justify the code change
 2. Persist the design intent before editing.
-   - `sched-claw experiment record-design <experiment> --design-id ...`
-   - include candidate id, policy levers, invariants, risks, fallback criteria, and code targets
+   - keep a short design note near the candidate source or artifact directory
+   - include policy levers, invariants, risks, fallback criteria, and code targets
 3. Choose the narrowest implementation surface.
-   - reuse an existing candidate when the change is iterative
-   - when the change is a mutation of an earlier idea, prefer `sched-claw experiment fork-candidate ...` so lineage and mutation notes stay explicit
-   - when the change is template-backed and mostly a knob or small policy variation, prefer `sched-claw experiment mutate-candidate ...` so lineage, knob deltas, fresh source paths, and daemon wiring stay synchronized
-   - materialize a template only when it genuinely reduces boilerplate
+   - reuse an existing candidate directory when the change is iterative
+   - use `scripts/scaffold_sched_ext_candidate.sh` when you need a fresh candidate directory, build stub, or notes file
+   - optional reference scaffolds live in `apps/sched-claw/templates/sched_ext/*.tmpl`; inspect them with normal file tools instead of assuming a host command must materialize them
 4. Keep the code change scoped to the chosen levers.
    - wakeup placement
    - dispatch queue topology
@@ -42,7 +41,7 @@ tags:
      relevant, extract the narrow lever and rationale instead of cloning the
      whole scheduler shape
 5. Move immediately into build and verifier capture.
-   - `sched-claw experiment build <experiment> --candidate-id <id>`
+   - build with normal shell commands or the scaffolded `build.sh`
    - verifier or libbpf failures are part of the design loop, not an afterthought
 
 ## Rules
@@ -51,7 +50,7 @@ tags:
 - Keep rollback criteria explicit when the new scheduler trades latency against throughput or fairness.
 
 ## Output checklist
-- candidate id
+- candidate path or id
 - evidence and analysis references
 - policy levers
 - code targets
@@ -61,3 +60,8 @@ tags:
 ## Reference Material
 - `references/codegen-levers.md`
 - `../sched-ext-build-verify/references/build-and-verifier-checklist.md`
+
+## Optional Helper Script
+- `scripts/scaffold_sched_ext_candidate.sh`
+  - creates a candidate source file, build stub, and notes file
+  - can optionally seed the source from an existing template file

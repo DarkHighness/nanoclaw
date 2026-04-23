@@ -1,6 +1,6 @@
 ---
 name: "sched-ext-build-verify"
-description: "Use when sched-ext source has to be materialized or edited, then compiled, verifier-checked, and persisted with concrete artifacts. Covers build command hygiene, libbpf or verifier triage, and experiment build records."
+description: "Use when sched-ext source has to be edited, then compiled, verifier-checked, and persisted with concrete artifacts. Covers build command hygiene, libbpf or verifier triage, and script-friendly artifact capture."
 aliases:
   - "build-verify"
 tags:
@@ -20,11 +20,10 @@ tags:
 - `references/build-and-verifier-checklist.md`
 
 ## Workflow
-1. Make sure the candidate spec is durable first.
-   - keep `source_path`, `object_path`, `build_command`, daemon argv, and knobs in the candidate record
-2. Build through the experiment substrate when possible.
-   - `sched-claw experiment build <experiment> --candidate-id <id>`
-   - this captures compiler stdout/stderr and verifier logs in one artifact tree
+1. Make sure the candidate source and artifact directory are durable first.
+   - keep `source`, `object`, `build.sh`, and notes near each other in the workspace
+2. Build through normal shell commands or the scaffolded `build.sh`.
+   - capture compiler stdout or stderr and verifier logs into files next to the source or artifact directory
 3. Read the build result before changing code.
    - separate compiler failure, missing include/toolchain failure, and verifier rejection
 4. For verifier failures, narrow the cause.
@@ -39,7 +38,7 @@ tags:
 ## Rules
 - Do not trust comments or intentions over the captured verifier logs.
 - Do not activate a candidate whose latest build or verifier result failed unless the operator explicitly overrides the gate.
-- Keep the object path explicit so deploy and run surfaces reuse the same artifact.
+- Keep the object path explicit so daemon activation reuses the same artifact.
 
 ## Output checklist
 - build command used

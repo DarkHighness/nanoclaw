@@ -17,15 +17,14 @@ tags:
 - Activate or stop the scheduler through the daemon after code changes are built.
 
 ## Workflow
-This SOP decides the loop. The host only exposes generic local commands such as
-template inspection, candidate persistence, source materialization, scoring, and
-deployment.
+This SOP decides the loop. The host should stay thin; normal tools and
+repository scripts do the collection, editing, build, and comparison work.
 
 1. Start from the workload contract.
    - Name the optimization target: latency, fairness, locality, throughput, tail behavior, or isolation.
    - Record what CFS is currently doing wrong and what evidence supports that claim.
    - Keep the target selector explicit: script, pid, uid, gid, or cgroup.
-   - When direct throughput or latency metrics are missing, state the proxy basis you are relying on, such as IPC or CPI, and keep that distinction visible in the experiment manifest.
+   - When direct throughput or latency metrics are missing, state the proxy basis you are relying on, such as IPC or CPI, and keep that distinction visible in the saved artifacts.
 2. Convert evidence into policy levers.
    - Wakeup placement and CPU selection
    - Dispatch queue topology
@@ -37,9 +36,9 @@ deployment.
    - Which source files or scheduler examples you are borrowing from
    - What state lives in BPF maps, DSQs, or per-task/per-cpu storage
    - What invariant should hold after each scheduling decision
-   - Persist the evidence-to-design bridge with `sched-claw experiment record-design ...` when the design intent, risks, or fallback criteria matter beyond one turn
-   - Persist the candidate state with `sched-claw experiment add-candidate ...` or `sched-claw experiment set-candidate ...` so the template, build command, daemon argv, and knobs are durable
-   - When a template is useful, inspect it with `sched-claw template show <name>` and materialize it with `sched-claw experiment materialize ...`
+   - Persist the evidence-to-design bridge in a note or sidecar file when the design intent, risks, or fallback criteria matter beyond one turn
+   - Use `apps/sched-claw/templates/sched_ext/*.tmpl` as reference material when a concrete scheduler scaffold helps
+   - Use `../sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh` when you need a fresh candidate directory and build stub
 4. Keep the implementation loop explicit.
    - Edit code with normal file tools.
    - Build with normal shell tools.
@@ -50,24 +49,24 @@ deployment.
    - State the maximum time you are willing to leave the experimental scheduler active.
 6. Run the controlled activation loop.
    - Confirm daemon `status`.
-   - Activate through `sched_ext_daemon` or `sched-claw experiment deploy ...` with a human-readable label.
+   - Activate through `sched_ext_daemon` with a human-readable label.
    - Inspect `logs` immediately for startup failures or debug dumps.
    - Run the target workload with the exact same command set used for the CFS baseline.
    - `stop` the scheduler as soon as the verification window ends or a rollback trigger fires.
 7. Compare against CFS using the same evidence set.
    - If the new scheduler regresses the primary goal or introduces a new bottleneck, stop it and return to the last stable point.
    - Separate "policy failed" from "measurement insufficient" so the next iteration is scoped correctly.
-   - Prefer `sched-claw experiment record-candidate ...` and `sched-claw experiment score ...` so promotion or rollback decisions are based on the same typed metric surface each round
+   - Prefer explicit artifact-based comparisons and skill helper scripts so promotion or rollback decisions are based on inspectable evidence each round
 
 ## Output Checklist
 - policy summary with explicit mapping from evidence to scheduler behavior
-- if available, the design record id and the evidence or analysis ids it cites
+- if available, the design note path and the evidence or analysis artifacts it cites
 - changed source files and build command
 - activation label and daemon command arguments
 - startup log excerpt and stop status
 - before/after comparison against the CFS baseline
 - next action: keep, revise, or rollback
-- if available, the current experiment score output and whether the candidate is `promote`, `revise`, `blocked`, or `incomplete`
+- if available, the current comparison output and whether the candidate should be kept, revised, or rolled back
 
 ## Rules
 - Do not use the daemon as a generic privileged shell.
@@ -75,7 +74,7 @@ deployment.
 - State whether each conclusion is a fact, inference, or hypothesis.
 - Prefer a single active scheduler experiment at a time so comparisons stay attributable.
 - If the sched-ext ABI or helper surface looks version-sensitive, say so and tie the conclusion to the tested kernel version.
-- Do not compare free-form notes alone when the same run can be recorded in the experiment manifest.
+- Do not compare free-form notes alone when the same run can be compared through saved artifacts.
 
 ## Reference Material
 - `references/official-docs.md`

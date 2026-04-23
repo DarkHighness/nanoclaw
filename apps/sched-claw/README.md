@@ -6,8 +6,14 @@ job: investigate Linux scheduling behavior, generate a new `sched-ext`
 scheduler, and hand privileged rollout work to a dedicated daemon.
 
 The host intentionally does not hard-code a scheduler workflow. Skills define
-the SOP; the host only provides generic local capabilities for experiment state,
-template materialization, scoring, and privileged rollout.
+the SOP; the host primarily provides generic local capabilities for session
+history, skill discovery, filesystem or shell access, and privileged rollout.
+Optional operator-side experiment or template helpers remain available for
+compatibility, but they are not the default agent path.
+
+The primary direction is now a thinner harness: normal tools plus
+repository-embedded skills and scripts for collection, analysis, plotting, and
+code generation; a narrow privileged daemon for sched-ext lifecycle control.
 
 ## Design constraints
 
@@ -31,14 +37,14 @@ template materialization, scoring, and privileged rollout.
 The `sched-claw` app is no longer a single monolithic crate.
 
 - `apps/sched-claw/crates/domain`
-  - owns workload contracts, metric policy helpers, experiment manifests, and scoring
+  - owns workload contracts plus optional operator-side manifest and metric helpers
   - stays free of runtime, UI, skill, and daemon implementation details
 - `apps/sched-claw/crates/daemon-protocol`
   - owns the daemon request/response contract only
   - keeps the privileged boundary reusable by the CLI, daemon server, and tool adapter
 - `apps/sched-claw/crates/execution`
-  - owns sched-ext template materialization, build capture, rollout planning, and workload run capture
-  - stays focused on execution artifacts and experiment-facing state transitions instead of CLI or REPL policy
+  - owns reusable sched-ext execution helpers such as code scaffolding, build capture, rollout planning, and workload run capture
+  - stays focused on execution artifacts instead of CLI, REPL, or skill policy
 - `apps/sched-claw/crates/daemon-core`
   - owns daemon client and server transport plus privileged process lifecycle enforcement
   - keeps Unix-socket I/O and rollout safety checks out of the host composition crate
@@ -56,39 +62,14 @@ domain crate, execution crate, or host runtime.
 - `sched-claw` provides:
   - one-shot execution: `sched-claw exec "prompt"`
   - a simple line REPL: `sched-claw repl`
-  - a local template catalog for sched-ext source scaffolding:
-    - `sched-claw template list --style table`
-    - `sched-claw template show latency_guard --style plain`
-  - a local experiment substrate for workload contracts, baselines, candidates, and scoring:
-    - `sched-claw experiment list --style table`
-    - `sched-claw experiment init --id demo --workload-name bench --primary-metric latency_ms --primary-goal minimize`
-    - `sched-claw experiment init --id demo --workload-name bench --primary-metric latency_ms --primary-goal minimize --min-baseline-runs 3 --min-candidate-runs 3 --min-primary-improvement-pct 2 --max-primary-relative-spread-pct 10`
-    - `sched-claw experiment init --id demo --workload-name app --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --proxy-metric cpi:minimize`
-    - `sched-claw experiment init --id demo --workload-name service --target-cgroup /sys/fs/cgroup/work.slice --primary-metric latency_ms --primary-goal minimize --guardrail throughput:maximize:5`
-    - `sched-claw experiment init --id demo --workload-name service --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --perf-stat-profile proxy_basic`
-    - `sched-claw experiment set-collection-policy demo --perf-stat-profile scheduler_basic --perf-stat-event stalled-cycles-frontend`
-    - `sched-claw experiment set-evaluation-policy demo --min-baseline-runs 5 --min-candidate-runs 5 --max-primary-relative-spread-pct 8`
-    - `sched-claw experiment set-search-policy demo --max-candidates 6 --max-total-candidate-runs 24 --max-runs-per-candidate 4 --max-total-builds 12 --stop-after-first-promote true`
-    - `sched-claw experiment record-evidence demo --evidence-id perf-a --kind perf_stat --scheduler cfs --artifact artifacts/evidence/perf-a.txt --metric ipc=1.23`
-    - `sched-claw experiment record-analysis demo --analysis-id locality-a --title "Baseline locality diagnosis" --confidence medium --evidence-id perf-a --fact "ipc stayed low" --inference "migration churn likely hurts locality"`
-    - `sched-claw experiment record-design demo --design-id cand-a-v1 --candidate-id locality-v1 --title "Locality-first candidate" --analysis-id locality-a --lever "prefer same-cpu wakeups" --invariant "do not starve remote tasks"`
-    - `sched-claw experiment add-candidate demo --candidate-id locality-v1 --template dsq_local`
-    - `sched-claw experiment set-candidate demo --candidate-id locality-v1 --template dsq_local --daemon-arg loader --daemon-arg {source}`
-    - `sched-claw experiment fork-candidate demo --from-candidate locality-v1 --candidate-id locality-v2 --lineage-analysis-id locality-a --mutation-note "tighten slice budget"`
-    - `sched-claw experiment mutate-candidate demo --from-candidate locality-v1 --candidate-id locality-v2 --knob slice_us=800 --mutation-note "tighten slice budget"`
-    - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
-    - `sched-claw experiment build demo --candidate-id locality-v1 --style table`
-    - `sched-claw experiment run demo --label cfs-a --repeat 3 --style table`
-    - `sched-claw experiment run demo --label cfs-a --timeout-seconds 15 --perf-bin /usr/bin/perf --style table`
-    - `sched-claw experiment run demo --candidate-id locality-v1 --label cand-a --timeout-seconds 60 --lease-seconds 60 --style table`
-    - `sched-claw experiment record-baseline demo --label cfs-baseline --artifact-dir artifacts/baseline --metric latency_ms=12.4`
-    - `sched-claw experiment record-candidate demo --candidate-id locality-v1 --label run-a --artifact-dir artifacts/cand-a --metric latency_ms=9.1`
-    - `sched-claw experiment score demo --style table`
-    - `sched-claw experiment record-decision demo --decision-id decision-a --candidate-id locality-v1 --decision promote --primary-improvement-pct 12.5 --analysis-id locality-a`
-    - `sched-claw experiment deploy demo --candidate-id locality-v1 --lease-seconds 300 --style table`
   - a product-facing readiness surface:
     - `sched-claw doctor --style table`
     - `sched-claw doctor --style plain`
+  - skill-first helper scripts for collection and analysis:
+    - `apps/sched-claw/skills/sched-perf-collection/scripts/collect_perf.sh`
+    - `apps/sched-claw/skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh`
+    - `apps/sched-claw/skills/sched-perf-analysis/scripts/analyze_perf_csv.py`
+    - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh`
   - local inspection and audit helpers such as:
     - `sched-claw tool list --style table`
     - `sched-claw tool show sched_ext_daemon --style plain`
@@ -108,6 +89,10 @@ domain crate, execution crate, or host runtime.
   - `activate`
   - `stop`
   - `logs`
+
+Legacy operator-oriented `experiment` and `template` subcommands still exist
+for manual recovery and compatibility, but they are no longer the default
+agent-facing path and are hidden from the primary CLI help.
 
 ## Skills
 
@@ -154,11 +139,6 @@ output styles inspired by the management surfaces in `code-agent`:
 The style switch applies to:
 
 - `sched-claw doctor`
-- `sched-claw template list`
-- `sched-claw template show <name>`
-- `sched-claw experiment list`
-- `sched-claw experiment show <id>`
-- `sched-claw experiment score <id>`
 - `sched-claw sessions [query]`
 - `sched-claw session <id>`
 - `sched-claw tool list`
@@ -174,11 +154,6 @@ The REPL also supports local inspection commands:
 
 - `:format <table|plain>`
 - `:doctor`
-- `:experiments`
-- `:experiment <id>`
-- `:score <id>`
-- `:templates`
-- `:template <name>`
 - `:tools`
 - `:tool <name>`
 - `:skills`
@@ -211,176 +186,40 @@ implicit side effect hidden in the store directory.
 These commands intentionally reuse the shared `store` and `runtime` layers
 instead of maintaining a separate history protocol.
 
-## Experiment substrate
+## Optional operator substrate
 
-Workload-driven sched-ext tuning should not rely on transcript prose alone.
-`sched-claw` now includes a local experiment manifest and scoring layer under:
+The host still carries hidden `experiment` and `template` subcommands for
+manual recovery, audit, and compatibility with earlier iterations. They remain
+shell-invoked local helpers rather than model-visible tools.
 
-- `.nanoclaw/apps/sched-claw/experiments/<id>/experiment.toml`
+Treat them as optional operator substrate, not as the primary agent workflow.
+The preferred path is:
 
-The substrate is generic on purpose. Typical commands include:
+- workload context captured as normal files under `.nanoclaw/` or another
+  durable workspace directory
+- collection via shell commands or helper scripts such as
+  `skills/sched-perf-collection/scripts/collect_perf.sh`
+- analysis via repo-local scripts such as
+  `skills/sched-perf-analysis/scripts/analyze_perf_csv.py`
+- sched-ext code scaffolding via repo-local scripts such as
+  `skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh`
+- privileged rollout only through `sched_ext_daemon`
 
-- `experiment init`
-  - define the workload contract, target selector, primary metric, performance policy, and guardrails
-- `experiment set-evaluation-policy`
-  - tighten or relax the evidence gate after an experiment already exists
-  - keep only lightweight host-side gates such as minimum run counts, minimum improvement thresholds, and primary-metric spread limits durable in the manifest
-- `experiment set-collection-policy`
-  - persist low-overhead collection intent such as `perf_stat` profiles and
-    additional PMU events directly in the manifest
-  - keep first-pass PMU evidence durable instead of rediscovering collector
-    commands in every transcript
-- `experiment set-search-policy`
-  - persist search-budget and convergence controls such as candidate count, total build count, total candidate runs, per-candidate run caps, and whether search should stop after the first promoted decision
-- `experiment record-evidence`
-  - persist scheduler evidence with a typed kind such as `perf_stat`, `perf_sched`, `perf_record`, `psi`, `schedstat`, `bpf_trace`, or `custom`
-  - keep artifact paths, collector command, optional scheduler or candidate association, and any parsed metrics durable in the manifest
-- `experiment record-analysis`
-  - persist factual findings, inferences, unknowns, recommendations, and confidence, linked back to specific evidence ids
-- `experiment record-design`
-  - persist sched-ext design intent before or during code changes
-  - keep candidate linkage, policy levers, invariants, risks, fallback criteria, and code targets explicit
-- `experiment add-candidate` / `experiment set-candidate`
-  - persist candidate metadata, lineage, source/object paths, daemon argv, build commands, and knobs
-- `experiment fork-candidate`
-  - create a new candidate from an existing parent while keeping lineage, mutation note, and evidence or analysis references explicit
-- `experiment mutate-candidate`
-  - create a new candidate from an existing parent and immediately materialize a
-    fresh source/object pair with merged knob overrides
-  - keep the parent lineage explicit while copying forward daemon settings and
-    template-backed code generation state
-- `experiment materialize`
-  - turn a named sched-ext template plus knob values into concrete source under the experiment directory
-- `experiment build`
-  - execute the candidate build command from the workspace root
-  - capture build stdout/stderr, exit code, and a short failure summary under the experiment artifact tree
-  - run a verifier probe through `bpftool -d -L prog loadall` by default so libbpf and verifier logs are captured without pinning persistent bpffs state
-  - persist the build and verifier records back into the candidate manifest entry
-- `experiment run`
-  - execute the script workload contract and capture stdout/stderr, metrics, and artifact paths under the experiment artifact tree
-  - `--repeat <N>` records multiple independent trials without forcing a host-side workflow; labels are suffixed per trial and custom artifact dirs are nested under `trial-XX/`
-  - when the collection policy enables `perf_stat`, also capture
-    `perf.stat.csv`, derive proxy metrics such as `ipc` or `cpi`, and
-    automatically record a typed `perf_stat` evidence entry
-  - existing `pid`, `uid`, `gid`, and `cgroup` targets can be observed through
-    the same `perf_stat` path, using the run timeout as the observation window
-  - for candidate runs, activate the sched-ext loader through the daemon, stop it after the workload finishes, and persist daemon logs next to the run artifacts
-  - refuse candidate rollout by default when the latest build or verifier record is not successful; use `--allow-unverified-build` only as an explicit override
-- `experiment record-baseline`
-  - store one or more CFS baseline runs with artifact paths and measured metrics
-- `experiment record-candidate`
-  - store one or more sched-ext runs for a specific candidate
-- `experiment score`
-  - compare candidate medians against the baseline and classify each candidate as `promote`, `revise`, `blocked`, or `incomplete`
-  - also report the current evaluation policy, baseline spread, candidate spread, and any reasons that kept a candidate from promotion
-- `experiment record-decision`
-  - persist the operator or agent decision that followed scoring, including references back to the evidence, analysis, and design records that justified it
-- `experiment deploy`
-  - activate a chosen candidate through the daemon and persist the deployment record back into the manifest
-  - optional `--lease-seconds` bounds how long the privileged deployment may remain active if the client dies or forgets to stop it
+If an operator needs hidden substrate state, it can still persist:
 
-This is intentionally a host-local substrate, not a new model-visible tool.
-Agents are expected to call these commands through the existing shell tool so
-the visible tool surface stays minimal.
+- workload selectors such as script, pid, uid, gid, or cgroup
+- direct-vs-proxy metric intent
+- evidence, analysis, and design records
+- optional candidate lineage, build or verifier logs, and deployment history
 
-Which commands to use, and in what order, is not host policy. The active skill
-SOP should decide the loop; the host only makes the state durable and reusable.
+Reference sched-ext starting points still live under
+`apps/sched-claw/templates/sched_ext/`, but they are reference material for
+skills and scripts rather than a required host materialization path.
 
-Materialized candidates now also persist both `source_path` and `object_path`,
-so the build and rollout layers share one concrete artifact contract instead of
-re-deriving object names ad hoc.
-
-The same manifest also now carries three non-run knowledge surfaces:
-
-- evidence records
-  - collection artifacts and parsed metrics
-- analysis records
-  - facts, inferences, unknowns, recommendations, and confidence
-- design records
-  - explicit sched-ext policy intent and rollback boundaries
-
-This keeps performance collection, data analysis, and code-generation intent
-queryable and reviewable outside the transcript.
-
-The external design references that currently shape these substrate choices are
-tracked in:
+The external design references that shape this thin-host direction are tracked
+in:
 
 - `docs/sched-ext-industrial-and-autotuning-notes.md`
-
-It also carries governance surfaces for longer-running tuning work:
-
-- search policy
-  - explicit budget and convergence controls for candidate search
-- candidate lineage
-  - parent candidate plus evidence, analysis, and design references for a mutation
-- decision records
-  - auditable `promote`, `revise`, `blocked`, or `incomplete` outcomes after a score or operator review
-
-## Evaluation Policy
-
-Every experiment manifest now carries an explicit evaluation policy alongside
-its primary metric and guardrails. This keeps promotion criteria durable instead
-of implicit:
-
-- minimum baseline run count
-- minimum candidate run count
-- optional minimum primary-metric improvement percent
-- optional maximum primary-metric relative spread percent
-
-If the manifest says the evidence is insufficient, `sched-claw experiment score`
-will keep the candidate `incomplete` even when a single run looked promising.
-
-If a workload needs richer noise handling, custom reducers, or a different
-anomaly technique, keep that logic in skills and shell scripts instead of
-moving it into the host substrate.
-
-## Workload selectors and performance policy
-
-`sched-claw` can now record the workload target explicitly instead of leaving it
-as free text. `experiment init` supports:
-
-- script target
-  - default when you use `--workload-cwd`, `--workload-arg`, or `--workload-env`
-- `--target-pid <pid>`
-- `--target-uid <uid>`
-- `--target-gid <gid>`
-- `--target-cgroup <path>`
-
-Only one non-script selector may be set at a time. Script launch fields do not
-mix with pid/uid/gid/cgroup selectors.
-
-Performance intent is also stored explicitly:
-
-- direct metrics
-  - use throughput and latency when they are available
-  - express the priority with `--primary-metric`, `--primary-goal`, and optional guardrails
-- proxy estimate
-  - use `--performance-basis proxy_estimate`
-  - record proxies such as `IPC` or `CPI` with `--proxy-metric ipc:maximize` and `--proxy-metric cpi:minimize`
-
-The host stores this as manifest metadata. It does not force the agent to use a
-fixed evaluation workflow, but it makes the basis of a decision auditable.
-
-## Template catalog
-
-The local sched-ext template catalog lives under:
-
-- `apps/sched-claw/templates/sched_ext/`
-
-Current built-in starting points are:
-
-- `dsq_locality`
-  - locality-biased wakeup and migration controls
-- `latency_guard`
-  - short-slice, wakeup-sensitive interactive controls
-- `balanced_queue`
-  - shared-queue throughput controls
-- `cgroup_lane`
-  - cgroup-aware class and lane controls
-
-`experiment materialize` writes concrete `.bpf.c` source files under the
-experiment state directory by default and records the resulting source path,
-build command, knobs, and optional daemon argv back into the candidate spec.
 
 ## Doctor
 
@@ -391,10 +230,9 @@ workspace and machine are ready for real sched-claw use.
 Current checks include:
 
 - selected provider credentials for the active primary model
-- builtin sched-claw skills and shared `apps/code-agent/skills` availability
-- sched-ext template catalog presence
+- builtin sched-claw skills, helper scripts, and shared `apps/code-agent/skills` availability
 - privileged daemon socket reachability
-- core toolchain availability such as `clang`, `bpftool`, and `perf`
+- core toolchain availability such as `clang`, `bpftool`, `perf`, `uv`, and `python3`
 - kernel prerequisites such as BTF and cgroup v2
 - demo scripts plus LLVM and MySQL demo prerequisites
 
@@ -423,8 +261,8 @@ instead of adding a dedicated workload command surface.
 
 The wrapper scripts do two things:
 
-- initialize a structured experiment manifest with the right direct metrics,
-  guardrails, proxy hints, and replayable launcher argv
+- write a durable workload-context note next to the demo artifacts so the agent
+  can read an explicit launcher contract, metric priorities, and rollback notes
 - call `sched-claw exec` with a prompt that points the agent at the workload-
   specific skill instead of hard-coding a host workflow
 
@@ -507,14 +345,13 @@ Automated validation currently includes:
 
 Recent additions also have unit coverage for:
 
-- experiment manifest persistence and guardrail scoring
-- build and verifier capture for materialized sched-ext candidates
-- workload run capture, metrics import, and rollout gating
+- hidden operator substrate persistence and rollout gating
 - REPL command parsing
 - session history reference resolution and transcript rendering
 - startup catalog alias resolution
 - table/plain rendering for tool, skill, session, and daemon inspection views
 - demo script dry-run bootstrapping for LLVM/clang and MySQL sysbench
+- builtin skill helper script syntax and scaffolding checks
 
 The root-required path still depends on a host that can actually run `sudo`
 interactively or through a service manager. The repository now includes the

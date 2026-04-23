@@ -72,12 +72,13 @@ OpenTuner and Google Vizier converge on several system-design lessons:
 
 Design implication for `sched-claw`:
 
-- keep search policy, lineage, and decisions in the manifest
+- keep search strategy, reducers, and mutation logic primarily in skills or
+  repo-local scripts, not in a fixed host workflow
 - avoid a single lucky run deciding promotion
-- keep the search space structured through template and knob mutations rather
-  than blank-page code regeneration on every iteration
-- prefer explicit trial budgets and evidence gates over open-ended transcript
-  memory
+- keep the search space structured through reference templates and explicit
+  knob mutations rather than blank-page code regeneration on every iteration
+- preserve durable artifacts and notes so a skill can remain agentic without
+  relying on fragile transcript memory alone
 
 Primary sources:
 
@@ -106,11 +107,13 @@ Top-down analysis adds an important constraint for interpretation:
 
 Design implication for `sched-claw`:
 
-- make low-overhead PMU collection part of the durable experiment substrate
-- auto-capture `perf stat` evidence where possible
+- make low-overhead PMU collection easy through repo-local helper scripts and
+  normal shell commands instead of a dedicated host tool
 - keep the measurement basis explicit as `direct` vs `proxy_estimate`
 - only escalate to higher-overhead traces when the proxy layer cannot
   distinguish hypotheses
+- if an operator wants manifest-backed audit state, keep it optional rather
+  than the mandatory collection path
 
 Primary sources:
 
@@ -123,11 +126,14 @@ Primary sources:
 
 The host should keep implementing these substrate properties:
 
-- manifest-backed workload, collection, evaluation, and search policy
-- automatic artifact capture for build, verifier, run, and low-overhead PMU
-  evidence
+- built-in skills and repo-local helper scripts for collection, analysis,
+  plotting, and code scaffolding
+- explicit artifact capture for build, verifier, run, and low-overhead PMU
+  evidence, whether or not an operator also keeps a manifest
 - explicit distinction between direct workload success metrics and proxy CPU
   metrics
 - code generation around named sched-ext levers, not unconstrained blank-page
   synthesis
 - privileged rollout through a lifecycle daemon, not generic root shell access
+- optional hidden operator substrate for audit or recovery, without making it
+  the required agent workflow

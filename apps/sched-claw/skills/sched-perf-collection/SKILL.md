@@ -1,6 +1,6 @@
 ---
 name: "sched-perf-collection"
-description: "Use when scheduler-related performance evidence has to be collected reproducibly for a workload, target selector, or experiment phase. Covers low-overhead counters first, escalation to traces, and durable evidence records in the experiment manifest."
+description: "Use when scheduler-related performance evidence has to be collected reproducibly for a workload, target selector, or experiment phase. Covers low-overhead counters first, escalation to traces, and repo scripts that keep capture deterministic without baking a workflow into the host."
 aliases:
   - "perf-collection"
 tags:
@@ -25,20 +25,18 @@ tags:
    - keep the target selector explicit: script, pid, uid, gid, or cgroup
    - decide whether the bad phase is startup, steady-state, burst, or shutdown
 2. Prefer low-overhead summaries first.
-   - start with the manifest-backed collection policy when `perf stat` is enough:
-     - `sched-claw experiment set-collection-policy <experiment> --perf-stat-profile proxy_basic`
-     - `sched-claw experiment run <experiment> ...`
+   - use `scripts/collect_perf.sh` when you want a deterministic wrapper around `perf stat` or `perf record`
+   - direct shell capture is also fine when the wrapper would get in the way
    - `perf stat`, `/proc/schedstat`, `/proc/<pid>/schedstat`, PSI, `pidstat -w`, `mpstat -P ALL`, and `vmstat`
    - collect just enough to answer whether the issue looks like queueing, migration, wakeup latency, or plain saturation
 3. Escalate only when the summary leaves a scheduler-specific gap.
    - use `perf sched` when ordering, wakeup chains, or migration churn are the open question
    - use `perf record` or focused BPF tracing only when the low-overhead view cannot distinguish competing hypotheses
-4. Persist evidence as typed experiment records.
-   - `sched-claw experiment run` already auto-records `perf_stat` evidence when the active collection policy enables it
-   - `sched-claw experiment record-evidence <experiment> --evidence-id ... --kind ...`
-   - include artifact paths, collector command, phase, scheduler, candidate id, and any directly measured metrics
-5. Keep each evidence record narrow.
-   - one record should answer one question or one command family
+4. Persist evidence as normal artifacts.
+   - save the exact command line, raw csv or log output, and any reduced metrics in a stable workspace path
+   - a conventional location such as `.nanoclaw/apps/sched-claw/artifacts/<label>/` is fine, but not required by the host
+5. Keep each evidence bundle narrow.
+   - one bundle should answer one question or one command family
    - split baseline and candidate captures rather than mixing them into one opaque blob
 
 ## Rules
@@ -46,6 +44,7 @@ tags:
 - Do not jump to high-overhead tracing before you have low-overhead evidence that justifies it.
 - If the host is noisy, record that as a note instead of pretending the sample is clean.
 - Prefer short, replayable commands over interactive sessions.
+- Keep collection logic in scripts or shell commands, not in new host commands.
 
 ## Output checklist
 - exact command or collector used
@@ -56,3 +55,9 @@ tags:
 
 ## Reference Material
 - `references/collection-matrix.md`
+
+## Optional Helper Scripts
+- `scripts/collect_perf.sh`
+  - wraps `perf stat` or `perf record`
+  - supports command, pid, uid, gid, and cgroup targets
+  - writes the exact command line plus stdout and stderr artifacts

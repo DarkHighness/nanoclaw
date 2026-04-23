@@ -33,8 +33,8 @@ tags:
 ## Workflow
 1. Confirm the LLVM source tree path.
    - The launcher accepts either the monorepo root or the `llvm/` source root.
-2. Bootstrap the demo experiment.
-   - The demo wrapper already calls `sched-claw experiment init ...` with `build_seconds` as the direct primary metric.
+2. Read the demo workload context.
+   - The demo wrapper writes a workload-context note next to its artifacts with the launcher path, artifact directory, direct metrics, and proxy fallback hints.
 3. Use direct build timing unless you have a concrete reason not to.
    - Read `metrics.env` from the workload artifact directory.
    - Only switch to `proxy_estimate` when wall-clock timing is contaminated by unrelated host noise or the run is incomplete.

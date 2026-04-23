@@ -4,7 +4,8 @@
 - confirm `source_path`
 - confirm `object_path`
 - confirm `build_command`
-- run `sched-claw experiment build ...`
+- run the scaffolded `build.sh` or the explicit build command directly
+- if an operator is using the hidden compatibility substrate, `sched-claw experiment build ...` is an optional audit wrapper, not the required path
 
 ## Read the result in this order
 1. compiler exit status

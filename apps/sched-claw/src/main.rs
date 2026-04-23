@@ -71,7 +71,9 @@ enum Command {
     Resume(ResumeArgs),
     ExportTranscript(ExportArgs),
     ExportEvents(ExportArgs),
+    #[command(hide = true)]
     Experiment(ExperimentArgs),
+    #[command(hide = true)]
     Template(TemplateArgs),
     Tool(ToolArgs),
     Skill(SkillArgs),

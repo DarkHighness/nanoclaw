@@ -7,10 +7,13 @@ Use the lightest collector that can falsify the current hypothesis.
   - Is retiring efficiency low?
   - Are cycles or stalled frontend/backend dominating?
   - Did IPC or CPI move in the expected direction?
-- Preferred host path:
-  - persist a `perf_stat` collection policy in the experiment manifest
-  - let `sched-claw experiment run` auto-capture the `perf.stat.csv` artifact
-    and an accompanying `perf_stat` evidence record
+- Preferred path:
+  - run `scripts/collect_perf.sh --mode stat ...` or an equivalent explicit
+    `perf stat` command
+  - persist the resulting `perf.stat.csv`, command line, and notes next to the
+    workload artifacts
+  - if an operator is intentionally using the hidden experiment substrate,
+    mirror the artifact into that manifest as optional bookkeeping
 - Typical commands:
   - `perf stat -x, --no-big-num -- <workload>`
   - `perf stat -x, --no-big-num -p <pid> --timeout 10000`
