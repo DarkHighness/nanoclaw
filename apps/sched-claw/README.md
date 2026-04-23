@@ -42,7 +42,7 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment init --id demo --workload-name service --target-cgroup /sys/fs/cgroup/work.slice --primary-metric latency_ms --primary-goal minimize --guardrail throughput:maximize:5`
     - `sched-claw experiment init --id demo --workload-name service --target-pid 4242 --primary-metric ipc --primary-goal maximize --performance-basis proxy_estimate --proxy-metric ipc:maximize --perf-stat-profile proxy_basic`
     - `sched-claw experiment set-collection-policy demo --perf-stat-profile scheduler_basic --perf-stat-event stalled-cycles-frontend`
-    - `sched-claw experiment set-evaluation-policy demo --min-baseline-runs 5 --min-candidate-runs 5 --max-primary-relative-spread-pct 8`
+    - `sched-claw experiment set-evaluation-policy demo --min-baseline-runs 5 --min-candidate-runs 5 --max-primary-relative-spread-pct 8 --min-improving-run-ratio-pct 80 --max-primary-outlier-count 1`
     - `sched-claw experiment set-search-policy demo --max-candidates 6 --max-total-candidate-runs 24 --max-runs-per-candidate 4 --max-total-builds 12 --stop-after-first-promote true`
     - `sched-claw experiment record-evidence demo --evidence-id perf-a --kind perf_stat --scheduler cfs --artifact artifacts/evidence/perf-a.txt --metric ipc=1.23`
     - `sched-claw experiment record-analysis demo --analysis-id locality-a --title "Baseline locality diagnosis" --confidence medium --evidence-id perf-a --fact "ipc stayed low" --inference "migration churn likely hurts locality"`
@@ -53,7 +53,7 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment mutate-candidate demo --from-candidate locality-v1 --candidate-id locality-v2 --knob slice_us=800 --mutation-note "tighten slice budget"`
     - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
     - `sched-claw experiment build demo --candidate-id locality-v1 --style table`
-    - `sched-claw experiment run demo --label cfs-a --style table`
+    - `sched-claw experiment run demo --label cfs-a --repeat 3 --style table`
     - `sched-claw experiment run demo --label cfs-a --timeout-seconds 15 --perf-bin /usr/bin/perf --style table`
     - `sched-claw experiment run demo --candidate-id locality-v1 --label cand-a --timeout-seconds 60 --lease-seconds 60 --style table`
     - `sched-claw experiment record-baseline demo --label cfs-baseline --artifact-dir artifacts/baseline --metric latency_ms=12.4`
@@ -199,7 +199,7 @@ The substrate is generic on purpose. Typical commands include:
   - define the workload contract, target selector, primary metric, performance policy, and guardrails
 - `experiment set-evaluation-policy`
   - tighten or relax the evidence gate after an experiment already exists
-  - keep minimum run counts, minimum improvement thresholds, and primary-metric spread limits durable in the manifest
+  - keep minimum run counts, minimum improvement thresholds, primary-metric spread limits, improving-run ratios, and optional outlier gates durable in the manifest
 - `experiment set-collection-policy`
   - persist low-overhead collection intent such as `perf_stat` profiles and
     additional PMU events directly in the manifest
@@ -233,6 +233,7 @@ The substrate is generic on purpose. Typical commands include:
   - persist the build and verifier records back into the candidate manifest entry
 - `experiment run`
   - execute the script workload contract and capture stdout/stderr, metrics, and artifact paths under the experiment artifact tree
+  - `--repeat <N>` records multiple independent trials without forcing a host-side workflow; labels are suffixed per trial and custom artifact dirs are nested under `trial-XX/`
   - when the collection policy enables `perf_stat`, also capture
     `perf.stat.csv`, derive proxy metrics such as `ipc` or `cpi`, and
     automatically record a typed `perf_stat` evidence entry
@@ -246,7 +247,7 @@ The substrate is generic on purpose. Typical commands include:
   - store one or more sched-ext runs for a specific candidate
 - `experiment score`
   - compare candidate medians against the baseline and classify each candidate as `promote`, `revise`, `blocked`, or `incomplete`
-  - also report the current evaluation policy, baseline spread, candidate spread, and any reasons that kept a candidate from promotion
+  - also report the current evaluation policy, baseline spread, candidate spread, improving-run ratio, primary outlier counts, and any reasons that kept a candidate from promotion
 - `experiment record-decision`
   - persist the operator or agent decision that followed scoring, including references back to the evidence, analysis, and design records that justified it
 - `experiment deploy`
@@ -300,6 +301,8 @@ of implicit:
 - minimum candidate run count
 - optional minimum primary-metric improvement percent
 - optional maximum primary-metric relative spread percent
+- optional minimum improving-run ratio relative to the baseline median
+- optional maximum primary-metric outlier count using a MAD threshold
 
 If the manifest says the evidence is insufficient, `sched-claw experiment score`
 will keep the candidate `incomplete` even when a single run looked promising.

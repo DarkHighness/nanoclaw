@@ -1,6 +1,7 @@
 use crate::app_config::app_state_dir;
 use crate::metrics::{
-    Guardrail, MetricMap, MetricTarget, PerformancePolicy, median_metric, relative_spread_pct,
+    Guardrail, MetricMap, MetricTarget, PerformancePolicy, count_mad_outliers,
+    improving_run_ratio_pct, median_metric, relative_spread_pct,
 };
 use crate::workload::{HostFingerprint, WorkloadContract};
 use anyhow::{Context, Result, anyhow, bail};
@@ -11,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const EXPERIMENT_VERSION: u32 = 1;
 const MANIFEST_FILE_NAME: &str = "experiment.toml";
+const DEFAULT_PRIMARY_OUTLIER_MAD_THRESHOLD: f64 = 3.5;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExperimentManifest {
@@ -506,6 +508,12 @@ pub struct EvaluationPolicy {
     pub min_primary_improvement_pct: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_primary_relative_spread_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_improving_run_ratio_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_primary_outlier_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_outlier_mad_threshold: Option<f64>,
 }
 
 impl Default for EvaluationPolicy {
@@ -515,6 +523,9 @@ impl Default for EvaluationPolicy {
             min_candidate_runs: default_min_run_count(),
             min_primary_improvement_pct: None,
             max_primary_relative_spread_pct: None,
+            min_improving_run_ratio_pct: None,
+            max_primary_outlier_count: None,
+            primary_outlier_mad_threshold: None,
         }
     }
 }
@@ -537,6 +548,16 @@ impl EvaluationPolicy {
         {
             bail!("max_primary_relative_spread_pct must be a finite non-negative number");
         }
+        if let Some(value) = self.min_improving_run_ratio_pct
+            && (!value.is_finite() || !(0.0..=100.0).contains(&value))
+        {
+            bail!("min_improving_run_ratio_pct must be a finite percentage between 0 and 100");
+        }
+        if let Some(value) = self.primary_outlier_mad_threshold
+            && (!value.is_finite() || value < 0.0)
+        {
+            bail!("primary_outlier_mad_threshold must be a finite non-negative number");
+        }
         Ok(())
     }
 
@@ -552,7 +573,22 @@ impl EvaluationPolicy {
         if let Some(value) = self.max_primary_relative_spread_pct {
             parts.push(format!("spread<={value:.2}%"));
         }
+        if let Some(value) = self.min_improving_run_ratio_pct {
+            parts.push(format!("improving_runs>={value:.2}%"));
+        }
+        if let Some(value) = self.max_primary_outlier_count {
+            parts.push(format!(
+                "outliers<={value}@mad<={:.2}",
+                self.effective_primary_outlier_mad_threshold()
+            ));
+        }
         parts.join(" / ")
+    }
+
+    #[must_use]
+    pub fn effective_primary_outlier_mad_threshold(&self) -> f64 {
+        self.primary_outlier_mad_threshold
+            .unwrap_or(DEFAULT_PRIMARY_OUTLIER_MAD_THRESHOLD)
     }
 }
 
@@ -595,6 +631,7 @@ pub struct ExperimentScoreReport {
     pub baseline_run_count: usize,
     pub baseline_primary_value: Option<f64>,
     pub baseline_primary_relative_spread_pct: Option<f64>,
+    pub baseline_primary_outlier_count: Option<usize>,
     pub entries: Vec<CandidateScore>,
 }
 
@@ -624,6 +661,8 @@ pub struct CandidateScore {
     pub primary_candidate_value: Option<f64>,
     pub primary_improvement_pct: Option<f64>,
     pub candidate_primary_relative_spread_pct: Option<f64>,
+    pub primary_improving_run_ratio_pct: Option<f64>,
+    pub candidate_primary_outlier_count: Option<usize>,
     pub decision: CandidateDecision,
     pub breached_guardrails: Vec<GuardrailScore>,
     pub status_reasons: Vec<String>,
@@ -1296,6 +1335,20 @@ impl ExperimentCatalog {
             &loaded.manifest.primary_metric.name,
             loaded.manifest.baseline_runs.iter().map(|run| &run.metrics),
         );
+        let baseline_primary_outlier_count = loaded
+            .manifest
+            .evaluation_policy
+            .max_primary_outlier_count
+            .and_then(|_| {
+                count_mad_outliers(
+                    &loaded.manifest.primary_metric.name,
+                    loaded.manifest.baseline_runs.iter().map(|run| &run.metrics),
+                    loaded
+                        .manifest
+                        .evaluation_policy
+                        .effective_primary_outlier_mad_threshold(),
+                )
+            });
         let entries = loaded
             .manifest
             .candidates
@@ -1318,6 +1371,7 @@ impl ExperimentCatalog {
             baseline_run_count: loaded.manifest.baseline_runs.len(),
             baseline_primary_value,
             baseline_primary_relative_spread_pct,
+            baseline_primary_outlier_count,
             entries,
         })
     }
@@ -1635,9 +1689,33 @@ fn score_candidate(
         &primary_metric.name,
         candidate.runs.iter().map(|run| &run.metrics),
     );
+    let baseline_primary_outlier_count =
+        evaluation_policy.max_primary_outlier_count.and_then(|_| {
+            count_mad_outliers(
+                &primary_metric.name,
+                baseline_runs.iter().map(|run| &run.metrics),
+                evaluation_policy.effective_primary_outlier_mad_threshold(),
+            )
+        });
+    let candidate_primary_outlier_count =
+        evaluation_policy.max_primary_outlier_count.and_then(|_| {
+            count_mad_outliers(
+                &primary_metric.name,
+                candidate.runs.iter().map(|run| &run.metrics),
+                evaluation_policy.effective_primary_outlier_mad_threshold(),
+            )
+        });
     let primary_improvement_pct = baseline_primary_value.and_then(|baseline| {
         primary_candidate_value
             .and_then(|value| primary_metric.goal.improvement_pct(baseline, value))
+    });
+    let primary_improving_run_ratio_pct = baseline_primary_value.and_then(|baseline| {
+        improving_run_ratio_pct(
+            &primary_metric.name,
+            primary_metric.goal,
+            baseline,
+            candidate.runs.iter().map(|run| &run.metrics),
+        )
     });
     let breached_guardrails = guardrails
         .iter()
@@ -1682,6 +1760,40 @@ fn score_candidate(
             }
         }
     }
+    if let Some(min_ratio_pct) = evaluation_policy.min_improving_run_ratio_pct {
+        if let Some(value) = primary_improving_run_ratio_pct {
+            if value < min_ratio_pct {
+                status_reasons.push(format!(
+                    "improving run ratio {:.2}% below required {:.2}%",
+                    value, min_ratio_pct
+                ));
+            }
+        } else {
+            status_reasons.push("missing improving run ratio for primary metric".to_string());
+        }
+    }
+    if let Some(limit) = evaluation_policy.max_primary_outlier_count {
+        if let Some(value) = baseline_primary_outlier_count {
+            if value > limit {
+                status_reasons.push(format!(
+                    "baseline primary outliers {} exceed limit {} at MAD {:.2}",
+                    value,
+                    limit,
+                    evaluation_policy.effective_primary_outlier_mad_threshold()
+                ));
+            }
+        }
+        if let Some(value) = candidate_primary_outlier_count {
+            if value > limit {
+                status_reasons.push(format!(
+                    "candidate primary outliers {} exceed limit {} at MAD {:.2}",
+                    value,
+                    limit,
+                    evaluation_policy.effective_primary_outlier_mad_threshold()
+                ));
+            }
+        }
+    }
     for score in &breached_guardrails {
         if matches!(score.status, GuardrailStatus::Missing) {
             status_reasons.push(format!("missing guardrail metric {}", score.name));
@@ -1704,6 +1816,17 @@ fn score_candidate(
         || breached_guardrails
             .iter()
             .any(|score| matches!(score.status, GuardrailStatus::Missing))
+        || evaluation_policy
+            .min_improving_run_ratio_pct
+            .is_some_and(|min_ratio_pct| {
+                primary_improving_run_ratio_pct.is_none_or(|value| value < min_ratio_pct)
+            })
+        || evaluation_policy
+            .max_primary_outlier_count
+            .is_some_and(|limit| {
+                baseline_primary_outlier_count.is_none_or(|value| value > limit)
+                    || candidate_primary_outlier_count.is_none_or(|value| value > limit)
+            })
         || evaluation_policy
             .max_primary_relative_spread_pct
             .is_some_and(|max_spread_pct| {
@@ -1742,6 +1865,8 @@ fn score_candidate(
         primary_candidate_value,
         primary_improvement_pct,
         candidate_primary_relative_spread_pct,
+        primary_improving_run_ratio_pct,
+        candidate_primary_outlier_count,
         decision,
         breached_guardrails,
         status_reasons,
@@ -2243,6 +2368,9 @@ mod tests {
                     min_candidate_runs: 2,
                     min_primary_improvement_pct: Some(5.0),
                     max_primary_relative_spread_pct: Some(10.0),
+                    min_improving_run_ratio_pct: None,
+                    max_primary_outlier_count: None,
+                    primary_outlier_mad_threshold: None,
                 },
                 search_policy: SearchPolicy::default(),
                 guardrails: Vec::new(),
@@ -2305,6 +2433,191 @@ mod tests {
     }
 
     #[test]
+    fn score_marks_candidate_incomplete_when_improving_ratio_is_too_low() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "ratio-demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
+                evaluation_policy: EvaluationPolicy {
+                    min_baseline_runs: 3,
+                    min_candidate_runs: 3,
+                    min_primary_improvement_pct: None,
+                    max_primary_relative_spread_pct: None,
+                    min_improving_run_ratio_pct: Some(80.0),
+                    max_primary_outlier_count: None,
+                    primary_outlier_mad_threshold: None,
+                },
+                search_policy: SearchPolicy::default(),
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        for (index, value) in [10.0, 10.0, 10.0].into_iter().enumerate() {
+            catalog
+                .record_baseline(
+                    "ratio-demo",
+                    RecordedRun {
+                        label: format!("baseline-{index}"),
+                        recorded_at_unix_ms: index as u64,
+                        scheduler: SchedulerKind::Cfs,
+                        artifact_dir: format!("artifacts/baseline-{index}"),
+                        metrics: MetricMap::from([("latency_ms".to_string(), value)]),
+                        notes: None,
+                    },
+                )
+                .unwrap();
+        }
+        catalog
+            .set_candidate(
+                "ratio-demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "latency_guard".to_string(),
+                    lineage: CandidateLineage::default(),
+                    source_path: None,
+                    object_path: None,
+                    build_command: None,
+                    daemon_argv: Vec::new(),
+                    daemon_cwd: None,
+                    daemon_env: BTreeMap::new(),
+                    knobs: BTreeMap::new(),
+                    notes: None,
+                },
+            )
+            .unwrap();
+        for (index, value) in [8.0, 12.0, 9.0].into_iter().enumerate() {
+            catalog
+                .record_candidate(
+                    "ratio-demo",
+                    "cand-a",
+                    RecordedRun {
+                        label: format!("candidate-{index}"),
+                        recorded_at_unix_ms: index as u64,
+                        scheduler: SchedulerKind::SchedExt,
+                        artifact_dir: format!("artifacts/candidate-{index}"),
+                        metrics: MetricMap::from([("latency_ms".to_string(), value)]),
+                        notes: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        let report = catalog.score("ratio-demo").unwrap();
+        assert_eq!(report.entries[0].decision, CandidateDecision::Incomplete);
+        assert!(
+            report.entries[0]
+                .status_reasons
+                .iter()
+                .any(|reason| reason.contains("improving run ratio"))
+        );
+    }
+
+    #[test]
+    fn score_marks_candidate_incomplete_when_primary_outliers_exceed_limit() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "outlier-demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
+                evaluation_policy: EvaluationPolicy {
+                    min_baseline_runs: 3,
+                    min_candidate_runs: 4,
+                    min_primary_improvement_pct: None,
+                    max_primary_relative_spread_pct: None,
+                    min_improving_run_ratio_pct: None,
+                    max_primary_outlier_count: Some(0),
+                    primary_outlier_mad_threshold: Some(3.5),
+                },
+                search_policy: SearchPolicy::default(),
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        for (index, value) in [10.0, 10.1, 9.9].into_iter().enumerate() {
+            catalog
+                .record_baseline(
+                    "outlier-demo",
+                    RecordedRun {
+                        label: format!("baseline-{index}"),
+                        recorded_at_unix_ms: index as u64,
+                        scheduler: SchedulerKind::Cfs,
+                        artifact_dir: format!("artifacts/baseline-{index}"),
+                        metrics: MetricMap::from([("latency_ms".to_string(), value)]),
+                        notes: None,
+                    },
+                )
+                .unwrap();
+        }
+        catalog
+            .set_candidate(
+                "outlier-demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "latency_guard".to_string(),
+                    lineage: CandidateLineage::default(),
+                    source_path: None,
+                    object_path: None,
+                    build_command: None,
+                    daemon_argv: Vec::new(),
+                    daemon_cwd: None,
+                    daemon_env: BTreeMap::new(),
+                    knobs: BTreeMap::new(),
+                    notes: None,
+                },
+            )
+            .unwrap();
+        for (index, value) in [8.0, 8.1, 7.9, 40.0].into_iter().enumerate() {
+            catalog
+                .record_candidate(
+                    "outlier-demo",
+                    "cand-a",
+                    RecordedRun {
+                        label: format!("candidate-{index}"),
+                        recorded_at_unix_ms: index as u64,
+                        scheduler: SchedulerKind::SchedExt,
+                        artifact_dir: format!("artifacts/candidate-{index}"),
+                        metrics: MetricMap::from([("latency_ms".to_string(), value)]),
+                        notes: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        let report = catalog.score("outlier-demo").unwrap();
+        assert_eq!(report.entries[0].decision, CandidateDecision::Incomplete);
+        assert_eq!(report.entries[0].candidate_primary_outlier_count, Some(1));
+        assert!(
+            report.entries[0]
+                .status_reasons
+                .iter()
+                .any(|reason| reason.contains("outliers"))
+        );
+    }
+
+    #[test]
     fn set_evaluation_policy_updates_manifest() {
         let dir = tempdir().unwrap();
         let catalog = ExperimentCatalog::open(dir.path()).unwrap();
@@ -2336,6 +2649,9 @@ mod tests {
                     min_candidate_runs: 4,
                     min_primary_improvement_pct: Some(2.5),
                     max_primary_relative_spread_pct: Some(9.0),
+                    min_improving_run_ratio_pct: Some(75.0),
+                    max_primary_outlier_count: Some(1),
+                    primary_outlier_mad_threshold: Some(3.0),
                 },
             )
             .unwrap();
@@ -2356,6 +2672,24 @@ mod tests {
                 .evaluation_policy
                 .max_primary_relative_spread_pct,
             Some(9.0)
+        );
+        assert_eq!(
+            loaded
+                .manifest
+                .evaluation_policy
+                .min_improving_run_ratio_pct,
+            Some(75.0)
+        );
+        assert_eq!(
+            loaded.manifest.evaluation_policy.max_primary_outlier_count,
+            Some(1)
+        );
+        assert_eq!(
+            loaded
+                .manifest
+                .evaluation_policy
+                .primary_outlier_mad_threshold,
+            Some(3.0)
         );
     }
 

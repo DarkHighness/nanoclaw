@@ -951,7 +951,9 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                     "Runs",
                     "Primary Value",
                     "Improvement %",
+                    "Improve Runs %",
                     "Spread %",
+                    "Outliers",
                     "Decision",
                     "Guardrails",
                     "Reasons",
@@ -973,9 +975,17 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                                 .map(format_pct)
                                 .unwrap_or_else(|| "<missing>".to_string()),
                             entry
+                                .primary_improving_run_ratio_pct
+                                .map(format_pct)
+                                .unwrap_or_else(|| "<missing>".to_string()),
+                            entry
                                 .candidate_primary_relative_spread_pct
                                 .map(format_pct)
                                 .unwrap_or_else(|| "<missing>".to_string()),
+                            entry
+                                .candidate_primary_outlier_count
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "<n/a>".to_string()),
                             entry.decision.as_str().to_string(),
                             render_guardrail_statuses(entry),
                             join_or_none(entry.status_reasons.clone()),
@@ -985,7 +995,7 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
             );
             let _ = write!(
                 &mut out,
-                "\nprimary metric: {} ({})\nevaluation policy: {}\nbaseline runs: {}\nbaseline value: {}\nbaseline spread: {}",
+                "\nprimary metric: {} ({})\nevaluation policy: {}\nbaseline runs: {}\nbaseline value: {}\nbaseline spread: {}\nbaseline outliers: {}",
                 report.primary_metric.name,
                 report.primary_metric.goal.as_str(),
                 report.evaluation_policy.summary(),
@@ -997,7 +1007,11 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                 report
                     .baseline_primary_relative_spread_pct
                     .map(format_pct)
-                    .unwrap_or_else(|| "<missing>".to_string())
+                    .unwrap_or_else(|| "<missing>".to_string()),
+                report
+                    .baseline_primary_outlier_count
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "<n/a>".to_string())
             );
             out
         }
@@ -1032,10 +1046,18 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                     .map(format_pct)
                     .unwrap_or_else(|| "<missing>".to_string())
             );
+            let _ = writeln!(
+                &mut out,
+                "baseline_outliers: {}",
+                report
+                    .baseline_primary_outlier_count
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "<n/a>".to_string())
+            );
             for entry in &report.entries {
                 let _ = writeln!(
                     &mut out,
-                    "- {} template={} runs={} value={} improvement={} spread={} decision={}",
+                    "- {} template={} runs={} value={} improvement={} improving_runs={} spread={} outliers={} decision={}",
                     entry.candidate_id,
                     entry.template,
                     entry.run_count,
@@ -1048,9 +1070,17 @@ pub fn render_experiment_score(report: &ExperimentScoreReport, style: OutputStyl
                         .map(format_pct)
                         .unwrap_or_else(|| "<missing>".to_string()),
                     entry
+                        .primary_improving_run_ratio_pct
+                        .map(format_pct)
+                        .unwrap_or_else(|| "<missing>".to_string()),
+                    entry
                         .candidate_primary_relative_spread_pct
                         .map(format_pct)
                         .unwrap_or_else(|| "<missing>".to_string()),
+                    entry
+                        .candidate_primary_outlier_count
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "<n/a>".to_string()),
                     entry.decision.as_str()
                 );
                 if !entry.breached_guardrails.is_empty() {
@@ -2209,13 +2239,16 @@ mod tests {
                 baseline_run_count: 2,
                 baseline_primary_value: Some(10.0),
                 baseline_primary_relative_spread_pct: Some(5.0),
+                baseline_primary_outlier_count: Some(0),
                 entries: vec![CandidateScore {
                     candidate_id: "cand-a".to_string(),
                     template: "locality".to_string(),
                     run_count: 1,
                     primary_candidate_value: Some(8.0),
                     primary_improvement_pct: Some(20.0),
+                    primary_improving_run_ratio_pct: Some(100.0),
                     candidate_primary_relative_spread_pct: Some(0.0),
+                    candidate_primary_outlier_count: Some(0),
                     decision: CandidateDecision::Promote,
                     breached_guardrails: Vec::new(),
                     status_reasons: Vec::new(),

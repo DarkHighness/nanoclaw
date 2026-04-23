@@ -230,6 +230,12 @@ struct ExperimentInitArgs {
     min_primary_improvement_pct: Option<f64>,
     #[arg(long, value_name = "PCT")]
     max_primary_relative_spread_pct: Option<f64>,
+    #[arg(long, value_name = "PCT")]
+    min_improving_run_ratio_pct: Option<f64>,
+    #[arg(long, value_name = "N")]
+    max_primary_outlier_count: Option<usize>,
+    #[arg(long, value_name = "MAD")]
+    primary_outlier_mad_threshold: Option<f64>,
 }
 
 #[derive(Debug, Args)]
@@ -258,6 +264,12 @@ struct ExperimentSetEvaluationPolicyArgs {
     min_primary_improvement_pct: Option<f64>,
     #[arg(long, value_name = "PCT")]
     max_primary_relative_spread_pct: Option<f64>,
+    #[arg(long, value_name = "PCT")]
+    min_improving_run_ratio_pct: Option<f64>,
+    #[arg(long, value_name = "N")]
+    max_primary_outlier_count: Option<usize>,
+    #[arg(long, value_name = "MAD")]
+    primary_outlier_mad_threshold: Option<f64>,
 }
 
 #[derive(Debug, Args)]
@@ -510,6 +522,8 @@ struct ExperimentRunArgs {
     metrics_file: String,
     #[arg(long, value_name = "SECONDS")]
     timeout_seconds: Option<u64>,
+    #[arg(long, value_name = "N", default_value_t = 1usize)]
+    repeat: usize,
     #[arg(long, value_name = "PATH", default_value = "perf")]
     perf_bin: String,
     #[arg(long, value_name = "SECONDS")]
@@ -833,6 +847,9 @@ async fn run_experiment_command(
                 min_candidate_runs: args.min_candidate_runs,
                 min_primary_improvement_pct: args.min_primary_improvement_pct,
                 max_primary_relative_spread_pct: args.max_primary_relative_spread_pct,
+                min_improving_run_ratio_pct: args.min_improving_run_ratio_pct,
+                max_primary_outlier_count: args.max_primary_outlier_count,
+                primary_outlier_mad_threshold: args.primary_outlier_mad_threshold,
             };
             let artifact = catalog.init(ExperimentInitSpec {
                 experiment_id: args.id,
@@ -905,6 +922,15 @@ async fn run_experiment_command(
             }
             if let Some(value) = args.max_primary_relative_spread_pct {
                 policy.max_primary_relative_spread_pct = Some(value);
+            }
+            if let Some(value) = args.min_improving_run_ratio_pct {
+                policy.min_improving_run_ratio_pct = Some(value);
+            }
+            if let Some(value) = args.max_primary_outlier_count {
+                policy.max_primary_outlier_count = Some(value);
+            }
+            if let Some(value) = args.primary_outlier_mad_threshold {
+                policy.primary_outlier_mad_threshold = Some(value);
             }
             let artifact = catalog.set_evaluation_policy(&args.experiment_ref, policy)?;
             println!("{}", render_experiment_artifact(&artifact));
@@ -1312,8 +1338,10 @@ async fn run_experiment_command(
             );
         }
         ExperimentCommand::Run(args) => {
-            let experiment = catalog.load(&args.experiment_ref)?;
-            let label = args.label.clone().unwrap_or_else(|| {
+            if args.repeat == 0 {
+                anyhow::bail!("--repeat must be at least 1");
+            }
+            let base_label = args.label.clone().unwrap_or_else(|| {
                 args.candidate_id
                     .as_deref()
                     .map(|candidate_id| {
@@ -1323,150 +1351,161 @@ async fn run_experiment_command(
                         format!("baseline-{}", sched_claw::experiment::now_unix_ms())
                     })
             });
-            let perf_stat = experiment
-                .manifest
-                .collection_policy
-                .perf_stat
-                .clone()
-                .map(|policy| PerfStatRunOptions {
-                    perf_bin: args.perf_bin.clone(),
-                    policy,
-                });
+            for trial_index in 0..args.repeat {
+                let experiment = catalog.load(&args.experiment_ref)?;
+                let label = run_trial_label(&base_label, trial_index, args.repeat);
+                let artifact_dir =
+                    run_trial_artifact_dir(args.artifact_dir.as_deref(), trial_index, args.repeat);
+                let perf_stat =
+                    experiment
+                        .manifest
+                        .collection_policy
+                        .perf_stat
+                        .clone()
+                        .map(|policy| PerfStatRunOptions {
+                            perf_bin: args.perf_bin.clone(),
+                            policy,
+                        });
 
-            let capture = if let Some(candidate_id) = &args.candidate_id {
-                let candidate = experiment
-                    .manifest
-                    .candidates
-                    .iter()
-                    .find(|candidate| candidate.spec.candidate_id == *candidate_id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "unknown candidate {} in experiment {}",
-                            candidate_id,
-                            experiment.manifest.experiment_id
-                        )
-                    })?;
-                ensure_candidate_run_allowed(&experiment.manifest, candidate)?;
-                ensure_candidate_ready_for_rollout(candidate, args.allow_unverified_build)?;
-                let plan = build_activation_plan(
-                    &experiment.manifest.experiment_id,
-                    &candidate.spec,
-                    &DeployOverrides {
-                        label: Some(format!("{}:{}", experiment.manifest.experiment_id, label)),
-                        lease_timeout_ms: effective_run_lease_timeout_ms(
-                            args.timeout_seconds,
-                            args.lease_seconds,
-                        ),
-                        replace_existing: args.replace_existing,
-                        ..DeployOverrides::default()
-                    },
-                )?;
-                let client = SchedExtDaemonClient::new(
-                    SchedClawConfig::load_from_dir(workspace_root, overrides)?.daemon,
-                );
-                let response = client
-                    .send(&SchedExtDaemonRequest::Activate {
-                        label: Some(plan.label.clone()),
-                        argv: plan.argv.clone(),
-                        cwd: plan.cwd.clone(),
-                        env: plan.env.clone(),
-                        lease_timeout_ms: plan.lease_timeout_ms,
-                        replace_existing: plan.replace_existing,
-                    })
-                    .await?;
-                if let SchedExtDaemonResponse::Error { message } = &response {
-                    anyhow::bail!(message.clone());
-                }
-                let run_result = capture_workload_run(
-                    workspace_root,
-                    &experiment.manifest.experiment_id,
-                    &experiment.manifest.workload,
-                    &WorkloadRunOptions {
-                        label: label.clone(),
-                        scheduler: SchedulerKind::SchedExt,
-                        candidate_id: Some(candidate_id.clone()),
-                        artifact_dir: args.artifact_dir.clone(),
-                        metrics_file_name: args.metrics_file.clone(),
-                        timeout_seconds: args.timeout_seconds,
-                        extra_env: args.env.clone().into_iter().collect(),
-                        perf_stat: perf_stat.clone(),
-                    },
-                )
-                .await;
-                let stop_response = client
-                    .send(&SchedExtDaemonRequest::Stop {
-                        graceful_timeout_ms: None,
-                    })
+                let capture = if let Some(candidate_id) = &args.candidate_id {
+                    let candidate = experiment
+                        .manifest
+                        .candidates
+                        .iter()
+                        .find(|candidate| candidate.spec.candidate_id == *candidate_id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "unknown candidate {} in experiment {}",
+                                candidate_id,
+                                experiment.manifest.experiment_id
+                            )
+                        })?;
+                    ensure_candidate_run_allowed(&experiment.manifest, candidate)?;
+                    ensure_candidate_ready_for_rollout(candidate, args.allow_unverified_build)?;
+                    let plan = build_activation_plan(
+                        &experiment.manifest.experiment_id,
+                        &candidate.spec,
+                        &DeployOverrides {
+                            label: Some(format!("{}:{}", experiment.manifest.experiment_id, label)),
+                            lease_timeout_ms: effective_run_lease_timeout_ms(
+                                args.timeout_seconds,
+                                args.lease_seconds,
+                            ),
+                            replace_existing: args.replace_existing,
+                            ..DeployOverrides::default()
+                        },
+                    )?;
+                    let client = SchedExtDaemonClient::new(
+                        SchedClawConfig::load_from_dir(workspace_root, overrides)?.daemon,
+                    );
+                    let response = client
+                        .send(&SchedExtDaemonRequest::Activate {
+                            label: Some(plan.label.clone()),
+                            argv: plan.argv.clone(),
+                            cwd: plan.cwd.clone(),
+                            env: plan.env.clone(),
+                            lease_timeout_ms: plan.lease_timeout_ms,
+                            replace_existing: plan.replace_existing,
+                        })
+                        .await?;
+                    if let SchedExtDaemonResponse::Error { message } = &response {
+                        anyhow::bail!(message.clone());
+                    }
+                    let run_result = capture_workload_run(
+                        workspace_root,
+                        &experiment.manifest.experiment_id,
+                        &experiment.manifest.workload,
+                        &WorkloadRunOptions {
+                            label: label.clone(),
+                            scheduler: SchedulerKind::SchedExt,
+                            candidate_id: Some(candidate_id.clone()),
+                            artifact_dir,
+                            metrics_file_name: args.metrics_file.clone(),
+                            timeout_seconds: args.timeout_seconds,
+                            extra_env: args.env.clone().into_iter().collect(),
+                            perf_stat: perf_stat.clone(),
+                        },
+                    )
                     .await;
-                let mut capture = run_result?;
-                match stop_response? {
-                    SchedExtDaemonResponse::Error { message } => anyhow::bail!(message),
-                    _ => {}
-                }
-                let logs = client.logs(Some(args.daemon_log_tail_lines)).await;
-                if let Ok(snapshot) = logs {
-                    attach_daemon_logs(workspace_root, &mut capture, &snapshot)?;
-                }
-                let artifact = catalog.record_candidate(
-                    &args.experiment_ref,
-                    candidate_id,
-                    capture.run.clone(),
-                )?;
-                println!("{}", render_experiment_artifact(&artifact));
-                capture
-            } else {
-                let capture = capture_workload_run(
-                    workspace_root,
-                    &experiment.manifest.experiment_id,
-                    &experiment.manifest.workload,
-                    &WorkloadRunOptions {
-                        label: label.clone(),
-                        scheduler: SchedulerKind::Cfs,
-                        candidate_id: None,
-                        artifact_dir: args.artifact_dir.clone(),
-                        metrics_file_name: args.metrics_file.clone(),
-                        timeout_seconds: args.timeout_seconds,
-                        extra_env: args.env.clone().into_iter().collect(),
-                        perf_stat: perf_stat.clone(),
-                    },
-                )
-                .await?;
-                let artifact =
-                    catalog.record_baseline(&args.experiment_ref, capture.run.clone())?;
-                println!("{}", render_experiment_artifact(&artifact));
-                capture
-            };
+                    let stop_response = client
+                        .send(&SchedExtDaemonRequest::Stop {
+                            graceful_timeout_ms: None,
+                        })
+                        .await;
+                    let mut capture = run_result?;
+                    match stop_response? {
+                        SchedExtDaemonResponse::Error { message } => anyhow::bail!(message),
+                        _ => {}
+                    }
+                    let logs = client.logs(Some(args.daemon_log_tail_lines)).await;
+                    if let Ok(snapshot) = logs {
+                        attach_daemon_logs(workspace_root, &mut capture, &snapshot)?;
+                    }
+                    let artifact = catalog.record_candidate(
+                        &args.experiment_ref,
+                        candidate_id,
+                        capture.run.clone(),
+                    )?;
+                    println!("{}", render_experiment_artifact(&artifact));
+                    capture
+                } else {
+                    let capture = capture_workload_run(
+                        workspace_root,
+                        &experiment.manifest.experiment_id,
+                        &experiment.manifest.workload,
+                        &WorkloadRunOptions {
+                            label: label.clone(),
+                            scheduler: SchedulerKind::Cfs,
+                            candidate_id: None,
+                            artifact_dir,
+                            metrics_file_name: args.metrics_file.clone(),
+                            timeout_seconds: args.timeout_seconds,
+                            extra_env: args.env.clone().into_iter().collect(),
+                            perf_stat: perf_stat.clone(),
+                        },
+                    )
+                    .await?;
+                    let artifact =
+                        catalog.record_baseline(&args.experiment_ref, capture.run.clone())?;
+                    println!("{}", render_experiment_artifact(&artifact));
+                    capture
+                };
 
-            if capture.perf_stat.is_some() {
-                let evidence = build_run_perf_evidence(
-                    &capture,
-                    experiment.manifest.workload.phase.clone(),
-                    args.candidate_id.clone(),
+                if capture.perf_stat.is_some() {
+                    let evidence = build_run_perf_evidence(
+                        &capture,
+                        experiment.manifest.workload.phase.clone(),
+                        args.candidate_id.clone(),
+                    );
+                    let artifact = catalog.record_evidence(&args.experiment_ref, evidence)?;
+                    println!("{}", render_experiment_artifact(&artifact));
+                }
+
+                println!(
+                    "{}",
+                    render_workload_run_capture(
+                        &experiment.manifest.experiment_id,
+                        args.candidate_id.as_deref(),
+                        &experiment.manifest_path,
+                        &capture,
+                        args.output.style,
+                    )
                 );
-                let artifact = catalog.record_evidence(&args.experiment_ref, evidence)?;
-                println!("{}", render_experiment_artifact(&artifact));
+
+                if matches!(args.on_failure, RunFailureMode::Strict) && run_capture_failed(&capture)
+                {
+                    anyhow::bail!(
+                        "workload run {} completed with a failure status",
+                        capture.run.label
+                    );
+                }
             }
 
-            println!(
-                "{}",
-                render_workload_run_capture(
-                    &experiment.manifest.experiment_id,
-                    args.candidate_id.as_deref(),
-                    &experiment.manifest_path,
-                    &capture,
-                    args.output.style,
-                )
-            );
-
-            if matches!(args.on_failure, RunFailureMode::Strict)
-                && capture
-                    .run
-                    .notes
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("status=failed")
-            {
-                anyhow::bail!("workload run completed with a failure status");
+            if args.repeat > 1 {
+                println!(
+                    "completed {} repeated run(s) with label prefix {}",
+                    args.repeat, base_label
+                );
             }
         }
         ExperimentCommand::RecordBaseline(args) => {
@@ -1957,6 +1996,41 @@ fn rewrite_materialized_candidate_refs(parent: &CandidateSpec, candidate: &mut C
     }
 }
 
+fn run_trial_label(base_label: &str, trial_index: usize, repeat: usize) -> String {
+    if repeat <= 1 {
+        return base_label.to_string();
+    }
+    let width = repeat.to_string().len().max(2);
+    format!("{base_label}-{:0width$}", trial_index + 1, width = width)
+}
+
+fn run_trial_artifact_dir(
+    artifact_dir: Option<&str>,
+    trial_index: usize,
+    repeat: usize,
+) -> Option<String> {
+    let artifact_dir = artifact_dir?;
+    if repeat <= 1 {
+        return Some(artifact_dir.to_string());
+    }
+    let width = repeat.to_string().len().max(2);
+    Some(
+        PathBuf::from(artifact_dir)
+            .join(format!("trial-{:0width$}", trial_index + 1, width = width))
+            .display()
+            .to_string(),
+    )
+}
+
+fn run_capture_failed(capture: &sched_claw::run_capture::WorkloadRunCapture) -> bool {
+    capture
+        .run
+        .notes
+        .as_deref()
+        .unwrap_or_default()
+        .contains("status=failed")
+}
+
 fn build_run_perf_evidence(
     capture: &sched_claw::run_capture::WorkloadRunCapture,
     phase: Option<String>,
@@ -2096,7 +2170,8 @@ mod tests {
     use super::{
         Cli, Command, DaemonCommand, ExperimentCommand, ExperimentInitArgs, OutputStyle,
         RunFailureMode, build_workload_target, ensure_candidate_ready_for_rollout,
-        resolve_performance_policy, rewrite_materialized_candidate_refs,
+        resolve_performance_policy, rewrite_materialized_candidate_refs, run_trial_artifact_dir,
+        run_trial_label,
     };
     use clap::Parser;
     use sched_claw::experiment::{
@@ -2243,6 +2318,10 @@ mod tests {
             "4",
             "--min-primary-improvement-pct",
             "2.5",
+            "--min-improving-run-ratio-pct",
+            "75",
+            "--max-primary-outlier-count",
+            "1",
         ])
         .unwrap();
 
@@ -2252,6 +2331,8 @@ mod tests {
                     assert_eq!(args.min_baseline_runs, Some(3));
                     assert_eq!(args.min_candidate_runs, Some(4));
                     assert_eq!(args.min_primary_improvement_pct, Some(2.5));
+                    assert_eq!(args.min_improving_run_ratio_pct, Some(75.0));
+                    assert_eq!(args.max_primary_outlier_count, Some(1));
                 }
                 other => panic!("expected set-evaluation-policy command, got {other:?}"),
             },
@@ -2535,6 +2616,8 @@ mod tests {
             "--allow-unverified-build",
             "--perf-bin",
             "/tmp/perf",
+            "--repeat",
+            "3",
             "--lease-seconds",
             "30",
             "--on-failure",
@@ -2548,6 +2631,7 @@ mod tests {
                     assert_eq!(args.candidate_id.as_deref(), Some("cand-a"));
                     assert!(args.allow_unverified_build);
                     assert_eq!(args.perf_bin, "/tmp/perf");
+                    assert_eq!(args.repeat, 3);
                     assert_eq!(args.lease_seconds, Some(30));
                     assert_eq!(args.on_failure, RunFailureMode::Strict);
                 }
@@ -2704,8 +2788,31 @@ mod tests {
             min_candidate_runs: 1,
             min_primary_improvement_pct: None,
             max_primary_relative_spread_pct: None,
+            min_improving_run_ratio_pct: None,
+            max_primary_outlier_count: None,
+            primary_outlier_mad_threshold: None,
         };
         assert!(build_workload_target(&args).is_err());
+    }
+
+    #[test]
+    fn run_trial_label_adds_suffix_for_repeated_runs() {
+        assert_eq!(run_trial_label("cand-a", 0, 3), "cand-a-01");
+        assert_eq!(run_trial_label("cand-a", 2, 3), "cand-a-03");
+        assert_eq!(run_trial_label("cand-a", 0, 1), "cand-a");
+    }
+
+    #[test]
+    fn run_trial_artifact_dir_nests_trials_under_requested_dir() {
+        assert_eq!(
+            run_trial_artifact_dir(Some("artifacts/run"), 1, 3).as_deref(),
+            Some("artifacts/run/trial-02")
+        );
+        assert_eq!(
+            run_trial_artifact_dir(Some("artifacts/run"), 0, 1).as_deref(),
+            Some("artifacts/run")
+        );
+        assert_eq!(run_trial_artifact_dir(None, 0, 3), None);
     }
 
     #[test]

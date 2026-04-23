@@ -299,7 +299,7 @@ pub fn median_metric<'a>(
     metric_name: &str,
     metrics: impl IntoIterator<Item = &'a MetricMap>,
 ) -> Option<f64> {
-    let mut values = collect_metric_values(metric_name, metrics);
+    let mut values = metric_values(metric_name, metrics);
     if values.is_empty() {
         return None;
     }
@@ -316,7 +316,7 @@ pub fn relative_spread_pct<'a>(
     metric_name: &str,
     metrics: impl IntoIterator<Item = &'a MetricMap>,
 ) -> Option<f64> {
-    let mut values = collect_metric_values(metric_name, metrics);
+    let mut values = metric_values(metric_name, metrics);
     if values.is_empty() {
         return None;
     }
@@ -333,7 +333,40 @@ pub fn relative_spread_pct<'a>(
     Some(((max - min).abs() / median.abs()) * 100.0)
 }
 
-fn collect_metric_values<'a>(
+pub fn improving_run_ratio_pct<'a>(
+    metric_name: &str,
+    goal: MetricGoal,
+    baseline_value: f64,
+    metrics: impl IntoIterator<Item = &'a MetricMap>,
+) -> Option<f64> {
+    let values = metric_values(metric_name, metrics);
+    if values.is_empty() {
+        return None;
+    }
+    let total = values.len() as f64;
+    let improving = values
+        .into_iter()
+        .filter(|value| {
+            goal.improvement_pct(baseline_value, *value)
+                .is_some_and(|pct| pct > 0.0)
+        })
+        .count();
+    Some((improving as f64 / total) * 100.0)
+}
+
+pub fn count_mad_outliers<'a>(
+    metric_name: &str,
+    metrics: impl IntoIterator<Item = &'a MetricMap>,
+    threshold: f64,
+) -> Option<usize> {
+    if !threshold.is_finite() || threshold < 0.0 {
+        return None;
+    }
+    let values = metric_values(metric_name, metrics);
+    count_mad_outliers_in_values(&values, threshold)
+}
+
+pub fn metric_values<'a>(
     metric_name: &str,
     metrics: impl IntoIterator<Item = &'a MetricMap>,
 ) -> Vec<f64> {
@@ -342,6 +375,35 @@ fn collect_metric_values<'a>(
         .filter_map(|run| run.get(metric_name).copied())
         .filter(|value| value.is_finite())
         .collect::<Vec<_>>()
+}
+
+fn count_mad_outliers_in_values(values: &[f64], threshold: f64) -> Option<usize> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|left, right| left.total_cmp(right));
+    let median = median_from_sorted(&sorted);
+    let mut deviations = values
+        .iter()
+        .map(|value| (value - median).abs())
+        .collect::<Vec<_>>();
+    deviations.sort_by(|left, right| left.total_cmp(right));
+    let mad = median_from_sorted(&deviations);
+    if mad == 0.0 {
+        return Some(values.iter().filter(|value| **value != median).count());
+    }
+    let outliers = values
+        .iter()
+        .filter(|value| {
+            // Use the robust modified-z convention so small trial batches can
+            // flag unstable scheduler outcomes without assuming a normal
+            // distribution or requiring many repetitions.
+            let modified_z = 0.6745 * ((*value - median).abs() / mad);
+            modified_z > threshold
+        })
+        .count();
+    Some(outliers)
 }
 
 fn median_from_sorted(values: &[f64]) -> f64 {
@@ -420,9 +482,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        MeasurementBasis, MetricGoal, PerformancePreference, infer_performance_policy,
-        median_metric, parse_guardrail, parse_metric_assignment, parse_metric_target,
-        relative_spread_pct,
+        MeasurementBasis, MetricGoal, PerformancePreference, count_mad_outliers,
+        improving_run_ratio_pct, infer_performance_policy, median_metric, parse_guardrail,
+        parse_metric_assignment, parse_metric_target, relative_spread_pct,
     };
     use std::collections::BTreeMap;
 
@@ -473,6 +535,31 @@ mod tests {
             BTreeMap::from([(String::from("latency_ms"), 12.0)]),
         ];
         assert_eq!(relative_spread_pct("latency_ms", runs.iter()), Some(40.0));
+    }
+
+    #[test]
+    fn improving_run_ratio_pct_counts_runs_better_than_baseline() {
+        let runs = vec![
+            BTreeMap::from([(String::from("latency_ms"), 9.0)]),
+            BTreeMap::from([(String::from("latency_ms"), 8.0)]),
+            BTreeMap::from([(String::from("latency_ms"), 11.0)]),
+            BTreeMap::from([(String::from("latency_ms"), 10.0)]),
+        ];
+        assert_eq!(
+            improving_run_ratio_pct("latency_ms", MetricGoal::Minimize, 10.0, runs.iter()),
+            Some(50.0)
+        );
+    }
+
+    #[test]
+    fn count_mad_outliers_detects_single_large_deviation() {
+        let runs = vec![
+            BTreeMap::from([(String::from("latency_ms"), 10.0)]),
+            BTreeMap::from([(String::from("latency_ms"), 10.2)]),
+            BTreeMap::from([(String::from("latency_ms"), 9.9)]),
+            BTreeMap::from([(String::from("latency_ms"), 40.0)]),
+        ];
+        assert_eq!(count_mad_outliers("latency_ms", runs.iter(), 3.5), Some(1));
     }
 
     #[test]
