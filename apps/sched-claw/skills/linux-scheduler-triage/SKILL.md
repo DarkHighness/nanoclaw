@@ -32,6 +32,7 @@ steps that match the current evidence and question.
    - Start with summaries that tell you whether the problem is queueing, migration, wakeup latency, or plain saturation.
 4. Escalate to scheduler traces only when the summaries justify it.
    - Use `perf sched record`, `perf sched timehist`, `perf sched latency`, or focused tracing under `/sys/kernel/tracing` when you need wakeup chains, dispatch order, or migration churn.
+   - `../sched-perf-collection/scripts/collect_sched_timeline.sh` is a good default when you want that collector shape captured durably and replayably.
    - Keep the trace window short and aligned to the bad phase.
 5. Separate fact, inference, and unknown.
    - Fact: direct counters, trace events, latency distributions, queue lengths, PSI windows, per-CPU imbalance.
@@ -39,6 +40,8 @@ steps that match the current evidence and question.
    - Unknown: what still needs another phase, another workload slice, or another kernel signal.
    - Persist those conclusions in normal notes, JSON, or Markdown artifacts next to the raw evidence.
    - `../sched-perf-analysis/scripts/compose_perf_evidence.py` is a good default when the raw perf capture already exists and you want a durable evidence note quickly
+   - `../sched-perf-analysis/scripts/summarize_sched_latency.py` is a good default when `perf sched latency` is the key scheduler-specific artifact
+   - `../sched-perf-analysis/scripts/compose_sched_trace_evidence.py` is a good default when you want the whole scheduler trace bundle turned into one durable note
 6. Rank scheduler-specific hypotheses.
    - Distinguish scheduler pathologies from generic CPU, memory, or IO pressure.
    - If PSI or vmstat indicates the dominant bottleneck is not CPU scheduling, say so explicitly instead of forcing a scheduler conclusion.

@@ -2,7 +2,7 @@ use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DEFAULT_LOG_TAIL_LINES, DEFAULT_STOP_TIMEOUT_MS, DaemonLogLine,
     DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot, MAX_PERF_DURATION_MS,
     MIN_PERF_DURATION_MS, PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot,
-    PerfTargetSelector, SchedExtDaemonRequest, SchedExtDaemonResponse,
+    PerfTargetSelector, SchedCollectionSnapshot, SchedExtDaemonRequest, SchedExtDaemonResponse,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use nix::sys::signal::{Signal, kill};
@@ -95,6 +95,19 @@ struct PerfCollectionSpec {
     sample_frequency_hz: Option<u32>,
     call_graph: Option<PerfCallGraphMode>,
     perf_argv: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SchedCollectionSpec {
+    label: String,
+    selector: PerfTargetSelector,
+    resolved_pids: Vec<u32>,
+    output_dir: PathBuf,
+    duration_ms: u64,
+    latency_by_pid: bool,
+    record_argv: Vec<String>,
+    timehist_argv: Vec<String>,
+    latency_argv: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -324,6 +337,25 @@ impl DaemonServer {
                 let snapshot = self.collect_perf(spec).await?;
                 Ok(SchedExtDaemonResponse::PerfCollection { snapshot })
             }
+            SchedExtDaemonRequest::CollectSched {
+                label,
+                selector,
+                output_dir,
+                duration_ms,
+                latency_by_pid,
+                overwrite,
+            } => {
+                let spec = self.validate_sched_collection(
+                    label,
+                    selector,
+                    output_dir,
+                    duration_ms,
+                    latency_by_pid,
+                    overwrite,
+                )?;
+                let snapshot = self.collect_sched(spec).await?;
+                Ok(SchedExtDaemonResponse::SchedCollection { snapshot })
+            }
             SchedExtDaemonRequest::Activate {
                 label,
                 argv,
@@ -439,6 +471,55 @@ impl DaemonServer {
         })
     }
 
+    fn validate_sched_collection(
+        &self,
+        label: Option<String>,
+        selector: PerfTargetSelector,
+        output_dir: String,
+        duration_ms: u64,
+        latency_by_pid: bool,
+        overwrite: bool,
+    ) -> Result<SchedCollectionSpec> {
+        if !(MIN_PERF_DURATION_MS..=MAX_PERF_DURATION_MS).contains(&duration_ms) {
+            bail!(
+                "duration_ms must be between {} and {}",
+                MIN_PERF_DURATION_MS,
+                MAX_PERF_DURATION_MS
+            );
+        }
+        let resolved_pids = self.resolve_perf_selector(&selector)?;
+        if resolved_pids.is_empty() {
+            bail!("no live pids resolved for perf selector");
+        }
+
+        let output_dir =
+            resolve_allow_missing_path(&self.options.workspace_root, Path::new(&output_dir))
+                .with_context(|| format!("failed to resolve output dir {output_dir}"))?;
+        self.ensure_allowed_path_for_create(&output_dir)?;
+        self.prepare_output_dir(&output_dir, overwrite)?;
+
+        let label = label
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "perf-sched".to_string());
+        let record_argv = build_sched_record_argv(&resolved_pids, &output_dir);
+        let timehist_argv = build_sched_timehist_argv(&output_dir);
+        let latency_argv = build_sched_latency_argv(&output_dir, latency_by_pid);
+        Ok(SchedCollectionSpec {
+            label,
+            selector,
+            resolved_pids,
+            output_dir,
+            duration_ms,
+            latency_by_pid,
+            record_argv,
+            timehist_argv,
+            latency_argv,
+        })
+    }
+
     async fn collect_perf(&self, spec: PerfCollectionSpec) -> Result<PerfCollectionSnapshot> {
         let _collection_guard = self.collection_lock.lock().await;
         let selector = spec.selector.clone();
@@ -538,6 +619,140 @@ impl DaemonServer {
             exit_code: status.code(),
             signal: status.signal(),
             perf_argv: spec.perf_argv,
+        })
+    }
+
+    async fn collect_sched(&self, spec: SchedCollectionSpec) -> Result<SchedCollectionSnapshot> {
+        let _collection_guard = self.collection_lock.lock().await;
+
+        let record_command_path = spec.output_dir.join("perf.sched.record.command.json");
+        let selector_path = spec.output_dir.join("perf.sched.selector.json");
+        let record_stdout_path = spec.output_dir.join("perf.sched.record.stdout.log");
+        let record_stderr_path = spec.output_dir.join("perf.sched.record.stderr.log");
+        let data_path = spec.output_dir.join("perf.sched.data");
+        let timehist_path = spec.output_dir.join("perf.sched.timehist.txt");
+        let timehist_command_path = spec.output_dir.join("perf.sched.timehist.command.json");
+        let timehist_stderr_path = spec.output_dir.join("perf.sched.timehist.stderr.log");
+        let latency_path = spec.output_dir.join("perf.sched.latency.txt");
+        let latency_command_path = spec.output_dir.join("perf.sched.latency.command.json");
+        let latency_stderr_path = spec.output_dir.join("perf.sched.latency.stderr.log");
+
+        std::fs::write(
+            &record_command_path,
+            serde_json::to_vec_pretty(&spec.record_argv)?,
+        )?;
+        std::fs::write(
+            &timehist_command_path,
+            serde_json::to_vec_pretty(&spec.timehist_argv)?,
+        )?;
+        std::fs::write(
+            &latency_command_path,
+            serde_json::to_vec_pretty(&spec.latency_argv)?,
+        )?;
+        std::fs::write(
+            &selector_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "selector": spec.selector,
+                "resolved_pids": spec.resolved_pids,
+            }))?,
+        )?;
+
+        let record_stdout = std::fs::File::create(&record_stdout_path)
+            .with_context(|| format!("failed to create {}", record_stdout_path.display()))?;
+        let record_stderr = std::fs::File::create(&record_stderr_path)
+            .with_context(|| format!("failed to create {}", record_stderr_path.display()))?;
+        let started_at_unix_ms = now_unix_ms();
+        let mut child = Command::new("perf")
+            .args(&spec.record_argv)
+            .current_dir(&spec.output_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(record_stdout))
+            .stderr(Stdio::from(record_stderr))
+            .spawn()
+            .context("failed to spawn perf sched recorder")?;
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow!("spawned perf sched recorder did not expose a pid"))?;
+
+        let mut stop_reason = "target_exited".to_string();
+        let status = match timeout(Duration::from_millis(spec.duration_ms), child.wait()).await {
+            Ok(status) => status?,
+            Err(_) => {
+                stop_reason = "duration_elapsed".to_string();
+                if let Err(error) = kill(Pid::from_raw(pid as i32), Signal::SIGINT) {
+                    warn!(error = %error, pid, "failed to interrupt perf sched recorder");
+                }
+                match timeout(Duration::from_secs(5), child.wait()).await {
+                    Ok(status) => status?,
+                    Err(_) => {
+                        stop_reason = "forced_kill".to_string();
+                        child.start_kill()?;
+                        child.wait().await?
+                    }
+                }
+            }
+        };
+        let ended_at_unix_ms = now_unix_ms();
+
+        if !data_path.is_file() {
+            bail!(
+                "perf sched recorder did not produce {} ({})",
+                data_path.display(),
+                summarize_output_file(&record_stdout_path, &record_stderr_path)?
+            );
+        }
+        if !status.success()
+            && !(stop_reason == "duration_elapsed"
+                && matches!(status.code(), Some(0) | Some(130) | Some(124)))
+        {
+            bail!(
+                "perf sched recorder exited unsuccessfully ({:?}); {}",
+                status.code(),
+                summarize_output_file(&record_stdout_path, &record_stderr_path)?
+            );
+        }
+
+        run_perf_sched_render(
+            &spec.output_dir,
+            &spec.timehist_argv,
+            &timehist_path,
+            &timehist_stderr_path,
+            "timehist",
+        )?;
+        run_perf_sched_render(
+            &spec.output_dir,
+            &spec.latency_argv,
+            &latency_path,
+            &latency_stderr_path,
+            "latency",
+        )?;
+
+        Ok(SchedCollectionSnapshot {
+            label: spec.label,
+            selector: spec.selector,
+            resolved_pids: spec.resolved_pids,
+            requested_duration_ms: spec.duration_ms,
+            output_dir: spec.output_dir.display().to_string(),
+            data_path: data_path.display().to_string(),
+            record_command_path: record_command_path.display().to_string(),
+            selector_path: selector_path.display().to_string(),
+            record_stdout_path: record_stdout_path.display().to_string(),
+            record_stderr_path: record_stderr_path.display().to_string(),
+            timehist_path: timehist_path.display().to_string(),
+            timehist_command_path: timehist_command_path.display().to_string(),
+            timehist_stderr_path: timehist_stderr_path.display().to_string(),
+            latency_path: latency_path.display().to_string(),
+            latency_command_path: latency_command_path.display().to_string(),
+            latency_stderr_path: latency_stderr_path.display().to_string(),
+            latency_by_pid: spec.latency_by_pid,
+            started_at_unix_ms,
+            ended_at_unix_ms,
+            stop_reason,
+            exit_code: status.code(),
+            signal: status.signal(),
+            record_argv: spec.record_argv,
+            timehist_argv: spec.timehist_argv,
+            latency_argv: spec.latency_argv,
         })
     }
 
@@ -999,6 +1214,43 @@ fn build_perf_argv(
     argv
 }
 
+fn build_sched_record_argv(resolved_pids: &[u32], output_dir: &Path) -> Vec<String> {
+    vec![
+        "sched".to_string(),
+        "record".to_string(),
+        "-o".to_string(),
+        output_dir.join("perf.sched.data").display().to_string(),
+        "-p".to_string(),
+        resolved_pids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    ]
+}
+
+fn build_sched_timehist_argv(output_dir: &Path) -> Vec<String> {
+    vec![
+        "sched".to_string(),
+        "timehist".to_string(),
+        "-i".to_string(),
+        output_dir.join("perf.sched.data").display().to_string(),
+    ]
+}
+
+fn build_sched_latency_argv(output_dir: &Path, by_pid: bool) -> Vec<String> {
+    let mut argv = vec![
+        "sched".to_string(),
+        "latency".to_string(),
+        "-i".to_string(),
+        output_dir.join("perf.sched.data").display().to_string(),
+    ];
+    if by_pid {
+        argv.push("-p".to_string());
+    }
+    argv
+}
+
 fn perf_call_graph_arg(mode: PerfCallGraphMode) -> String {
     match mode {
         PerfCallGraphMode::FramePointer => "fp".to_string(),
@@ -1092,6 +1344,35 @@ fn summarize_output_file(stdout_path: &Path, stderr_path: &Path) -> Result<Strin
     let stdout = std::fs::read(stdout_path).unwrap_or_default();
     let stderr = std::fs::read(stderr_path).unwrap_or_default();
     Ok(summarize_output(&stdout, &stderr))
+}
+
+fn run_perf_sched_render(
+    cwd: &Path,
+    argv: &[String],
+    output_path: &Path,
+    stderr_path: &Path,
+    label: &str,
+) -> Result<()> {
+    let stdout = std::fs::File::create(output_path)
+        .with_context(|| format!("failed to create {}", output_path.display()))?;
+    let stderr = std::fs::File::create(stderr_path)
+        .with_context(|| format!("failed to create {}", stderr_path.display()))?;
+    let status = std::process::Command::new("perf")
+        .args(argv)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .status()
+        .with_context(|| format!("failed to run perf sched {label}"))?;
+    if !status.success() || !output_path.is_file() {
+        bail!(
+            "perf sched {label} exited unsuccessfully ({:?}); {}",
+            status.code(),
+            summarize_output_file(output_path, stderr_path)?
+        );
+    }
+    Ok(())
 }
 
 fn summarize_output(stdout: &[u8], stderr: &[u8]) -> String {

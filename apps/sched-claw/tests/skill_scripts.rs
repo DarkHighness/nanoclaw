@@ -14,6 +14,7 @@ fn repo_root() -> &'static Path {
 fn shell_helper_scripts_have_valid_bash_syntax() -> Result<()> {
     let scripts = [
         repo_root().join("skills/sched-perf-collection/scripts/collect_perf.sh"),
+        repo_root().join("skills/sched-perf-collection/scripts/collect_sched_timeline.sh"),
         repo_root().join("skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh"),
         repo_root().join("skills/sched-perf-analysis/scripts/render_perf_report.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh"),
@@ -37,6 +38,8 @@ fn python_helper_scripts_compile() -> Result<()> {
     let scripts = [
         repo_root().join("skills/sched-perf-analysis/scripts/analyze_perf_csv.py"),
         repo_root().join("skills/sched-perf-analysis/scripts/compose_perf_evidence.py"),
+        repo_root().join("skills/sched-perf-analysis/scripts/compose_sched_trace_evidence.py"),
+        repo_root().join("skills/sched-perf-analysis/scripts/summarize_sched_latency.py"),
         repo_root().join("skills/sched-perf-analysis/scripts/summarize_metrics.py"),
         repo_root().join("skills/sched-ext-run-evaluation/scripts/compare_trials.py"),
     ];
@@ -164,6 +167,95 @@ fn analyze_perf_csv_derives_proxy_metrics() -> Result<()> {
     assert!(env.contains("IPC=2.5000000000"));
     assert!(env.contains("CPI=0.4000000000"));
     assert!(env.contains("BRANCH_MISS_RATE=0.1000000000"));
+    Ok(())
+}
+
+#[test]
+fn summarize_sched_latency_parses_top_offenders() -> Result<()> {
+    let dir = tempdir()?;
+    let input = dir.path().join("perf.sched.latency.txt");
+    std::fs::write(
+        &input,
+        "# header\nTask | Runtime ms | Switches | Average delay ms | Maximum delay ms |\nclang-1 | 120.0 | 40 | 2.5 | 9.0 |\nclang-2 | 80.0 | 20 | 1.5 | 4.0 |\n",
+    )?;
+    let markdown = dir.path().join("sched-latency.md");
+    let json_path = dir.path().join("sched-latency.json");
+    let script = repo_root().join("skills/sched-perf-analysis/scripts/summarize_sched_latency.py");
+
+    let status = Command::new("python3")
+        .arg(&script)
+        .args([
+            "--input",
+            input.to_str().unwrap(),
+            "--output",
+            markdown.to_str().unwrap(),
+            "--out-json",
+            json_path.to_str().unwrap(),
+            "--top",
+            "1",
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "sched latency summary helper failed");
+
+    let rendered = std::fs::read_to_string(markdown)?;
+    assert!(rendered.contains("# perf sched latency summary"));
+    assert!(rendered.contains("| clang-1 | 120.000 | 40 | 2.500 | 9.000 |"));
+
+    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(json_path)?)?;
+    assert_eq!(parsed["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(parsed["top_offenders"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["top_offenders"][0]["task"], "clang-1");
+    Ok(())
+}
+
+#[test]
+fn compose_sched_trace_evidence_writes_markdown() -> Result<()> {
+    let dir = tempdir()?;
+    let capture_dir = dir.path().join("sched-capture");
+    std::fs::create_dir_all(&capture_dir)?;
+    std::fs::write(capture_dir.join("perf.sched.data"), "PERF SCHED DATA\n")?;
+    std::fs::write(
+        capture_dir.join("perf.sched.latency.txt"),
+        "Task | Runtime ms | Switches | Average delay ms | Maximum delay ms |\nclang-1 | 120.0 | 40 | 2.5 | 9.0 |\n",
+    )?;
+    std::fs::write(
+        capture_dir.join("perf.sched.timehist.txt"),
+        "0.000 [001] clang-1 wait=0.100 sch_delay=0.200 run=1.000\n",
+    )?;
+    let output = dir.path().join("sched-evidence.md");
+    let json_path = dir.path().join("sched-evidence.json");
+    let script =
+        repo_root().join("skills/sched-perf-analysis/scripts/compose_sched_trace_evidence.py");
+
+    let status = Command::new("python3")
+        .arg(&script)
+        .args([
+            "--capture-dir",
+            capture_dir.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--out-json",
+            json_path.to_str().unwrap(),
+            "--fact",
+            "clang-1 shows the highest wakeup delay",
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(
+        status.success(),
+        "compose sched trace evidence helper failed"
+    );
+
+    let rendered = std::fs::read_to_string(output)?;
+    assert!(rendered.contains("## Top Delayed Tasks"));
+    assert!(rendered.contains("clang-1"));
+    assert!(rendered.contains("## Timehist Excerpt"));
+    assert!(rendered.contains("sch_delay=0.200"));
+    assert!(rendered.contains("clang-1 shows the highest wakeup delay"));
+
+    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(json_path)?)?;
+    assert_eq!(parsed["top_offenders"].as_array().unwrap().len(), 1);
     Ok(())
 }
 
@@ -367,6 +459,162 @@ done
     assert!(status.success(), "daemon driver helper failed");
     assert!(output_dir.join("perf.stat.csv").is_file());
     assert!(output_dir.join("perf.command.json").is_file());
+    assert!(output_dir.join("collector.command.txt").is_file());
+    Ok(())
+}
+
+#[test]
+fn collect_sched_timeline_helper_supports_daemon_driver() -> Result<()> {
+    let dir = tempdir()?;
+    let workspace_root = dir.path();
+    let socket_path = workspace_root.join(".nanoclaw/apps/sched-claw/test.sock");
+    let daemon_log = workspace_root.join("daemon.log");
+    let perf_path = workspace_root.join("perf");
+    std::fs::write(
+        &perf_path,
+        r#"#!/bin/sh
+set -eu
+mode=""
+output=""
+submode=""
+input=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    sched)
+      mode="sched"
+      submode="$2"
+      shift 2
+      ;;
+    stat|record)
+      mode="$1"
+      shift
+      ;;
+    -o|-i)
+      if [ "$1" = "-o" ]; then
+        output="$2"
+      else
+        input="$2"
+      fi
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+emit() {
+  mkdir -p "$(dirname "$output")"
+  if [ "$mode" = "sched" ]; then
+    printf 'PERF SCHED DATA\n' >"$output"
+  elif [ "$mode" = "stat" ]; then
+    cat >"$output" <<'OUT'
+1000,,cycles,1.0,100.00,,
+OUT
+  else
+    printf 'PERF DATA\n' >"$output"
+  fi
+}
+if [ "$mode" = "sched" ] && [ "$submode" = "timehist" ]; then
+  cat <<'OUT'
+0.000 [001] worker wait=0.100 sch_delay=0.200 run=1.000
+OUT
+  exit 0
+fi
+if [ "$mode" = "sched" ] && [ "$submode" = "latency" ]; then
+  cat <<'OUT'
+Task | Runtime ms | Switches | Average delay ms | Maximum delay ms |
+worker | 20.0 | 10 | 1.5 | 4.5 |
+OUT
+  exit 0
+fi
+trap 'emit; exit 0' INT TERM
+while true; do
+  sleep 0.05
+done
+"#,
+    )?;
+    let mut permissions = std::fs::metadata(&perf_path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&perf_path, permissions)?;
+
+    let busy_path = workspace_root.join("busy.sh");
+    std::fs::write(
+        &busy_path,
+        "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile true; do\n  :\ndone\n",
+    )?;
+    let mut permissions = std::fs::metadata(&busy_path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&busy_path, permissions)?;
+
+    let mut busy_child = Command::new(&busy_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to start busy target")?;
+
+    let daemon_bin =
+        std::env::var("CARGO_BIN_EXE_sched-claw-daemon").context("missing sched-claw-daemon")?;
+    let sched_claw_bin = std::env::var("CARGO_BIN_EXE_sched-claw").context("missing sched-claw")?;
+    let mut daemon_child = Command::new(daemon_bin)
+        .arg("serve")
+        .arg("--workspace-root")
+        .arg(workspace_root)
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("--allow-root")
+        .arg(workspace_root)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                workspace_root.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .stdout(std::fs::File::create(&daemon_log)?)
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to start daemon")?;
+
+    wait_until(Duration::from_secs(5), || socket_path.exists())?;
+
+    let script = repo_root().join("skills/sched-perf-collection/scripts/collect_sched_timeline.sh");
+    let output_dir = workspace_root.join("artifacts/sched-daemon");
+    let status = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--driver",
+            "daemon",
+            "--sched-claw-bin",
+            &sched_claw_bin,
+            "--daemon-socket",
+            socket_path.to_str().unwrap(),
+            "--output",
+            output_dir.to_str().unwrap(),
+            "--pid",
+            &busy_child.id().to_string(),
+            "--timeout",
+            "1",
+            "--latency-by-pid",
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+
+    let _ = busy_child.kill();
+    let _ = busy_child.wait();
+    let _ = daemon_child.kill();
+    let _ = daemon_child.wait();
+
+    assert!(status.success(), "daemon scheduler driver helper failed");
+    assert!(output_dir.join("perf.sched.data").is_file());
+    assert!(output_dir.join("perf.sched.timehist.txt").is_file());
+    assert!(output_dir.join("perf.sched.latency.txt").is_file());
+    assert!(
+        output_dir
+            .join("perf.sched.timehist.command.json")
+            .is_file()
+    );
+    assert!(output_dir.join("perf.sched.latency.command.json").is_file());
     assert!(output_dir.join("collector.command.txt").is_file());
     Ok(())
 }

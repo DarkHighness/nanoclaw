@@ -23,7 +23,7 @@ code generation; a narrow privileged daemon for sched-ext lifecycle control.
   - shell execution: `exec_command`, `write_stdin`
   - live documentation lookup: `web_search`, `web_fetch`
   - skill discovery: `skills_list`, `skill_view`, `tool_discover`
-  - privileged sched-ext lifecycle and bounded perf capture: `sched_ext_daemon`
+  - privileged sched-ext lifecycle plus bounded perf or scheduler-trace capture: `sched_ext_daemon`
 - Do not add a dedicated performance-collection tool. Collection and analysis
   stay in reusable skills plus the existing shell/file/web surfaces.
 - Do not let the agent spawn arbitrary root commands. Privileged launch and
@@ -59,12 +59,15 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `sched-claw doctor --style plain`
   - skill-first helper scripts for collection and analysis:
     - `apps/sched-claw/skills/sched-perf-collection/scripts/collect_perf.sh`
+    - `apps/sched-claw/skills/sched-perf-collection/scripts/collect_sched_timeline.sh`
       with `--driver host|daemon`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/analyze_perf_csv.py`
       with optional derived IPC/CPI or miss-rate proxies
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/compose_perf_evidence.py`
+    - `apps/sched-claw/skills/sched-perf-analysis/scripts/compose_sched_trace_evidence.py`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/render_perf_report.sh`
+    - `apps/sched-claw/skills/sched-perf-analysis/scripts/summarize_sched_latency.py`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_design_brief.sh`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh`
@@ -79,14 +82,16 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `sched-claw export-transcript last artifacts/session.txt`
     - `sched-claw export-events last artifacts/session.jsonl`
     - `sched-claw resume last "continue from the prior analysis"`
-    - `sched-claw daemon status --style table`
-    - `sched-claw daemon collect-perf --pid 4242 --duration-ms 1000 --output-dir artifacts/perf-a`
+  - `sched-claw daemon status --style table`
+  - `sched-claw daemon collect-perf --pid 4242 --duration-ms 1000 --output-dir artifacts/perf-a`
+  - `sched-claw daemon collect-sched --pid 4242 --duration-ms 1000 --output-dir artifacts/sched-a`
 - `sched-claw-daemon` is a separate binary intended to run with elevated
   privileges. It manages one active sched-ext deployment at a time, captures the
   child process logs, and exposes:
   - `status`
   - `activate`
   - `collect_perf`
+  - `collect_sched`
   - `stop`
   - `logs`
 
@@ -189,11 +194,14 @@ The preferred path is:
 - workload context captured as normal files under `.nanoclaw/` or another
   durable workspace directory
 - collection via shell commands or helper scripts such as
-  `skills/sched-perf-collection/scripts/collect_perf.sh`
+  `skills/sched-perf-collection/scripts/collect_perf.sh` and
+  `skills/sched-perf-collection/scripts/collect_sched_timeline.sh`
 - analysis via repo-local scripts such as
   `skills/sched-perf-analysis/scripts/analyze_perf_csv.py`,
-  `skills/sched-perf-analysis/scripts/compose_perf_evidence.py`, and
-  `skills/sched-perf-analysis/scripts/render_perf_report.sh`
+  `skills/sched-perf-analysis/scripts/compose_perf_evidence.py`,
+  `skills/sched-perf-analysis/scripts/compose_sched_trace_evidence.py`, and
+  `skills/sched-perf-analysis/scripts/render_perf_report.sh`, and
+  `skills/sched-perf-analysis/scripts/summarize_sched_latency.py`
 - sched-ext code scaffolding via repo-local scripts such as
   `skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh` and
   `skills/sched-ext-codegen/scripts/scaffold_design_brief.sh` and

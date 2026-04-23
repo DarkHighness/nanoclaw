@@ -137,7 +137,15 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("sched-perf-analysis/scripts/compose_sched_trace_evidence.py")
+                .is_file()
+        );
+        assert!(
             root.join("sched-perf-analysis/scripts/render_perf_report.sh")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-analysis/scripts/summarize_sched_latency.py")
                 .is_file()
         );
         assert!(
@@ -146,6 +154,10 @@ mod tests {
         );
         assert!(
             root.join("sched-perf-collection/scripts/collect_perf.sh")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-collection/scripts/collect_sched_timeline.sh")
                 .is_file()
         );
         assert!(

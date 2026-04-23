@@ -280,6 +280,66 @@ done
     harness.shutdown().await;
 }
 
+#[tokio::test]
+async fn daemon_collects_sched_timeline_artifacts_for_pid_targets() {
+    let harness = DaemonHarness::start().await;
+    let target = harness.write_executable(
+        "busy-sched.sh",
+        r#"#!/bin/sh
+trap 'exit 0' TERM INT
+while true; do
+  :
+done
+"#,
+    );
+    let mut target_child = Command::new(&target).stdout(Stdio::null()).spawn().unwrap();
+    let pid = target_child.id().unwrap();
+
+    let response = harness
+        .client
+        .send(&SchedExtDaemonRequest::CollectSched {
+            label: Some("pid-sched".to_string()),
+            selector: PerfTargetSelector::Pid { pids: vec![pid] },
+            output_dir: "artifacts/sched-a".to_string(),
+            duration_ms: 250,
+            latency_by_pid: true,
+            overwrite: false,
+        })
+        .await
+        .unwrap();
+
+    let snapshot = match response {
+        SchedExtDaemonResponse::SchedCollection { snapshot } => snapshot,
+        other => panic!("expected sched collection response, got {other:?}"),
+    };
+    assert_eq!(snapshot.label, "pid-sched");
+    assert_eq!(snapshot.stop_reason, "duration_elapsed");
+    assert!(snapshot.latency_by_pid);
+    assert_eq!(snapshot.resolved_pids, vec![pid]);
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/sched-a/perf.sched.data")
+            .is_file()
+    );
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/sched-a/perf.sched.timehist.txt")
+            .is_file()
+    );
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/sched-a/perf.sched.latency.txt")
+            .is_file()
+    );
+
+    let _ = target_child.start_kill();
+    let _ = target_child.wait().await;
+    harness.shutdown().await;
+}
+
 struct DaemonHarness {
     _workspace: TempDir,
     socket_path: PathBuf,
@@ -378,14 +438,23 @@ mode=""
 output=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    sched)
+      mode="sched"
+      submode="${2:-}"
+      shift 2
+      ;;
     stat|record)
       mode="$1"
       shift
       ;;
-    -o)
-      output="$2"
+    -o|-i)
+      if [ "$1" = "-o" ]; then
+        output="$2"
+      else
+        input="$2"
+      fi
       shift 2
-      ;;
+    ;;
     *)
       shift
       ;;
@@ -396,7 +465,9 @@ write_output() {
     exit 3
   fi
   mkdir -p "$(dirname "$output")"
-  if [ "$mode" = "stat" ]; then
+  if [ "$mode" = "sched" ]; then
+    printf 'PERF SCHED DATA\n' >"$output"
+  elif [ "$mode" = "stat" ]; then
     cat >"$output" <<'EOF'
 1000,,cycles,1.0,100.00,,
 2000,,instructions,1.0,100.00,,
@@ -405,6 +476,19 @@ EOF
     printf 'PERF DATA\n' >"$output"
   fi
 }
+if [ "$mode" = "sched" ] && [ "$submode" = "timehist" ]; then
+  cat <<'EOF'
+0.000 [001] worker wait=0.100 sch_delay=0.200 run=1.000
+EOF
+  exit 0
+fi
+if [ "$mode" = "sched" ] && [ "$submode" = "latency" ]; then
+  cat <<'EOF'
+Task | Runtime ms | Switches | Average delay ms | Maximum delay ms |
+worker | 20.0 | 10 | 1.5 | 4.5 |
+EOF
+  exit 0
+fi
 trap 'write_output; exit 0' INT TERM
 while true; do
   sleep 0.05

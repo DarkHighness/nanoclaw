@@ -36,7 +36,9 @@ tags:
    - `scripts/analyze_perf_csv.py` reduces one or more `perf stat` CSV captures and can emit JSON, Markdown, env-style key-value output, or a plot
    - with `--derive-proxies`, `scripts/analyze_perf_csv.py` also emits IPC, CPI, and miss-rate style proxy metrics when the source counters exist
    - `scripts/compose_perf_evidence.py` turns a raw perf capture directory into a durable Markdown or JSON evidence note and now carries derived proxy metrics plus `perf report` hotspot excerpts when available
+   - `scripts/compose_sched_trace_evidence.py` turns a `perf sched` artifact directory into a durable Markdown or JSON evidence note with delayed-task summaries and timehist excerpts
    - `scripts/render_perf_report.sh` turns `perf.data` into `perf report --stdio` and optional `perf script` artifacts
+   - `scripts/summarize_sched_latency.py` turns `perf sched latency` output into top delayed tasks and durable Markdown or JSON summaries
    - `scripts/summarize_metrics.py` remains useful for `metrics.env` style files
 5. Persist the conclusion as normal artifacts or notes.
    - include the evidence paths, facts, inferences, unknowns, recommendations, and confidence
@@ -71,9 +73,15 @@ tags:
 - `scripts/compose_perf_evidence.py`
   - converts a raw perf capture directory into a durable Markdown or JSON evidence note
   - keeps facts, inferences, unknowns, recommendations, artifact paths, derived proxy metrics, and optional hotspot excerpts explicit
+- `scripts/compose_sched_trace_evidence.py`
+  - converts a `perf sched` capture directory into a durable Markdown or JSON evidence note
+  - keeps top delayed tasks, timehist excerpts, analyst facts, and follow-up recommendations explicit
 - `scripts/render_perf_report.sh`
   - renders `perf.data` into `perf report --stdio`
   - can also emit `perf script` output for deeper call-chain inspection
+- `scripts/summarize_sched_latency.py`
+  - reduces `perf sched latency` output into top delayed tasks
+  - can emit Markdown or JSON for durable triage artifacts
 - `scripts/summarize_metrics.py`
   - summarizes one or more `metrics.env` files
   - supports caller-selected reducers instead of enforcing a fixed host policy

@@ -124,6 +124,15 @@ pub async fn collect_doctor_report(
         "used by scheduler evidence collection skills for reproducible perf capture",
     ));
     checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-perf-collection/scripts/collect_sched_timeline.sh",
+        ),
+        "collection",
+        "scheduler timeline collection helper",
+        false,
+        "used to capture perf sched record plus timehist and latency artifacts without teaching the host a fixed workflow",
+    ));
+    checks.push(helper_script_check(
         workspace_root
             .join("apps/sched-claw/skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh"),
         "analysis",
@@ -148,12 +157,30 @@ pub async fn collect_doctor_report(
         "used to turn raw perf capture artifacts into a durable evidence note",
     ));
     checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-perf-analysis/scripts/compose_sched_trace_evidence.py",
+        ),
+        "analysis",
+        "scheduler trace evidence helper",
+        false,
+        "used to turn perf sched timeline artifacts into a durable scheduler evidence note",
+    ));
+    checks.push(helper_script_check(
         workspace_root
             .join("apps/sched-claw/skills/sched-perf-analysis/scripts/render_perf_report.sh"),
         "analysis",
         "perf report rendering helper",
         false,
         "used to turn perf.data captures into perf report or perf script artifacts",
+    ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-perf-analysis/scripts/summarize_sched_latency.py",
+        ),
+        "analysis",
+        "sched latency summary helper",
+        false,
+        "used to reduce perf sched latency output into top delayed tasks and durable markdown or json summaries",
     ));
     checks.push(helper_script_check(
         workspace_root.join(

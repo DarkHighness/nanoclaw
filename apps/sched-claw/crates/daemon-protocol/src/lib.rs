@@ -48,6 +48,17 @@ pub enum SchedExtDaemonRequest {
         #[serde(default)]
         overwrite: bool,
     },
+    CollectSched {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        selector: PerfTargetSelector,
+        output_dir: String,
+        duration_ms: u64,
+        #[serde(default)]
+        latency_by_pid: bool,
+        #[serde(default)]
+        overwrite: bool,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -61,6 +72,9 @@ pub enum SchedExtDaemonResponse {
     },
     PerfCollection {
         snapshot: PerfCollectionSnapshot,
+    },
+    SchedCollection {
+        snapshot: SchedCollectionSnapshot,
     },
     Ack {
         message: String,
@@ -185,4 +199,34 @@ pub struct PerfCollectionSnapshot {
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
     pub perf_argv: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SchedCollectionSnapshot {
+    pub label: String,
+    pub selector: PerfTargetSelector,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_pids: Vec<u32>,
+    pub requested_duration_ms: u64,
+    pub output_dir: String,
+    pub data_path: String,
+    pub record_command_path: String,
+    pub selector_path: String,
+    pub record_stdout_path: String,
+    pub record_stderr_path: String,
+    pub timehist_path: String,
+    pub timehist_command_path: String,
+    pub timehist_stderr_path: String,
+    pub latency_path: String,
+    pub latency_command_path: String,
+    pub latency_stderr_path: String,
+    pub latency_by_pid: bool,
+    pub started_at_unix_ms: u64,
+    pub ended_at_unix_ms: u64,
+    pub stop_reason: String,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub record_argv: Vec<String>,
+    pub timehist_argv: Vec<String>,
+    pub latency_argv: Vec<String>,
 }

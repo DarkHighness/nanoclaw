@@ -26,6 +26,7 @@ tags:
    - decide whether the bad phase is startup, steady-state, burst, or shutdown
 2. Prefer low-overhead summaries first.
    - use `scripts/collect_perf.sh` when you want a deterministic wrapper around `perf stat` or `perf record`
+   - use `scripts/collect_sched_timeline.sh` when the open question is scheduler ordering, wakeup chains, or migration churn and you want `perf sched record` plus derived `timehist` and `latency` artifacts
    - choose `--driver host` for ordinary collection and `--driver daemon` when attach-style privileged capture is required
    - direct shell capture is also fine when the wrapper would get in the way
    - when non-root collection is blocked by `perf_event_paranoid`, cgroup visibility, or attach permissions, prefer the structured `sched_ext_daemon` `collect_perf` action instead of inventing a root shell workaround
@@ -33,6 +34,7 @@ tags:
    - collect just enough to answer whether the issue looks like queueing, migration, wakeup latency, or plain saturation
 3. Escalate only when the summary leaves a scheduler-specific gap.
    - use `perf sched` when ordering, wakeup chains, or migration churn are the open question
+   - when that timeline capture needs privilege, prefer the structured daemon `collect_sched` action or the `scripts/collect_sched_timeline.sh --driver daemon ...` wrapper instead of a root shell workaround
    - use `perf record` or focused BPF tracing only when the low-overhead view cannot distinguish competing hypotheses
 4. Persist evidence as normal artifacts.
    - save the exact command line, raw csv or log output, and any reduced metrics in a stable workspace path
@@ -66,3 +68,8 @@ tags:
   - supports command, pid, uid, gid, and cgroup targets
   - writes the exact command line plus stdout and stderr artifacts
   - preferred for non-root or same-user collection flows
+- `scripts/collect_sched_timeline.sh`
+  - wraps `perf sched record` and renders `perf sched timehist` plus `perf sched latency`
+  - supports both `--driver host` and `--driver daemon`
+  - supports command, pid, uid, gid, and cgroup targets
+  - writes raw `perf.sched.data` plus derived scheduler timeline artifacts

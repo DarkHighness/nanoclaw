@@ -172,6 +172,7 @@ enum DaemonCommand {
     Status(OutputArgs),
     Activate(DaemonActivateArgs),
     CollectPerf(DaemonCollectPerfArgs),
+    CollectSched(DaemonCollectSchedArgs),
     Logs(DaemonLogsArgs),
     Stop(DaemonStopArgs),
 }
@@ -243,6 +244,30 @@ struct DaemonCollectPerfArgs {
     sample_frequency_hz: Option<u32>,
     #[arg(long, value_enum)]
     call_graph: Option<PerfCallGraphArg>,
+    #[arg(long)]
+    overwrite: bool,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct DaemonCollectSchedArgs {
+    #[arg(long, value_name = "TEXT")]
+    label: Option<String>,
+    #[arg(long, value_name = "DIR")]
+    output_dir: String,
+    #[arg(long, value_name = "MS")]
+    duration_ms: u64,
+    #[arg(long, value_name = "PID", value_delimiter = ',')]
+    pid: Vec<u32>,
+    #[arg(long, value_name = "UID")]
+    uid: Option<u32>,
+    #[arg(long, value_name = "GID")]
+    gid: Option<u32>,
+    #[arg(long, value_name = "PATH")]
+    cgroup: Option<String>,
+    #[arg(long)]
+    latency_by_pid: bool,
     #[arg(long)]
     overwrite: bool,
     #[command(flatten)]
@@ -469,7 +494,13 @@ async fn run_daemon_command(
             args.output.style,
         ),
         DaemonCommand::CollectPerf(args) => {
-            let selector = parse_perf_selector(&args)?;
+            let selector = parse_perf_selector(
+                !args.pid.is_empty(),
+                args.pid.clone(),
+                args.uid,
+                args.gid,
+                args.cgroup.clone(),
+            )?;
             (
                 SchedExtDaemonRequest::CollectPerf {
                     label: args.label,
@@ -480,6 +511,26 @@ async fn run_daemon_command(
                     events: args.events,
                     sample_frequency_hz: args.sample_frequency_hz,
                     call_graph: args.call_graph.map(map_perf_call_graph),
+                    overwrite: args.overwrite,
+                },
+                args.output.style,
+            )
+        }
+        DaemonCommand::CollectSched(args) => {
+            let selector = parse_perf_selector(
+                !args.pid.is_empty(),
+                args.pid.clone(),
+                args.uid,
+                args.gid,
+                args.cgroup.clone(),
+            )?;
+            (
+                SchedExtDaemonRequest::CollectSched {
+                    label: args.label,
+                    selector,
+                    output_dir: args.output_dir,
+                    duration_ms: args.duration_ms,
+                    latency_by_pid: args.latency_by_pid,
                     overwrite: args.overwrite,
                 },
                 args.output.style,
@@ -544,39 +595,40 @@ fn map_perf_call_graph(value: PerfCallGraphArg) -> PerfCallGraphMode {
     }
 }
 
-fn parse_perf_selector(args: &DaemonCollectPerfArgs) -> Result<PerfTargetSelector> {
+fn parse_perf_selector(
+    has_pids: bool,
+    pids: Vec<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    cgroup: Option<String>,
+) -> Result<PerfTargetSelector> {
     let mut seen = 0usize;
-    if !args.pid.is_empty() {
+    if has_pids {
         seen += 1;
     }
-    if args.uid.is_some() {
+    if uid.is_some() {
         seen += 1;
     }
-    if args.gid.is_some() {
+    if gid.is_some() {
         seen += 1;
     }
-    if args.cgroup.is_some() {
+    if cgroup.is_some() {
         seen += 1;
     }
     if seen != 1 {
         anyhow::bail!("exactly one of --pid, --uid, --gid, or --cgroup is required");
     }
-    if !args.pid.is_empty() {
-        return Ok(PerfTargetSelector::Pid {
-            pids: args.pid.clone(),
-        });
+    if has_pids {
+        return Ok(PerfTargetSelector::Pid { pids });
     }
-    if let Some(uid) = args.uid {
+    if let Some(uid) = uid {
         return Ok(PerfTargetSelector::Uid { uid });
     }
-    if let Some(gid) = args.gid {
+    if let Some(gid) = gid {
         return Ok(PerfTargetSelector::Gid { gid });
     }
     Ok(PerfTargetSelector::Cgroup {
-        path: args
-            .cgroup
-            .clone()
-            .expect("cgroup selector is present when no other selector matches"),
+        path: cgroup.expect("cgroup selector is present when no other selector matches"),
     })
 }
 
@@ -675,6 +727,36 @@ mod tests {
                     assert_eq!(args.output.style.as_str(), "plain");
                 }
                 other => panic!("expected collect-perf command, got {other:?}"),
+            },
+            other => panic!("expected daemon command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_daemon_collect_sched_cgroup_target() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "daemon",
+            "collect-sched",
+            "--output-dir",
+            "artifacts/sched-a",
+            "--duration-ms",
+            "900",
+            "--cgroup",
+            "work.slice",
+            "--latency-by-pid",
+            "--style",
+            "plain",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Daemon(args)) => match args.command {
+                DaemonCommand::CollectSched(args) => {
+                    assert_eq!(args.cgroup.as_deref(), Some("work.slice"));
+                    assert!(args.latency_by_pid);
+                    assert_eq!(args.output.style.as_str(), "plain");
+                }
+                other => panic!("expected collect-sched command, got {other:?}"),
             },
             other => panic!("expected daemon command, got {other:?}"),
         }

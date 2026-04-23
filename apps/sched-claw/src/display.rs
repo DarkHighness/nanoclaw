@@ -1,7 +1,7 @@
 use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot,
     PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector,
-    SchedExtDaemonResponse,
+    SchedCollectionSnapshot, SchedExtDaemonResponse,
 };
 use crate::doctor::DoctorReport;
 use crate::history::{LoadedSessionDetail, SessionExportArtifact, SessionExportKind, preview_id};
@@ -296,6 +296,9 @@ pub fn render_daemon_response(response: &SchedExtDaemonResponse, style: OutputSt
         SchedExtDaemonResponse::PerfCollection { snapshot } => {
             render_perf_collection(snapshot, style)
         }
+        SchedExtDaemonResponse::SchedCollection { snapshot } => {
+            render_sched_collection(snapshot, style)
+        }
         SchedExtDaemonResponse::Ack { message, snapshot } => {
             let body = render_daemon_status(snapshot, style);
             if body.is_empty() {
@@ -390,6 +393,102 @@ pub fn render_perf_collection(snapshot: &PerfCollectionSnapshot, style: OutputSt
         ],
         style,
         Some(format!("perf argv: {}", snapshot.perf_argv.join(" "))),
+    )
+}
+
+pub fn render_sched_collection(snapshot: &SchedCollectionSnapshot, style: OutputStyle) -> String {
+    let selector = match &snapshot.selector {
+        PerfTargetSelector::Pid { pids } => {
+            format!(
+                "pid={}",
+                pids.iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+        PerfTargetSelector::Uid { uid } => format!("uid={uid}"),
+        PerfTargetSelector::Gid { gid } => format!("gid={gid}"),
+        PerfTargetSelector::Cgroup { path } => format!("cgroup={path}"),
+    };
+    render_sections(
+        &format!("Scheduler Trace · {}", snapshot.label),
+        &[
+            (
+                "Overview",
+                vec![
+                    ("Selector".to_string(), selector),
+                    (
+                        "Resolved PIDs".to_string(),
+                        join_or_none(
+                            snapshot
+                                .resolved_pids
+                                .iter()
+                                .map(u32::to_string)
+                                .collect::<Vec<_>>(),
+                        ),
+                    ),
+                    (
+                        "Duration".to_string(),
+                        format!("{} ms", snapshot.requested_duration_ms),
+                    ),
+                    (
+                        "Latency By PID".to_string(),
+                        bool_label(snapshot.latency_by_pid),
+                    ),
+                    ("Stop Reason".to_string(), snapshot.stop_reason.clone()),
+                    (
+                        "Exit".to_string(),
+                        format!("code={:?} signal={:?}", snapshot.exit_code, snapshot.signal),
+                    ),
+                ],
+            ),
+            (
+                "Artifacts",
+                vec![
+                    ("Output Dir".to_string(), snapshot.output_dir.clone()),
+                    ("Data".to_string(), snapshot.data_path.clone()),
+                    (
+                        "Record Command".to_string(),
+                        snapshot.record_command_path.clone(),
+                    ),
+                    ("Selector".to_string(), snapshot.selector_path.clone()),
+                    (
+                        "Record Stdout".to_string(),
+                        snapshot.record_stdout_path.clone(),
+                    ),
+                    (
+                        "Record Stderr".to_string(),
+                        snapshot.record_stderr_path.clone(),
+                    ),
+                    ("Timehist".to_string(), snapshot.timehist_path.clone()),
+                    (
+                        "Timehist Command".to_string(),
+                        snapshot.timehist_command_path.clone(),
+                    ),
+                    (
+                        "Timehist Stderr".to_string(),
+                        snapshot.timehist_stderr_path.clone(),
+                    ),
+                    ("Latency".to_string(), snapshot.latency_path.clone()),
+                    (
+                        "Latency Command".to_string(),
+                        snapshot.latency_command_path.clone(),
+                    ),
+                    (
+                        "Latency Stderr".to_string(),
+                        snapshot.latency_stderr_path.clone(),
+                    ),
+                ],
+            ),
+        ],
+        style,
+        Some(format!(
+            "record argv: {}\ntimehist argv: {}\nlatency argv: {}",
+            snapshot.record_argv.join(" "),
+            snapshot.timehist_argv.join(" "),
+            snapshot.latency_argv.join(" ")
+        )),
     )
 }
 
@@ -1062,10 +1161,12 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 mod tests {
     use super::{
         OutputStyle, render_daemon_status, render_doctor_report, render_perf_collection,
-        render_session_export_artifact, render_session_list, render_skill_list, render_tool_list,
+        render_sched_collection, render_session_export_artifact, render_session_list,
+        render_skill_list, render_tool_list,
     };
     use crate::daemon_protocol::{
         DaemonStatusSnapshot, PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector,
+        SchedCollectionSnapshot,
     };
     use crate::doctor::{DoctorCheck, DoctorReport, DoctorStatus};
     use crate::history::{SessionExportArtifact, SessionExportKind};
@@ -1192,6 +1293,50 @@ mod tests {
         assert!(rendered.contains("Perf Capture · perf-a"));
         assert!(rendered.contains("Mode: stat"));
         assert!(rendered.contains("Primary Output: /repo/artifacts/perf-a/perf.stat.csv"));
+    }
+
+    #[test]
+    fn renders_sched_collection_sections() {
+        let rendered = render_sched_collection(
+            &SchedCollectionSnapshot {
+                label: "sched-a".to_string(),
+                selector: PerfTargetSelector::Pid { pids: vec![7] },
+                resolved_pids: vec![7],
+                requested_duration_ms: 500,
+                output_dir: "/repo/artifacts/sched-a".to_string(),
+                data_path: "/repo/artifacts/sched-a/perf.sched.data".to_string(),
+                record_command_path: "/repo/artifacts/sched-a/perf.sched.record.command.json"
+                    .to_string(),
+                selector_path: "/repo/artifacts/sched-a/perf.sched.selector.json".to_string(),
+                record_stdout_path: "/repo/artifacts/sched-a/perf.sched.record.stdout.log"
+                    .to_string(),
+                record_stderr_path: "/repo/artifacts/sched-a/perf.sched.record.stderr.log"
+                    .to_string(),
+                timehist_path: "/repo/artifacts/sched-a/perf.sched.timehist.txt".to_string(),
+                timehist_command_path: "/repo/artifacts/sched-a/perf.sched.timehist.command.json"
+                    .to_string(),
+                timehist_stderr_path: "/repo/artifacts/sched-a/perf.sched.timehist.stderr.log"
+                    .to_string(),
+                latency_path: "/repo/artifacts/sched-a/perf.sched.latency.txt".to_string(),
+                latency_command_path: "/repo/artifacts/sched-a/perf.sched.latency.command.json"
+                    .to_string(),
+                latency_stderr_path: "/repo/artifacts/sched-a/perf.sched.latency.stderr.log"
+                    .to_string(),
+                latency_by_pid: true,
+                started_at_unix_ms: 1,
+                ended_at_unix_ms: 2,
+                stop_reason: "duration_elapsed".to_string(),
+                exit_code: Some(0),
+                signal: None,
+                record_argv: vec!["sched".to_string(), "record".to_string()],
+                timehist_argv: vec!["sched".to_string(), "timehist".to_string()],
+                latency_argv: vec!["sched".to_string(), "latency".to_string()],
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Scheduler Trace · sched-a"));
+        assert!(rendered.contains("Latency By PID: yes"));
+        assert!(rendered.contains("/repo/artifacts/sched-a/perf.sched.timehist.txt"));
     }
 
     #[test]

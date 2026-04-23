@@ -59,6 +59,8 @@ Use the lightest collector that can falsify the current hypothesis.
   - `perf sched record -- <workload>`
   - `perf sched timehist`
   - `perf sched latency`
+  - `scripts/collect_sched_timeline.sh --driver host ...`
+  - `scripts/collect_sched_timeline.sh --driver daemon ...`
 - Record:
   - short trace windows only
   - artifact paths for raw record plus derived summary
