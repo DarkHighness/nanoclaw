@@ -40,6 +40,7 @@ tags:
    - `scripts/render_perf_report.sh` turns `perf.data` into `perf report --stdio` and optional `perf script` artifacts
    - `scripts/summarize_sched_latency.py` turns `perf sched latency` output into top delayed tasks and durable Markdown or JSON summaries
    - `scripts/summarize_metrics.py` remains useful for `metrics.env` style files
+   - procfs, PSI, and topology snapshot artifacts are intentionally plain files plus index json; inspect them directly or reduce them with one-off notebook or script logic rather than waiting for the host to impose a fixed scorer
 5. Persist the conclusion as normal artifacts or notes.
    - include the evidence paths, facts, inferences, unknowns, recommendations, and confidence
    - `scripts/compose_perf_evidence.py` is a good default when you want a durable evidence note without inventing a one-off Markdown shape

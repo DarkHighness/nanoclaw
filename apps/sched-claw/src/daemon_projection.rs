@@ -28,6 +28,9 @@ pub enum DaemonProjectionName {
     Stop,
     CollectPerf,
     CollectSched,
+    CollectState,
+    CollectPressure,
+    CollectTopology,
 }
 
 impl DaemonProjectionName {
@@ -41,6 +44,9 @@ impl DaemonProjectionName {
             Self::Stop => "stop",
             Self::CollectPerf => "collect-perf",
             Self::CollectSched => "collect-sched",
+            Self::CollectState => "collect-state",
+            Self::CollectPressure => "collect-pressure",
+            Self::CollectTopology => "collect-topology",
         }
     }
 }
@@ -141,6 +147,37 @@ pub fn expected_daemon_projections() -> Vec<DaemonProjectionDescriptor> {
                 "sched-claw daemon collect-sched --pid 4242 --duration-ms 1000 --output-dir artifacts/sched-a",
             ],
         },
+        DaemonProjectionDescriptor {
+            name: DaemonProjectionName::CollectState,
+            kind: DaemonProjectionKind::Invocation,
+            summary: "Capture read-only procfs scheduler state for an explicit pid, uid, gid, or cgroup selector.",
+            capabilities: vec![DaemonCapabilityName::SchedStateSnapshot],
+            selectors: selectors_for_capabilities(&[DaemonCapabilityName::SchedStateSnapshot]),
+            examples: vec![
+                "sched-claw daemon collect-state --pid 4242 --output-dir artifacts/state-a",
+            ],
+        },
+        DaemonProjectionDescriptor {
+            name: DaemonProjectionName::CollectPressure,
+            kind: DaemonProjectionKind::Invocation,
+            summary: "Capture read-only PSI and cgroup pressure context for an explicit pid, uid, gid, or cgroup selector.",
+            capabilities: vec![DaemonCapabilityName::PressureSnapshot],
+            selectors: selectors_for_capabilities(&[DaemonCapabilityName::PressureSnapshot]),
+            examples: vec![
+                "sched-claw daemon collect-pressure --cgroup work.slice --output-dir artifacts/pressure-a",
+            ],
+        },
+        DaemonProjectionDescriptor {
+            name: DaemonProjectionName::CollectTopology,
+            kind: DaemonProjectionKind::Invocation,
+            summary: "Capture read-only CPU, NUMA, SMT, and selector-scoped cpuset topology context.",
+            capabilities: vec![DaemonCapabilityName::TopologySnapshot],
+            selectors: selectors_for_capabilities(&[DaemonCapabilityName::TopologySnapshot]),
+            examples: vec![
+                "sched-claw daemon collect-topology --output-dir artifacts/topology-a",
+                "sched-claw daemon collect-topology --pid 4242 --output-dir artifacts/topology-a",
+            ],
+        },
     ]
 }
 
@@ -163,6 +200,9 @@ pub fn parse_daemon_projection_name(query: &str) -> Option<DaemonProjectionName>
         "stop" => Some(DaemonProjectionName::Stop),
         "collect-perf" => Some(DaemonProjectionName::CollectPerf),
         "collect-sched" => Some(DaemonProjectionName::CollectSched),
+        "collect-state" => Some(DaemonProjectionName::CollectState),
+        "collect-pressure" => Some(DaemonProjectionName::CollectPressure),
+        "collect-topology" => Some(DaemonProjectionName::CollectTopology),
         _ => None,
     }
 }
@@ -184,6 +224,15 @@ pub fn parse_daemon_inspection_target(query: &str) -> Option<DaemonInspectionTar
         )),
         "scheduler_trace_capture" => Some(DaemonInspectionTarget::Capability(
             DaemonCapabilityName::SchedulerTraceCapture,
+        )),
+        "sched_state_snapshot" => Some(DaemonInspectionTarget::Capability(
+            DaemonCapabilityName::SchedStateSnapshot,
+        )),
+        "pressure_snapshot" => Some(DaemonInspectionTarget::Capability(
+            DaemonCapabilityName::PressureSnapshot,
+        )),
+        "topology_snapshot" => Some(DaemonInspectionTarget::Capability(
+            DaemonCapabilityName::TopologySnapshot,
         )),
         _ => None,
     }
@@ -256,6 +305,10 @@ mod tests {
             parse_daemon_projection_name("collect-perf"),
             Some(DaemonProjectionName::CollectPerf)
         );
+        assert_eq!(
+            parse_daemon_projection_name("collect-topology"),
+            Some(DaemonProjectionName::CollectTopology)
+        );
         assert_eq!(parse_daemon_projection_name("unknown"), None);
     }
 
@@ -271,6 +324,12 @@ mod tests {
             parse_daemon_inspection_target("perf_record_capture"),
             Some(DaemonInspectionTarget::Capability(
                 DaemonCapabilityName::PerfRecordCapture
+            ))
+        );
+        assert_eq!(
+            parse_daemon_inspection_target("pressure_snapshot"),
+            Some(DaemonInspectionTarget::Capability(
+                DaemonCapabilityName::PressureSnapshot
             ))
         );
         assert_eq!(parse_daemon_inspection_target("unknown"), None);
@@ -293,6 +352,11 @@ mod tests {
             projections
                 .iter()
                 .any(|projection| projection.name == DaemonProjectionName::CollectPerf)
+        );
+        assert!(
+            projections
+                .iter()
+                .any(|projection| projection.name == DaemonProjectionName::CollectTopology)
         );
     }
 }

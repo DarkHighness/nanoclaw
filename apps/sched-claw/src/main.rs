@@ -8,7 +8,7 @@ use sched_claw::daemon_inspection::{
 };
 use sched_claw::daemon_projection::{DaemonInspectionTarget, parse_daemon_inspection_target};
 use sched_claw::daemon_protocol::{
-    DaemonCapabilityInvocation, PerfCallGraphMode, PerfCollectionMode, PerfTargetSelector,
+    DaemonCapabilityInvocation, DaemonTargetSelector, PerfCallGraphMode, PerfCollectionMode,
     SchedClawDaemonRequest, SchedClawDaemonResponse,
 };
 use sched_claw::display::{
@@ -180,6 +180,9 @@ enum DaemonCommand {
     Activate(DaemonActivateArgs),
     CollectPerf(DaemonCollectPerfArgs),
     CollectSched(DaemonCollectSchedArgs),
+    CollectState(DaemonCollectStateArgs),
+    CollectPressure(DaemonCollectPressureArgs),
+    CollectTopology(DaemonCollectTopologyArgs),
     Logs(DaemonLogsArgs),
     Stop(DaemonStopArgs),
 }
@@ -286,6 +289,66 @@ struct DaemonCollectSchedArgs {
     cgroup: Option<String>,
     #[arg(long)]
     latency_by_pid: bool,
+    #[arg(long)]
+    overwrite: bool,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct DaemonCollectStateArgs {
+    #[arg(long, value_name = "TEXT")]
+    label: Option<String>,
+    #[arg(long, value_name = "DIR")]
+    output_dir: String,
+    #[arg(long, value_name = "PID", value_delimiter = ',')]
+    pid: Vec<u32>,
+    #[arg(long, value_name = "UID")]
+    uid: Option<u32>,
+    #[arg(long, value_name = "GID")]
+    gid: Option<u32>,
+    #[arg(long, value_name = "PATH")]
+    cgroup: Option<String>,
+    #[arg(long)]
+    overwrite: bool,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct DaemonCollectPressureArgs {
+    #[arg(long, value_name = "TEXT")]
+    label: Option<String>,
+    #[arg(long, value_name = "DIR")]
+    output_dir: String,
+    #[arg(long, value_name = "PID", value_delimiter = ',')]
+    pid: Vec<u32>,
+    #[arg(long, value_name = "UID")]
+    uid: Option<u32>,
+    #[arg(long, value_name = "GID")]
+    gid: Option<u32>,
+    #[arg(long, value_name = "PATH")]
+    cgroup: Option<String>,
+    #[arg(long)]
+    overwrite: bool,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct DaemonCollectTopologyArgs {
+    #[arg(long, value_name = "TEXT")]
+    label: Option<String>,
+    #[arg(long, value_name = "DIR")]
+    output_dir: String,
+    #[arg(long, value_name = "PID", value_delimiter = ',')]
+    pid: Vec<u32>,
+    #[arg(long, value_name = "UID")]
+    uid: Option<u32>,
+    #[arg(long, value_name = "GID")]
+    gid: Option<u32>,
+    #[arg(long, value_name = "PATH")]
+    cgroup: Option<String>,
     #[arg(long)]
     overwrite: bool,
     #[command(flatten)]
@@ -530,7 +593,7 @@ async fn run_daemon_command(
             args.output.style,
         ),
         DaemonCommand::CollectPerf(args) => {
-            let selector = parse_perf_selector(
+            let selector = parse_required_selector(
                 !args.pid.is_empty(),
                 args.pid.clone(),
                 args.uid,
@@ -555,7 +618,7 @@ async fn run_daemon_command(
             )
         }
         DaemonCommand::CollectSched(args) => {
-            let selector = parse_perf_selector(
+            let selector = parse_required_selector(
                 !args.pid.is_empty(),
                 args.pid.clone(),
                 args.uid,
@@ -570,6 +633,66 @@ async fn run_daemon_command(
                         output_dir: args.output_dir,
                         duration_ms: args.duration_ms,
                         latency_by_pid: args.latency_by_pid,
+                        overwrite: args.overwrite,
+                    },
+                },
+                args.output.style,
+            )
+        }
+        DaemonCommand::CollectState(args) => {
+            let selector = parse_required_selector(
+                !args.pid.is_empty(),
+                args.pid.clone(),
+                args.uid,
+                args.gid,
+                args.cgroup.clone(),
+            )?;
+            (
+                SchedClawDaemonRequest::Invoke {
+                    invocation: DaemonCapabilityInvocation::SchedStateSnapshot {
+                        label: args.label,
+                        selector,
+                        output_dir: args.output_dir,
+                        overwrite: args.overwrite,
+                    },
+                },
+                args.output.style,
+            )
+        }
+        DaemonCommand::CollectPressure(args) => {
+            let selector = parse_required_selector(
+                !args.pid.is_empty(),
+                args.pid.clone(),
+                args.uid,
+                args.gid,
+                args.cgroup.clone(),
+            )?;
+            (
+                SchedClawDaemonRequest::Invoke {
+                    invocation: DaemonCapabilityInvocation::PressureSnapshot {
+                        label: args.label,
+                        selector,
+                        output_dir: args.output_dir,
+                        overwrite: args.overwrite,
+                    },
+                },
+                args.output.style,
+            )
+        }
+        DaemonCommand::CollectTopology(args) => {
+            let selector = parse_optional_selector(
+                !args.pid.is_empty(),
+                args.pid.clone(),
+                args.uid,
+                args.gid,
+                args.cgroup.clone(),
+            )?;
+            (
+                SchedClawDaemonRequest::Invoke {
+                    invocation: DaemonCapabilityInvocation::TopologySnapshot {
+                        label: args.label,
+                        selector,
+                        output_dir: args.output_dir,
                         overwrite: args.overwrite,
                     },
                 },
@@ -643,13 +766,25 @@ fn map_perf_call_graph(value: PerfCallGraphArg) -> PerfCallGraphMode {
     }
 }
 
-fn parse_perf_selector(
+fn parse_required_selector(
     has_pids: bool,
     pids: Vec<u32>,
     uid: Option<u32>,
     gid: Option<u32>,
     cgroup: Option<String>,
-) -> Result<PerfTargetSelector> {
+) -> Result<DaemonTargetSelector> {
+    parse_optional_selector(has_pids, pids, uid, gid, cgroup)?.ok_or_else(|| {
+        anyhow::anyhow!("exactly one of --pid, --uid, --gid, or --cgroup is required")
+    })
+}
+
+fn parse_optional_selector(
+    has_pids: bool,
+    pids: Vec<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    cgroup: Option<String>,
+) -> Result<Option<DaemonTargetSelector>> {
     let mut seen = 0usize;
     if has_pids {
         seen += 1;
@@ -663,21 +798,24 @@ fn parse_perf_selector(
     if cgroup.is_some() {
         seen += 1;
     }
-    if seen != 1 {
-        anyhow::bail!("exactly one of --pid, --uid, --gid, or --cgroup is required");
+    if seen > 1 {
+        anyhow::bail!("at most one of --pid, --uid, --gid, or --cgroup is allowed");
+    }
+    if seen == 0 {
+        return Ok(None);
     }
     if has_pids {
-        return Ok(PerfTargetSelector::Pid { pids });
+        return Ok(Some(DaemonTargetSelector::Pid { pids }));
     }
     if let Some(uid) = uid {
-        return Ok(PerfTargetSelector::Uid { uid });
+        return Ok(Some(DaemonTargetSelector::Uid { uid }));
     }
     if let Some(gid) = gid {
-        return Ok(PerfTargetSelector::Gid { gid });
+        return Ok(Some(DaemonTargetSelector::Gid { gid }));
     }
-    Ok(PerfTargetSelector::Cgroup {
+    Ok(Some(DaemonTargetSelector::Cgroup {
         path: cgroup.expect("cgroup selector is present when no other selector matches"),
-    })
+    }))
 }
 
 fn init_tracing() {
@@ -807,6 +945,87 @@ mod tests {
                     assert_eq!(args.output.style.as_str(), "plain");
                 }
                 other => panic!("expected collect-sched command, got {other:?}"),
+            },
+            other => panic!("expected daemon command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_daemon_collect_state_uid_target() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "daemon",
+            "collect-state",
+            "--output-dir",
+            "artifacts/state-a",
+            "--uid",
+            "1000",
+            "--style",
+            "plain",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Daemon(args)) => match args.command {
+                DaemonCommand::CollectState(args) => {
+                    assert_eq!(args.uid, Some(1000));
+                    assert_eq!(args.output.style.as_str(), "plain");
+                }
+                other => panic!("expected collect-state command, got {other:?}"),
+            },
+            other => panic!("expected daemon command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_daemon_collect_pressure_gid_target() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "daemon",
+            "collect-pressure",
+            "--output-dir",
+            "artifacts/pressure-a",
+            "--gid",
+            "123",
+            "--overwrite",
+            "--style",
+            "plain",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Daemon(args)) => match args.command {
+                DaemonCommand::CollectPressure(args) => {
+                    assert_eq!(args.gid, Some(123));
+                    assert!(args.overwrite);
+                    assert_eq!(args.output.style.as_str(), "plain");
+                }
+                other => panic!("expected collect-pressure command, got {other:?}"),
+            },
+            other => panic!("expected daemon command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_daemon_collect_topology_without_selector() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "daemon",
+            "collect-topology",
+            "--output-dir",
+            "artifacts/topology-a",
+            "--style",
+            "plain",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Daemon(args)) => match args.command {
+                DaemonCommand::CollectTopology(args) => {
+                    assert!(args.pid.is_empty());
+                    assert!(args.uid.is_none());
+                    assert!(args.gid.is_none());
+                    assert!(args.cgroup.is_none());
+                    assert_eq!(args.output.style.as_str(), "plain");
+                }
+                other => panic!("expected collect-topology command, got {other:?}"),
             },
             other => panic!("expected daemon command, got {other:?}"),
         }

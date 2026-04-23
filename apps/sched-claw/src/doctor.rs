@@ -137,6 +137,33 @@ pub async fn collect_doctor_report(
         "used to capture perf sched record plus timehist and latency artifacts without teaching the host a fixed workflow",
     ));
     checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-perf-collection/scripts/collect_sched_state.sh",
+        ),
+        "collection",
+        "scheduler state snapshot helper",
+        false,
+        "used to snapshot procfs scheduler state through either host reads or the constrained daemon capability surface",
+    ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-perf-collection/scripts/collect_pressure_snapshot.sh",
+        ),
+        "collection",
+        "pressure snapshot helper",
+        false,
+        "used to snapshot PSI plus selector-scoped cgroup pressure without teaching the host a fixed workflow",
+    ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-perf-collection/scripts/collect_topology_snapshot.sh",
+        ),
+        "collection",
+        "topology snapshot helper",
+        false,
+        "used to snapshot CPU, NUMA, SMT, and selector-scoped cpuset topology context",
+    ));
+    checks.push(helper_script_check(
         workspace_root
             .join("apps/sched-claw/skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh"),
         "analysis",
@@ -229,6 +256,39 @@ pub async fn collect_doctor_report(
         true,
         "required for libbpf CO-RE verification on most hosts",
         Some("install or boot a kernel that exposes /sys/kernel/btf/vmlinux".to_string()),
+    ));
+    checks.push(path_presence_check(
+        "kernel",
+        "/proc/schedstat",
+        Path::new("/proc/schedstat"),
+        false,
+        "used by scheduler state snapshot helpers and privileged read-only daemon capture",
+        Some(
+            "use a kernel that exposes /proc/schedstat if you need queue and wait counters"
+                .to_string(),
+        ),
+    ));
+    checks.push(path_presence_check(
+        "kernel",
+        "PSI cpu pressure",
+        Path::new("/proc/pressure/cpu"),
+        false,
+        "used by pressure snapshot helpers and daemon capture",
+        Some(
+            "use a kernel that exposes /proc/pressure/* if you need PSI-backed bottleneck triage"
+                .to_string(),
+        ),
+    ));
+    checks.push(path_presence_check(
+        "kernel",
+        "CPU topology sysfs",
+        Path::new("/sys/devices/system/cpu/online"),
+        false,
+        "used by topology snapshot helpers and daemon capture",
+        Some(
+            "use a kernel that exposes CPU topology sysfs if you need placement or cpuset triage"
+                .to_string(),
+        ),
     ));
     checks.push(path_presence_check(
         "kernel",

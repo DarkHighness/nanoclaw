@@ -3,9 +3,9 @@ use crate::daemon_projection::{
 };
 use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DaemonCapabilityDescriptor, DaemonCapabilityResult,
-    DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot, PerfCallGraphMode,
-    PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector, SchedClawDaemonResponse,
-    SchedCollectionSnapshot,
+    DaemonLogsSnapshot, DaemonStatusSnapshot, DaemonTargetSelector, DeploymentExitSnapshot,
+    PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot, PressureSnapshot,
+    SchedClawDaemonResponse, SchedCollectionSnapshot, SchedStateSnapshot, TopologySnapshot,
 };
 use crate::doctor::DoctorReport;
 use crate::history::{LoadedSessionDetail, SessionExportArtifact, SessionExportKind, preview_id};
@@ -319,6 +319,15 @@ fn render_daemon_invocation(result: &DaemonCapabilityResult, style: OutputStyle)
         DaemonCapabilityResult::SchedulerTraceCapture { snapshot } => {
             render_sched_collection(snapshot, style)
         }
+        DaemonCapabilityResult::SchedStateCapture { snapshot } => {
+            render_sched_state_snapshot(snapshot, style)
+        }
+        DaemonCapabilityResult::PressureCapture { snapshot } => {
+            render_pressure_snapshot(snapshot, style)
+        }
+        DaemonCapabilityResult::TopologyCapture { snapshot } => {
+            render_topology_snapshot(snapshot, style)
+        }
     }
 }
 
@@ -622,20 +631,7 @@ fn render_named_daemon_capabilities(
 }
 
 pub fn render_perf_collection(snapshot: &PerfCollectionSnapshot, style: OutputStyle) -> String {
-    let selector = match &snapshot.selector {
-        PerfTargetSelector::Pid { pids } => {
-            format!(
-                "pid={}",
-                pids.iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
-        }
-        PerfTargetSelector::Uid { uid } => format!("uid={uid}"),
-        PerfTargetSelector::Gid { gid } => format!("gid={gid}"),
-        PerfTargetSelector::Cgroup { path } => format!("cgroup={path}"),
-    };
+    let selector = render_target_selector(&snapshot.selector);
     let call_graph = snapshot
         .call_graph
         .map(perf_call_graph_label)
@@ -707,20 +703,7 @@ pub fn render_perf_collection(snapshot: &PerfCollectionSnapshot, style: OutputSt
 }
 
 pub fn render_sched_collection(snapshot: &SchedCollectionSnapshot, style: OutputStyle) -> String {
-    let selector = match &snapshot.selector {
-        PerfTargetSelector::Pid { pids } => {
-            format!(
-                "pid={}",
-                pids.iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
-        }
-        PerfTargetSelector::Uid { uid } => format!("uid={uid}"),
-        PerfTargetSelector::Gid { gid } => format!("gid={gid}"),
-        PerfTargetSelector::Cgroup { path } => format!("cgroup={path}"),
-    };
+    let selector = render_target_selector(&snapshot.selector);
     render_sections(
         &format!("Scheduler Trace · {}", snapshot.label),
         &[
@@ -800,6 +783,247 @@ pub fn render_sched_collection(snapshot: &SchedCollectionSnapshot, style: Output
             snapshot.latency_argv.join(" ")
         )),
     )
+}
+
+pub fn render_sched_state_snapshot(snapshot: &SchedStateSnapshot, style: OutputStyle) -> String {
+    render_sections(
+        &format!("Scheduler State Snapshot · {}", snapshot.label),
+        &[
+            (
+                "Overview",
+                vec![
+                    (
+                        "Selector".to_string(),
+                        render_target_selector(&snapshot.selector),
+                    ),
+                    (
+                        "Resolved PIDs".to_string(),
+                        join_or_none(
+                            snapshot
+                                .resolved_pids
+                                .iter()
+                                .map(u32::to_string)
+                                .collect::<Vec<_>>(),
+                        ),
+                    ),
+                    (
+                        "PID Artifacts".to_string(),
+                        snapshot.pid_artifacts.len().to_string(),
+                    ),
+                ],
+            ),
+            (
+                "Artifacts",
+                vec![
+                    ("Output Dir".to_string(), snapshot.output_dir.clone()),
+                    (
+                        "Global /proc/schedstat".to_string(),
+                        snapshot.global_schedstat_path.clone(),
+                    ),
+                    ("Selector".to_string(), snapshot.selector_path.clone()),
+                    ("Index".to_string(), snapshot.index_path.clone()),
+                ],
+            ),
+        ],
+        style,
+        Some(format!(
+            "captured pid files: {}",
+            snapshot
+                .pid_artifacts
+                .iter()
+                .map(|artifact| artifact.pid.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    )
+}
+
+pub fn render_pressure_snapshot(snapshot: &PressureSnapshot, style: OutputStyle) -> String {
+    render_sections(
+        &format!("Pressure Snapshot · {}", snapshot.label),
+        &[
+            (
+                "Overview",
+                vec![
+                    (
+                        "Selector".to_string(),
+                        render_target_selector(&snapshot.selector),
+                    ),
+                    (
+                        "Resolved PIDs".to_string(),
+                        join_or_none(
+                            snapshot
+                                .resolved_pids
+                                .iter()
+                                .map(u32::to_string)
+                                .collect::<Vec<_>>(),
+                        ),
+                    ),
+                    (
+                        "PID Memberships".to_string(),
+                        snapshot.pid_memberships.len().to_string(),
+                    ),
+                    (
+                        "Cgroup Snapshots".to_string(),
+                        snapshot.cgroup_artifacts.len().to_string(),
+                    ),
+                ],
+            ),
+            (
+                "Artifacts",
+                vec![
+                    ("Output Dir".to_string(), snapshot.output_dir.clone()),
+                    (
+                        "proc.pressure cpu".to_string(),
+                        snapshot
+                            .proc_cpu_pressure_path
+                            .clone()
+                            .unwrap_or_else(|| "<missing>".to_string()),
+                    ),
+                    (
+                        "proc.pressure io".to_string(),
+                        snapshot
+                            .proc_io_pressure_path
+                            .clone()
+                            .unwrap_or_else(|| "<missing>".to_string()),
+                    ),
+                    (
+                        "proc.pressure memory".to_string(),
+                        snapshot
+                            .proc_memory_pressure_path
+                            .clone()
+                            .unwrap_or_else(|| "<missing>".to_string()),
+                    ),
+                    ("Selector".to_string(), snapshot.selector_path.clone()),
+                    ("Index".to_string(), snapshot.index_path.clone()),
+                ],
+            ),
+        ],
+        style,
+        Some(format!(
+            "cgroups: {}",
+            join_or_none(
+                snapshot
+                    .cgroup_artifacts
+                    .iter()
+                    .map(|artifact| artifact.cgroup_path.clone())
+                    .collect::<Vec<_>>(),
+            )
+        )),
+    )
+}
+
+pub fn render_topology_snapshot(snapshot: &TopologySnapshot, style: OutputStyle) -> String {
+    render_sections(
+        &format!("Topology Snapshot · {}", snapshot.label),
+        &[
+            (
+                "Overview",
+                vec![
+                    (
+                        "Selector".to_string(),
+                        snapshot
+                            .selector
+                            .as_ref()
+                            .map(render_target_selector)
+                            .unwrap_or_else(|| "<none>".to_string()),
+                    ),
+                    (
+                        "Resolved PIDs".to_string(),
+                        join_or_none(
+                            snapshot
+                                .resolved_pids
+                                .iter()
+                                .map(u32::to_string)
+                                .collect::<Vec<_>>(),
+                        ),
+                    ),
+                    (
+                        "PID Contexts".to_string(),
+                        snapshot.pid_contexts.len().to_string(),
+                    ),
+                    (
+                        "Cgroup Contexts".to_string(),
+                        snapshot.cgroup_contexts.len().to_string(),
+                    ),
+                ],
+            ),
+            (
+                "Artifacts",
+                vec![
+                    ("Output Dir".to_string(), snapshot.output_dir.clone()),
+                    (
+                        "CPU Online".to_string(),
+                        snapshot
+                            .cpu_online_path
+                            .clone()
+                            .unwrap_or_else(|| "<missing>".to_string()),
+                    ),
+                    (
+                        "CPU Possible".to_string(),
+                        snapshot
+                            .cpu_possible_path
+                            .clone()
+                            .unwrap_or_else(|| "<missing>".to_string()),
+                    ),
+                    (
+                        "SMT Active".to_string(),
+                        snapshot
+                            .smt_active_path
+                            .clone()
+                            .unwrap_or_else(|| "<missing>".to_string()),
+                    ),
+                    (
+                        "NUMA Online".to_string(),
+                        snapshot
+                            .node_online_path
+                            .clone()
+                            .unwrap_or_else(|| "<missing>".to_string()),
+                    ),
+                    (
+                        "Topology Summary".to_string(),
+                        snapshot.topology_summary_path.clone(),
+                    ),
+                    (
+                        "Selector".to_string(),
+                        snapshot
+                            .selector_path
+                            .clone()
+                            .unwrap_or_else(|| "<none>".to_string()),
+                    ),
+                    ("Index".to_string(), snapshot.index_path.clone()),
+                ],
+            ),
+        ],
+        style,
+        Some(format!(
+            "cgroup contexts: {}",
+            join_or_none(
+                snapshot
+                    .cgroup_contexts
+                    .iter()
+                    .map(|artifact| artifact.cgroup_path.clone())
+                    .collect::<Vec<_>>(),
+            )
+        )),
+    )
+}
+
+fn render_target_selector(selector: &DaemonTargetSelector) -> String {
+    match selector {
+        DaemonTargetSelector::Pid { pids } => {
+            format!(
+                "pid={}",
+                pids.iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+        DaemonTargetSelector::Uid { uid } => format!("uid={uid}"),
+        DaemonTargetSelector::Gid { gid } => format!("gid={gid}"),
+        DaemonTargetSelector::Cgroup { path } => format!("cgroup={path}"),
+    }
 }
 
 fn perf_collection_mode_label(mode: PerfCollectionMode) -> String {
@@ -1500,6 +1724,9 @@ fn daemon_capability_kind_label(
         crate::daemon_protocol::DaemonCapabilityKind::SchedulerTraceCapture => {
             "scheduler_trace_capture"
         }
+        crate::daemon_protocol::DaemonCapabilityKind::SchedStateSnapshot => "sched_state_snapshot",
+        crate::daemon_protocol::DaemonCapabilityKind::PressureSnapshot => "pressure_snapshot",
+        crate::daemon_protocol::DaemonCapabilityKind::TopologySnapshot => "topology_snapshot",
     }
 }
 
@@ -1551,16 +1778,17 @@ mod tests {
     use super::{
         OutputStyle, render_daemon_capabilities, render_daemon_projection_detail,
         render_daemon_projection_list, render_daemon_status, render_doctor_report,
-        render_perf_collection, render_sched_collection, render_session_export_artifact,
-        render_session_list, render_skill_list, render_tool_list,
+        render_perf_collection, render_pressure_snapshot, render_sched_collection,
+        render_sched_state_snapshot, render_session_export_artifact, render_session_list,
+        render_skill_list, render_tool_list, render_topology_snapshot,
     };
     use crate::daemon_projection::{
         DaemonProjectionDescriptor, DaemonProjectionKind, expected_daemon_projections,
     };
     use crate::daemon_protocol::{
         DaemonCapabilityDescriptor, DaemonCapabilityKind, DaemonCapabilityName, DaemonSelectorKind,
-        DaemonStatusSnapshot, PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector,
-        SchedCollectionSnapshot,
+        DaemonStatusSnapshot, DaemonTargetSelector, PerfCollectionMode, PerfCollectionSnapshot,
+        PressureSnapshot, SchedCollectionSnapshot, SchedStateSnapshot, TopologySnapshot,
     };
     use crate::doctor::{DoctorCheck, DoctorReport, DoctorStatus};
     use crate::history::{SessionExportArtifact, SessionExportKind};
@@ -1733,7 +1961,7 @@ mod tests {
             &PerfCollectionSnapshot {
                 label: "perf-a".to_string(),
                 mode: PerfCollectionMode::Stat,
-                selector: PerfTargetSelector::Pid { pids: vec![42] },
+                selector: DaemonTargetSelector::Pid { pids: vec![42] },
                 resolved_pids: vec![42],
                 requested_duration_ms: 500,
                 events: vec!["cycles".to_string()],
@@ -1764,7 +1992,7 @@ mod tests {
         let rendered = render_sched_collection(
             &SchedCollectionSnapshot {
                 label: "sched-a".to_string(),
-                selector: PerfTargetSelector::Pid { pids: vec![7] },
+                selector: DaemonTargetSelector::Pid { pids: vec![7] },
                 resolved_pids: vec![7],
                 requested_duration_ms: 500,
                 output_dir: "/repo/artifacts/sched-a".to_string(),
@@ -1801,6 +2029,83 @@ mod tests {
         assert!(rendered.contains("Scheduler Trace · sched-a"));
         assert!(rendered.contains("Latency By PID: yes"));
         assert!(rendered.contains("/repo/artifacts/sched-a/perf.sched.timehist.txt"));
+    }
+
+    #[test]
+    fn renders_sched_state_snapshot_sections() {
+        let rendered = render_sched_state_snapshot(
+            &SchedStateSnapshot {
+                label: "state-a".to_string(),
+                selector: DaemonTargetSelector::Pid { pids: vec![42] },
+                resolved_pids: vec![42],
+                output_dir: "/repo/artifacts/state-a".to_string(),
+                global_schedstat_path: "/repo/artifacts/state-a/proc.schedstat".to_string(),
+                selector_path: "/repo/artifacts/state-a/sched.state.selector.json".to_string(),
+                index_path: "/repo/artifacts/state-a/sched.state.index.json".to_string(),
+                started_at_unix_ms: 1,
+                ended_at_unix_ms: 2,
+                pid_artifacts: vec![],
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Scheduler State Snapshot · state-a"));
+        assert!(rendered.contains("Global /proc/schedstat"));
+    }
+
+    #[test]
+    fn renders_pressure_snapshot_sections() {
+        let rendered = render_pressure_snapshot(
+            &PressureSnapshot {
+                label: "pressure-a".to_string(),
+                selector: DaemonTargetSelector::Cgroup {
+                    path: "work.slice".to_string(),
+                },
+                resolved_pids: vec![42],
+                output_dir: "/repo/artifacts/pressure-a".to_string(),
+                selector_path: "/repo/artifacts/pressure-a/pressure.selector.json".to_string(),
+                index_path: "/repo/artifacts/pressure-a/pressure.index.json".to_string(),
+                proc_cpu_pressure_path: Some(
+                    "/repo/artifacts/pressure-a/proc.pressure.cpu".to_string(),
+                ),
+                proc_io_pressure_path: None,
+                proc_memory_pressure_path: None,
+                started_at_unix_ms: 1,
+                ended_at_unix_ms: 2,
+                pid_memberships: vec![],
+                cgroup_artifacts: vec![],
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Pressure Snapshot · pressure-a"));
+        assert!(rendered.contains("proc.pressure cpu"));
+    }
+
+    #[test]
+    fn renders_topology_snapshot_sections() {
+        let rendered = render_topology_snapshot(
+            &TopologySnapshot {
+                label: "topology-a".to_string(),
+                selector: None,
+                resolved_pids: vec![],
+                output_dir: "/repo/artifacts/topology-a".to_string(),
+                selector_path: None,
+                index_path: "/repo/artifacts/topology-a/topology.index.json".to_string(),
+                cpu_online_path: Some("/repo/artifacts/topology-a/sys.cpu.online".to_string()),
+                cpu_possible_path: Some("/repo/artifacts/topology-a/sys.cpu.possible".to_string()),
+                cpu_present_path: None,
+                smt_active_path: None,
+                node_online_path: None,
+                topology_summary_path: "/repo/artifacts/topology-a/topology.summary.json"
+                    .to_string(),
+                started_at_unix_ms: 1,
+                ended_at_unix_ms: 2,
+                pid_contexts: vec![],
+                cgroup_contexts: vec![],
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Topology Snapshot · topology-a"));
+        assert!(rendered.contains("Topology Summary"));
     }
 
     #[test]

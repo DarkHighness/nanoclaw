@@ -15,6 +15,9 @@ fn shell_helper_scripts_have_valid_bash_syntax() -> Result<()> {
     let scripts = [
         repo_root().join("skills/sched-perf-collection/scripts/collect_perf.sh"),
         repo_root().join("skills/sched-perf-collection/scripts/collect_sched_timeline.sh"),
+        repo_root().join("skills/sched-perf-collection/scripts/collect_sched_state.sh"),
+        repo_root().join("skills/sched-perf-collection/scripts/collect_pressure_snapshot.sh"),
+        repo_root().join("skills/sched-perf-collection/scripts/collect_topology_snapshot.sh"),
         repo_root().join("skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh"),
         repo_root().join("skills/sched-perf-analysis/scripts/render_perf_report.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh"),
@@ -257,6 +260,72 @@ fn compose_sched_trace_evidence_writes_markdown() -> Result<()> {
 
     let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(json_path)?)?;
     assert_eq!(parsed["top_offenders"].as_array().unwrap().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn collect_sched_state_helper_captures_proc_artifacts() -> Result<()> {
+    let dir = tempdir()?;
+    let output = dir.path().join("state");
+    let script = repo_root().join("skills/sched-perf-collection/scripts/collect_sched_state.sh");
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--output",
+            output.to_str().unwrap(),
+            "--pid",
+            &std::process::id().to_string(),
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "sched state helper failed");
+    assert!(output.join("proc.schedstat").is_file());
+    assert!(output.join("collector.command.txt").is_file());
+    assert!(output.join("selector.txt").is_file());
+    Ok(())
+}
+
+#[test]
+fn collect_pressure_snapshot_helper_captures_pressure_artifacts() -> Result<()> {
+    let dir = tempdir()?;
+    let output = dir.path().join("pressure");
+    let script =
+        repo_root().join("skills/sched-perf-collection/scripts/collect_pressure_snapshot.sh");
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--output",
+            output.to_str().unwrap(),
+            "--pid",
+            &std::process::id().to_string(),
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "pressure helper failed");
+    assert!(output.join("proc.pressure.cpu").is_file());
+    assert!(output.join("collector.command.txt").is_file());
+    assert!(output.join("selector.txt").is_file());
+    Ok(())
+}
+
+#[test]
+fn collect_topology_snapshot_helper_captures_topology_artifacts() -> Result<()> {
+    let dir = tempdir()?;
+    let output = dir.path().join("topology");
+    let script =
+        repo_root().join("skills/sched-perf-collection/scripts/collect_topology_snapshot.sh");
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .args(["--output", output.to_str().unwrap()])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "topology helper failed");
+    assert!(output.join("sys.cpu.online").is_file() || output.join("sys.cpu.possible").is_file());
+    assert!(output.join("collector.command.txt").is_file());
+    assert!(output.join("selector.txt").is_file());
     Ok(())
 }
 

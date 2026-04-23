@@ -170,6 +170,18 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("sched-perf-collection/scripts/collect_sched_state.sh")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-collection/scripts/collect_pressure_snapshot.sh")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-perf-collection/scripts/collect_topology_snapshot.sh")
+                .is_file()
+        );
+        assert!(
             root.join("sched-workload-contract/references/selector-and-metric-policy.md")
                 .is_file()
         );

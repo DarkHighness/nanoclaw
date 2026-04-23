@@ -33,6 +33,8 @@ Use the lightest collector that can falsify the current hypothesis.
 - Typical commands:
   - `cat /proc/schedstat`
   - `cat /proc/<pid>/schedstat`
+  - `scripts/collect_sched_state.sh --driver host --output artifacts/state --pid 4242`
+  - `scripts/collect_sched_state.sh --driver daemon --output artifacts/state-root --cgroup work.slice`
 - Record:
   - relevant CPUs or tasks
   - capture phase
@@ -46,9 +48,25 @@ Use the lightest collector that can falsify the current hypothesis.
   - `cat /proc/pressure/cpu`
   - `cat /proc/pressure/io`
   - `cat /proc/pressure/memory`
+  - `scripts/collect_pressure_snapshot.sh --driver host --output artifacts/pressure --pid 4242`
+  - `scripts/collect_pressure_snapshot.sh --driver daemon --output artifacts/pressure-root --cgroup work.slice`
 - Record:
   - which pressure dimension matters
   - whether the signal weakens a scheduler-only hypothesis
+
+## `topology`
+- Questions:
+  - Does the target run under a cpuset or cgroup CPU restriction?
+  - Is the candidate sched-ext policy ignoring NUMA, SMT, or package-locality constraints?
+- Typical commands:
+  - `cat /sys/devices/system/cpu/online`
+  - `cat /sys/devices/system/cpu/cpu*/topology/thread_siblings_list`
+  - `scripts/collect_topology_snapshot.sh --driver host --output artifacts/topology`
+  - `scripts/collect_topology_snapshot.sh --driver daemon --output artifacts/topology-root --pid 4242`
+- Record:
+  - host topology facts
+  - selector-scoped cpuset or cgroup restrictions
+  - any mismatch between policy assumptions and actual placement constraints
 
 ## `perf_sched`
 - Questions:

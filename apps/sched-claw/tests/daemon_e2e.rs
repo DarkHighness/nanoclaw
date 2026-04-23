@@ -1,8 +1,8 @@
 use sched_claw::app_config::DaemonClientConfig;
 use sched_claw::daemon_client::SchedClawDaemonClient;
 use sched_claw::daemon_protocol::{
-    DaemonCapabilityInvocation, DaemonCapabilityName, DaemonCapabilityResult, PerfCallGraphMode,
-    PerfCollectionMode, PerfTargetSelector, SchedClawDaemonRequest, SchedClawDaemonResponse,
+    DaemonCapabilityInvocation, DaemonCapabilityName, DaemonCapabilityResult, DaemonTargetSelector,
+    PerfCallGraphMode, PerfCollectionMode, SchedClawDaemonRequest, SchedClawDaemonResponse,
 };
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -108,6 +108,21 @@ async fn daemon_reports_capabilities() {
         capabilities
             .iter()
             .any(|capability| capability.name == DaemonCapabilityName::PerfStatCapture)
+    );
+    assert!(
+        capabilities
+            .iter()
+            .any(|capability| capability.name == DaemonCapabilityName::SchedStateSnapshot)
+    );
+    assert!(
+        capabilities
+            .iter()
+            .any(|capability| capability.name == DaemonCapabilityName::PressureSnapshot)
+    );
+    assert!(
+        capabilities
+            .iter()
+            .any(|capability| capability.name == DaemonCapabilityName::TopologySnapshot)
     );
 
     harness.shutdown().await;
@@ -231,7 +246,7 @@ done
             invocation: DaemonCapabilityInvocation::PerfCapture {
                 label: Some("pid-stat".to_string()),
                 mode: PerfCollectionMode::Stat,
-                selector: PerfTargetSelector::Pid { pids: vec![pid] },
+                selector: DaemonTargetSelector::Pid { pids: vec![pid] },
                 output_dir: "artifacts/perf-a".to_string(),
                 duration_ms: 250,
                 events: vec!["cycles".to_string(), "instructions".to_string()],
@@ -301,7 +316,7 @@ done
             invocation: DaemonCapabilityInvocation::PerfCapture {
                 label: Some("pid-record".to_string()),
                 mode: PerfCollectionMode::Record,
-                selector: PerfTargetSelector::Pid { pids: vec![pid] },
+                selector: DaemonTargetSelector::Pid { pids: vec![pid] },
                 output_dir: "artifacts/perf-record".to_string(),
                 duration_ms: 250,
                 events: vec!["cpu-clock".to_string()],
@@ -363,7 +378,7 @@ done
         .send(&SchedClawDaemonRequest::Invoke {
             invocation: DaemonCapabilityInvocation::SchedulerTraceCapture {
                 label: Some("pid-sched".to_string()),
-                selector: PerfTargetSelector::Pid { pids: vec![pid] },
+                selector: DaemonTargetSelector::Pid { pids: vec![pid] },
                 output_dir: "artifacts/sched-a".to_string(),
                 duration_ms: 250,
                 latency_by_pid: true,
@@ -404,6 +419,163 @@ done
 
     let _ = target_child.start_kill();
     let _ = target_child.wait().await;
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn daemon_collects_sched_state_snapshot_for_pid_targets() {
+    let harness = DaemonHarness::start().await;
+    let target = harness.write_executable(
+        "busy-state.sh",
+        r#"#!/bin/sh
+trap 'exit 0' TERM INT
+while true; do
+  :
+done
+"#,
+    );
+    let mut target_child = Command::new("/bin/sh")
+        .arg(&target)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = target_child.id().unwrap();
+
+    let response = harness
+        .client
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::SchedStateSnapshot {
+                label: Some("pid-state".to_string()),
+                selector: DaemonTargetSelector::Pid { pids: vec![pid] },
+                output_dir: "artifacts/state-a".to_string(),
+                overwrite: false,
+            },
+        })
+        .await
+        .unwrap();
+
+    let snapshot = match response {
+        SchedClawDaemonResponse::Invocation {
+            result: DaemonCapabilityResult::SchedStateCapture { snapshot },
+        } => snapshot,
+        other => panic!("expected sched state response, got {other:?}"),
+    };
+    assert_eq!(snapshot.label, "pid-state");
+    assert_eq!(snapshot.resolved_pids, vec![pid]);
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/state-a/proc.schedstat")
+            .is_file()
+    );
+    assert!(
+        harness
+            .workspace_root()
+            .join(format!("artifacts/state-a/pids/{pid}/sched.txt"))
+            .is_file()
+    );
+
+    let _ = target_child.start_kill();
+    let _ = target_child.wait().await;
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn daemon_collects_pressure_snapshot_for_pid_targets() {
+    let harness = DaemonHarness::start().await;
+    let target = harness.write_executable(
+        "busy-pressure.sh",
+        r#"#!/bin/sh
+trap 'exit 0' TERM INT
+while true; do
+  :
+done
+"#,
+    );
+    let mut target_child = Command::new("/bin/sh")
+        .arg(&target)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = target_child.id().unwrap();
+
+    let response = harness
+        .client
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::PressureSnapshot {
+                label: Some("pid-pressure".to_string()),
+                selector: DaemonTargetSelector::Pid { pids: vec![pid] },
+                output_dir: "artifacts/pressure-a".to_string(),
+                overwrite: false,
+            },
+        })
+        .await
+        .unwrap();
+
+    let snapshot = match response {
+        SchedClawDaemonResponse::Invocation {
+            result: DaemonCapabilityResult::PressureCapture { snapshot },
+        } => snapshot,
+        other => panic!("expected pressure response, got {other:?}"),
+    };
+    assert_eq!(snapshot.label, "pid-pressure");
+    assert_eq!(snapshot.resolved_pids, vec![pid]);
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/pressure-a/pressure.index.json")
+            .is_file()
+    );
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/pressure-a/proc.pressure.cpu")
+            .is_file()
+    );
+
+    let _ = target_child.start_kill();
+    let _ = target_child.wait().await;
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn daemon_collects_topology_snapshot_with_optional_selector() {
+    let harness = DaemonHarness::start().await;
+
+    let response = harness
+        .client
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::TopologySnapshot {
+                label: Some("host-topology".to_string()),
+                selector: None,
+                output_dir: "artifacts/topology-a".to_string(),
+                overwrite: false,
+            },
+        })
+        .await
+        .unwrap();
+
+    let snapshot = match response {
+        SchedClawDaemonResponse::Invocation {
+            result: DaemonCapabilityResult::TopologyCapture { snapshot },
+        } => snapshot,
+        other => panic!("expected topology response, got {other:?}"),
+    };
+    assert_eq!(snapshot.label, "host-topology");
+    assert!(snapshot.selector.is_none());
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/topology-a/topology.summary.json")
+            .is_file()
+    );
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/topology-a/topology.index.json")
+            .is_file()
+    );
+
     harness.shutdown().await;
 }
 

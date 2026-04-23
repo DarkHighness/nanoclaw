@@ -14,6 +14,9 @@ pub enum DaemonCapabilityKind {
     PerfStatCapture,
     PerfRecordCapture,
     SchedulerTraceCapture,
+    SchedStateSnapshot,
+    PressureSnapshot,
+    TopologySnapshot,
 }
 
 #[derive(
@@ -25,6 +28,9 @@ pub enum DaemonCapabilityName {
     PerfStatCapture,
     PerfRecordCapture,
     SchedulerTraceCapture,
+    SchedStateSnapshot,
+    PressureSnapshot,
+    TopologySnapshot,
 }
 
 impl DaemonCapabilityName {
@@ -35,6 +41,9 @@ impl DaemonCapabilityName {
             Self::PerfStatCapture => "perf_stat_capture",
             Self::PerfRecordCapture => "perf_record_capture",
             Self::SchedulerTraceCapture => "scheduler_trace_capture",
+            Self::SchedStateSnapshot => "sched_state_snapshot",
+            Self::PressureSnapshot => "pressure_snapshot",
+            Self::TopologySnapshot => "topology_snapshot",
         }
     }
 }
@@ -136,6 +145,59 @@ pub fn expected_daemon_capabilities() -> Vec<DaemonCapabilityDescriptor> {
             ],
             requires_root: true,
         },
+        DaemonCapabilityDescriptor {
+            name: DaemonCapabilityName::SchedStateSnapshot,
+            kind: DaemonCapabilityKind::SchedStateSnapshot,
+            summary: "Capture bounded read-only scheduler state snapshots from procfs for a pid, uid, gid, or cgroup target.".to_string(),
+            selector_kinds: perf_selector_kinds(),
+            outputs: vec![
+                "proc.schedstat".to_string(),
+                "per-pid sched, schedstat, status, and cgroup artifacts".to_string(),
+                "snapshot index and selector metadata".to_string(),
+            ],
+            constraints: vec![
+                "output_dir must resolve inside allowed roots".to_string(),
+                "selectors resolve to live pids before capture".to_string(),
+                "shell execution is not permitted; procfs files are copied directly".to_string(),
+            ],
+            requires_root: true,
+        },
+        DaemonCapabilityDescriptor {
+            name: DaemonCapabilityName::PressureSnapshot,
+            kind: DaemonCapabilityKind::PressureSnapshot,
+            summary: "Capture bounded read-only pressure and cgroup state snapshots for a pid, uid, gid, or cgroup target.".to_string(),
+            selector_kinds: perf_selector_kinds(),
+            outputs: vec![
+                "proc.pressure cpu, io, and memory artifacts".to_string(),
+                "per-pid cgroup membership artifacts".to_string(),
+                "per-cgroup pressure, cpu.stat, and cpuset artifacts".to_string(),
+                "snapshot index and selector metadata".to_string(),
+            ],
+            constraints: vec![
+                "output_dir must resolve inside allowed roots".to_string(),
+                "selectors resolve to live pids before capture".to_string(),
+                "only read-only procfs and cgroupfs files are copied".to_string(),
+            ],
+            requires_root: true,
+        },
+        DaemonCapabilityDescriptor {
+            name: DaemonCapabilityName::TopologySnapshot,
+            kind: DaemonCapabilityKind::TopologySnapshot,
+            summary: "Capture bounded read-only CPU, NUMA, SMT, and selector-scoped cpuset topology context.".to_string(),
+            selector_kinds: perf_selector_kinds(),
+            outputs: vec![
+                "host CPU and NUMA summary artifacts".to_string(),
+                "per-cpu topology summary json".to_string(),
+                "optional per-pid status and cgroup cpuset artifacts".to_string(),
+                "snapshot index and selector metadata".to_string(),
+            ],
+            constraints: vec![
+                "output_dir must resolve inside allowed roots".to_string(),
+                "selector is optional, but when present it must resolve to live pids".to_string(),
+                "shell execution is not permitted; sysfs and procfs files are copied directly".to_string(),
+            ],
+            requires_root: true,
+        },
     ]
 }
 
@@ -193,7 +255,7 @@ pub enum DaemonCapabilityInvocation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
         mode: PerfCollectionMode,
-        selector: PerfTargetSelector,
+        selector: DaemonTargetSelector,
         output_dir: String,
         duration_ms: u64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -208,11 +270,36 @@ pub enum DaemonCapabilityInvocation {
     SchedulerTraceCapture {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
-        selector: PerfTargetSelector,
+        selector: DaemonTargetSelector,
         output_dir: String,
         duration_ms: u64,
         #[serde(default)]
         latency_by_pid: bool,
+        #[serde(default)]
+        overwrite: bool,
+    },
+    SchedStateSnapshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        selector: DaemonTargetSelector,
+        output_dir: String,
+        #[serde(default)]
+        overwrite: bool,
+    },
+    PressureSnapshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        selector: DaemonTargetSelector,
+        output_dir: String,
+        #[serde(default)]
+        overwrite: bool,
+    },
+    TopologySnapshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<DaemonTargetSelector>,
+        output_dir: String,
         #[serde(default)]
         overwrite: bool,
     },
@@ -230,6 +317,9 @@ impl DaemonCapabilityInvocation {
                 PerfCollectionMode::Record => DaemonCapabilityName::PerfRecordCapture,
             },
             Self::SchedulerTraceCapture { .. } => DaemonCapabilityName::SchedulerTraceCapture,
+            Self::SchedStateSnapshot { .. } => DaemonCapabilityName::SchedStateSnapshot,
+            Self::PressureSnapshot { .. } => DaemonCapabilityName::PressureSnapshot,
+            Self::TopologySnapshot { .. } => DaemonCapabilityName::TopologySnapshot,
         }
     }
 }
@@ -267,6 +357,15 @@ pub enum DaemonCapabilityResult {
     SchedulerTraceCapture {
         snapshot: SchedCollectionSnapshot,
     },
+    SchedStateCapture {
+        snapshot: SchedStateSnapshot,
+    },
+    PressureCapture {
+        snapshot: PressureSnapshot,
+    },
+    TopologyCapture {
+        snapshot: TopologySnapshot,
+    },
 }
 
 impl DaemonCapabilityResult {
@@ -279,6 +378,9 @@ impl DaemonCapabilityResult {
                 PerfCollectionMode::Record => DaemonCapabilityName::PerfRecordCapture,
             },
             Self::SchedulerTraceCapture { .. } => DaemonCapabilityName::SchedulerTraceCapture,
+            Self::SchedStateCapture { .. } => DaemonCapabilityName::SchedStateSnapshot,
+            Self::PressureCapture { .. } => DaemonCapabilityName::PressureSnapshot,
+            Self::TopologyCapture { .. } => DaemonCapabilityName::TopologySnapshot,
         }
     }
 }
@@ -365,7 +467,7 @@ pub enum PerfCollectionMode {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
 #[serde(tag = "target", rename_all = "snake_case")]
-pub enum PerfTargetSelector {
+pub enum DaemonTargetSelector {
     Pid { pids: Vec<u32> },
     Uid { uid: u32 },
     Gid { gid: u32 },
@@ -384,7 +486,7 @@ pub enum PerfCallGraphMode {
 pub struct PerfCollectionSnapshot {
     pub label: String,
     pub mode: PerfCollectionMode,
-    pub selector: PerfTargetSelector,
+    pub selector: DaemonTargetSelector,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resolved_pids: Vec<u32>,
     pub requested_duration_ms: u64,
@@ -411,7 +513,7 @@ pub struct PerfCollectionSnapshot {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SchedCollectionSnapshot {
     pub label: String,
-    pub selector: PerfTargetSelector,
+    pub selector: DaemonTargetSelector,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resolved_pids: Vec<u32>,
     pub requested_duration_ms: u64,
@@ -436,4 +538,123 @@ pub struct SchedCollectionSnapshot {
     pub record_argv: Vec<String>,
     pub timehist_argv: Vec<String>,
     pub latency_argv: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SchedStateSnapshot {
+    pub label: String,
+    pub selector: DaemonTargetSelector,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_pids: Vec<u32>,
+    pub output_dir: String,
+    pub global_schedstat_path: String,
+    pub selector_path: String,
+    pub index_path: String,
+    pub started_at_unix_ms: u64,
+    pub ended_at_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pid_artifacts: Vec<PidSchedStateArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct PidSchedStateArtifact {
+    pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sched_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedstat_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cgroup_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct PressureSnapshot {
+    pub label: String,
+    pub selector: DaemonTargetSelector,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_pids: Vec<u32>,
+    pub output_dir: String,
+    pub selector_path: String,
+    pub index_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_cpu_pressure_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_io_pressure_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_memory_pressure_path: Option<String>,
+    pub started_at_unix_ms: u64,
+    pub ended_at_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pid_memberships: Vec<PidCgroupMembershipArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cgroup_artifacts: Vec<CgroupSnapshotArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct PidCgroupMembershipArtifact {
+    pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cgroup_membership_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_cgroup: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CgroupSnapshotArtifact {
+    pub cgroup_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_pressure_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_pressure_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_pressure_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_stat_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpuset_cpus_effective_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpuset_mems_effective_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct TopologySnapshot {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<DaemonTargetSelector>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_pids: Vec<u32>,
+    pub output_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector_path: Option<String>,
+    pub index_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_online_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_possible_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_present_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smt_active_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_online_path: Option<String>,
+    pub topology_summary_path: String,
+    pub started_at_unix_ms: u64,
+    pub ended_at_unix_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pid_contexts: Vec<PidTopologyContextArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cgroup_contexts: Vec<CgroupSnapshotArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct PidTopologyContextArtifact {
+    pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cgroup_membership_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_cgroup: Option<String>,
 }

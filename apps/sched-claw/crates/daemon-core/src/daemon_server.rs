@@ -1,9 +1,11 @@
 use crate::daemon_protocol::{
-    ActiveDeploymentSnapshot, DEFAULT_LOG_TAIL_LINES, DEFAULT_STOP_TIMEOUT_MS,
-    DaemonCapabilityDescriptor, DaemonCapabilityInvocation, DaemonCapabilityResult, DaemonLogLine,
-    DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot, MAX_PERF_DURATION_MS,
-    MIN_PERF_DURATION_MS, PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot,
-    PerfTargetSelector, SchedClawDaemonRequest, SchedClawDaemonResponse, SchedCollectionSnapshot,
+    ActiveDeploymentSnapshot, CgroupSnapshotArtifact, DEFAULT_LOG_TAIL_LINES,
+    DEFAULT_STOP_TIMEOUT_MS, DaemonCapabilityDescriptor, DaemonCapabilityInvocation,
+    DaemonCapabilityResult, DaemonLogLine, DaemonLogsSnapshot, DaemonStatusSnapshot,
+    DaemonTargetSelector, DeploymentExitSnapshot, MAX_PERF_DURATION_MS, MIN_PERF_DURATION_MS,
+    PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot, PidCgroupMembershipArtifact,
+    PidSchedStateArtifact, PidTopologyContextArtifact, PressureSnapshot, SchedClawDaemonRequest,
+    SchedClawDaemonResponse, SchedCollectionSnapshot, SchedStateSnapshot, TopologySnapshot,
     expected_daemon_capabilities,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -89,7 +91,7 @@ struct LaunchSpec {
 struct PerfCollectionSpec {
     label: String,
     mode: PerfCollectionMode,
-    selector: PerfTargetSelector,
+    selector: DaemonTargetSelector,
     resolved_pids: Vec<u32>,
     output_dir: PathBuf,
     duration_ms: u64,
@@ -102,7 +104,7 @@ struct PerfCollectionSpec {
 #[derive(Clone, Debug)]
 struct SchedCollectionSpec {
     label: String,
-    selector: PerfTargetSelector,
+    selector: DaemonTargetSelector,
     resolved_pids: Vec<u32>,
     output_dir: PathBuf,
     duration_ms: u64,
@@ -110,6 +112,30 @@ struct SchedCollectionSpec {
     record_argv: Vec<String>,
     timehist_argv: Vec<String>,
     latency_argv: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SchedStateSnapshotSpec {
+    label: String,
+    selector: DaemonTargetSelector,
+    resolved_pids: Vec<u32>,
+    output_dir: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct PressureSnapshotSpec {
+    label: String,
+    selector: DaemonTargetSelector,
+    resolved_pids: Vec<u32>,
+    output_dir: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct TopologySnapshotSpec {
+    label: String,
+    selector: Option<DaemonTargetSelector>,
+    resolved_pids: Vec<u32>,
+    output_dir: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -374,6 +400,39 @@ impl DaemonServer {
                 let snapshot = self.collect_sched(spec).await?;
                 Ok(DaemonCapabilityResult::SchedulerTraceCapture { snapshot })
             }
+            DaemonCapabilityInvocation::SchedStateSnapshot {
+                label,
+                selector,
+                output_dir,
+                overwrite,
+            } => {
+                let spec =
+                    self.validate_sched_state_snapshot(label, selector, output_dir, overwrite)?;
+                let snapshot = self.collect_sched_state(spec).await?;
+                Ok(DaemonCapabilityResult::SchedStateCapture { snapshot })
+            }
+            DaemonCapabilityInvocation::PressureSnapshot {
+                label,
+                selector,
+                output_dir,
+                overwrite,
+            } => {
+                let spec =
+                    self.validate_pressure_snapshot(label, selector, output_dir, overwrite)?;
+                let snapshot = self.collect_pressure(spec).await?;
+                Ok(DaemonCapabilityResult::PressureCapture { snapshot })
+            }
+            DaemonCapabilityInvocation::TopologySnapshot {
+                label,
+                selector,
+                output_dir,
+                overwrite,
+            } => {
+                let spec =
+                    self.validate_topology_snapshot(label, selector, output_dir, overwrite)?;
+                let snapshot = self.collect_topology(spec).await?;
+                Ok(DaemonCapabilityResult::TopologyCapture { snapshot })
+            }
             DaemonCapabilityInvocation::RolloutActivate {
                 label,
                 argv,
@@ -423,7 +482,7 @@ impl DaemonServer {
         &self,
         label: Option<String>,
         mode: PerfCollectionMode,
-        selector: PerfTargetSelector,
+        selector: DaemonTargetSelector,
         output_dir: String,
         duration_ms: u64,
         events: Vec<String>,
@@ -438,7 +497,7 @@ impl DaemonServer {
                 MAX_PERF_DURATION_MS
             );
         }
-        let resolved_pids = self.resolve_perf_selector(&selector)?;
+        let resolved_pids = self.resolve_target_selector(&selector)?;
         if resolved_pids.is_empty() {
             bail!("no live pids resolved for perf selector");
         }
@@ -469,15 +528,13 @@ impl DaemonServer {
             call_graph,
             &output_dir,
         );
-        let label = label
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| match mode {
-                PerfCollectionMode::Stat => "perf-stat".to_string(),
-                PerfCollectionMode::Record => "perf-record".to_string(),
-            });
+        let label = normalize_label(
+            label,
+            match mode {
+                PerfCollectionMode::Stat => "perf-stat",
+                PerfCollectionMode::Record => "perf-record",
+            },
+        );
 
         Ok(PerfCollectionSpec {
             label,
@@ -496,7 +553,7 @@ impl DaemonServer {
     fn validate_sched_collection(
         &self,
         label: Option<String>,
-        selector: PerfTargetSelector,
+        selector: DaemonTargetSelector,
         output_dir: String,
         duration_ms: u64,
         latency_by_pid: bool,
@@ -509,7 +566,7 @@ impl DaemonServer {
                 MAX_PERF_DURATION_MS
             );
         }
-        let resolved_pids = self.resolve_perf_selector(&selector)?;
+        let resolved_pids = self.resolve_target_selector(&selector)?;
         if resolved_pids.is_empty() {
             bail!("no live pids resolved for perf selector");
         }
@@ -520,12 +577,7 @@ impl DaemonServer {
         self.ensure_allowed_path_for_create(&output_dir)?;
         self.prepare_output_dir(&output_dir, overwrite)?;
 
-        let label = label
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| "perf-sched".to_string());
+        let label = normalize_label(label, "perf-sched");
         let record_argv = build_sched_record_argv(&resolved_pids, &output_dir);
         let timehist_argv = build_sched_timehist_argv(&output_dir);
         let latency_argv = build_sched_latency_argv(&output_dir, latency_by_pid);
@@ -539,6 +591,87 @@ impl DaemonServer {
             record_argv,
             timehist_argv,
             latency_argv,
+        })
+    }
+
+    fn validate_sched_state_snapshot(
+        &self,
+        label: Option<String>,
+        selector: DaemonTargetSelector,
+        output_dir: String,
+        overwrite: bool,
+    ) -> Result<SchedStateSnapshotSpec> {
+        let resolved_pids = self.resolve_target_selector(&selector)?;
+        if resolved_pids.is_empty() {
+            bail!("no live pids resolved for sched state selector");
+        }
+        let output_dir =
+            resolve_allow_missing_path(&self.options.workspace_root, Path::new(&output_dir))
+                .with_context(|| format!("failed to resolve output dir {output_dir}"))?;
+        self.ensure_allowed_path_for_create(&output_dir)?;
+        self.prepare_output_dir(&output_dir, overwrite)?;
+        let label = normalize_label(label, "sched-state");
+        Ok(SchedStateSnapshotSpec {
+            label,
+            selector,
+            resolved_pids,
+            output_dir,
+        })
+    }
+
+    fn validate_pressure_snapshot(
+        &self,
+        label: Option<String>,
+        selector: DaemonTargetSelector,
+        output_dir: String,
+        overwrite: bool,
+    ) -> Result<PressureSnapshotSpec> {
+        let resolved_pids = self.resolve_target_selector(&selector)?;
+        if resolved_pids.is_empty() {
+            bail!("no live pids resolved for pressure selector");
+        }
+        let output_dir =
+            resolve_allow_missing_path(&self.options.workspace_root, Path::new(&output_dir))
+                .with_context(|| format!("failed to resolve output dir {output_dir}"))?;
+        self.ensure_allowed_path_for_create(&output_dir)?;
+        self.prepare_output_dir(&output_dir, overwrite)?;
+        let label = normalize_label(label, "pressure");
+        Ok(PressureSnapshotSpec {
+            label,
+            selector,
+            resolved_pids,
+            output_dir,
+        })
+    }
+
+    fn validate_topology_snapshot(
+        &self,
+        label: Option<String>,
+        selector: Option<DaemonTargetSelector>,
+        output_dir: String,
+        overwrite: bool,
+    ) -> Result<TopologySnapshotSpec> {
+        let resolved_pids = match &selector {
+            Some(selector) => {
+                let resolved_pids = self.resolve_target_selector(selector)?;
+                if resolved_pids.is_empty() {
+                    bail!("no live pids resolved for topology selector");
+                }
+                resolved_pids
+            }
+            None => Vec::new(),
+        };
+        let output_dir =
+            resolve_allow_missing_path(&self.options.workspace_root, Path::new(&output_dir))
+                .with_context(|| format!("failed to resolve output dir {output_dir}"))?;
+        self.ensure_allowed_path_for_create(&output_dir)?;
+        self.prepare_output_dir(&output_dir, overwrite)?;
+        let label = normalize_label(label, "topology");
+        Ok(TopologySnapshotSpec {
+            label,
+            selector,
+            resolved_pids,
+            output_dir,
         })
     }
 
@@ -560,8 +693,8 @@ impl DaemonServer {
         std::fs::write(
             &selector_path,
             serde_json::to_vec_pretty(&serde_json::json!({
-                "selector": selector,
-                "resolved_pids": resolved_pids,
+                "selector": &selector,
+                "resolved_pids": &resolved_pids,
             }))?,
         )?;
 
@@ -778,6 +911,330 @@ impl DaemonServer {
         })
     }
 
+    async fn collect_sched_state(
+        &self,
+        spec: SchedStateSnapshotSpec,
+    ) -> Result<SchedStateSnapshot> {
+        let _collection_guard = self.collection_lock.lock().await;
+
+        let selector = spec.selector.clone();
+        let resolved_pids = spec.resolved_pids.clone();
+        let selector_path = spec.output_dir.join("sched.state.selector.json");
+        let global_schedstat_path = spec.output_dir.join("proc.schedstat");
+        let pids_root = spec.output_dir.join("pids");
+        let index_path = spec.output_dir.join("sched.state.index.json");
+        std::fs::create_dir_all(&pids_root)
+            .with_context(|| format!("failed to create {}", pids_root.display()))?;
+        std::fs::write(
+            &selector_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "selector": &selector,
+                "resolved_pids": &resolved_pids,
+            }))?,
+        )?;
+
+        let started_at_unix_ms = now_unix_ms();
+        let Some(global_schedstat_path_string) =
+            snapshot_optional_file(Path::new("/proc/schedstat"), &global_schedstat_path)?
+        else {
+            bail!("/proc/schedstat is not readable on this host");
+        };
+        let mut pid_artifacts = Vec::new();
+        for pid in &resolved_pids {
+            let pid_dir = pids_root.join(pid.to_string());
+            std::fs::create_dir_all(&pid_dir)
+                .with_context(|| format!("failed to create {}", pid_dir.display()))?;
+            pid_artifacts.push(PidSchedStateArtifact {
+                pid: *pid,
+                sched_path: snapshot_optional_file(
+                    &proc_pid_path(*pid, "sched"),
+                    &pid_dir.join("sched.txt"),
+                )?,
+                schedstat_path: snapshot_optional_file(
+                    &proc_pid_path(*pid, "schedstat"),
+                    &pid_dir.join("schedstat.txt"),
+                )?,
+                status_path: snapshot_optional_file(
+                    &proc_pid_path(*pid, "status"),
+                    &pid_dir.join("status.txt"),
+                )?,
+                cgroup_path: snapshot_optional_file(
+                    &proc_pid_path(*pid, "cgroup"),
+                    &pid_dir.join("cgroup.txt"),
+                )?,
+            });
+        }
+        let ended_at_unix_ms = now_unix_ms();
+
+        std::fs::write(
+            &index_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "label": &spec.label,
+                "selector": &selector,
+                "resolved_pids": &resolved_pids,
+                "global_schedstat_path": &global_schedstat_path_string,
+                "pid_artifacts": &pid_artifacts,
+                "started_at_unix_ms": started_at_unix_ms,
+                "ended_at_unix_ms": ended_at_unix_ms,
+            }))?,
+        )?;
+
+        Ok(SchedStateSnapshot {
+            label: spec.label,
+            selector,
+            resolved_pids,
+            output_dir: spec.output_dir.display().to_string(),
+            global_schedstat_path: global_schedstat_path_string,
+            selector_path: selector_path.display().to_string(),
+            index_path: index_path.display().to_string(),
+            started_at_unix_ms,
+            ended_at_unix_ms,
+            pid_artifacts,
+        })
+    }
+
+    async fn collect_pressure(&self, spec: PressureSnapshotSpec) -> Result<PressureSnapshot> {
+        let _collection_guard = self.collection_lock.lock().await;
+
+        let selector = spec.selector.clone();
+        let resolved_pids = spec.resolved_pids.clone();
+        let selector_path = spec.output_dir.join("pressure.selector.json");
+        let pids_root = spec.output_dir.join("pids");
+        let index_path = spec.output_dir.join("pressure.index.json");
+        std::fs::create_dir_all(&pids_root)
+            .with_context(|| format!("failed to create {}", pids_root.display()))?;
+        std::fs::write(
+            &selector_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "selector": &selector,
+                "resolved_pids": &resolved_pids,
+            }))?,
+        )?;
+
+        let started_at_unix_ms = now_unix_ms();
+        let proc_cpu_pressure_path = snapshot_optional_file(
+            Path::new("/proc/pressure/cpu"),
+            &spec.output_dir.join("proc.pressure.cpu"),
+        )?;
+        let proc_io_pressure_path = snapshot_optional_file(
+            Path::new("/proc/pressure/io"),
+            &spec.output_dir.join("proc.pressure.io"),
+        )?;
+        let proc_memory_pressure_path = snapshot_optional_file(
+            Path::new("/proc/pressure/memory"),
+            &spec.output_dir.join("proc.pressure.memory"),
+        )?;
+
+        let mut pid_memberships = Vec::new();
+        let mut cgroup_paths = std::collections::BTreeSet::new();
+        if let DaemonTargetSelector::Cgroup { path } = &selector {
+            cgroup_paths.insert(resolve_cgroup_path(path)?);
+        }
+        for pid in &resolved_pids {
+            let pid_dir = pids_root.join(pid.to_string());
+            std::fs::create_dir_all(&pid_dir)
+                .with_context(|| format!("failed to create {}", pid_dir.display()))?;
+            let cgroup_membership_path = snapshot_optional_file(
+                &proc_pid_path(*pid, "cgroup"),
+                &pid_dir.join("cgroup.txt"),
+            )?;
+            let resolved_cgroup = resolve_pid_primary_cgroup(*pid)?;
+            if let Some(path) = &resolved_cgroup {
+                cgroup_paths.insert(path.clone());
+            }
+            pid_memberships.push(PidCgroupMembershipArtifact {
+                pid: *pid,
+                cgroup_membership_path,
+                resolved_cgroup: resolved_cgroup.map(|path| path.display().to_string()),
+            });
+        }
+
+        let cgroup_root = spec.output_dir.join("cgroups");
+        let mut cgroup_artifacts = Vec::new();
+        for cgroup_path in cgroup_paths {
+            cgroup_artifacts.push(capture_cgroup_snapshot_artifacts(
+                &cgroup_root,
+                &cgroup_path,
+                true,
+            )?);
+        }
+        let ended_at_unix_ms = now_unix_ms();
+
+        std::fs::write(
+            &index_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "label": &spec.label,
+                "selector": &selector,
+                "resolved_pids": &resolved_pids,
+                "proc_pressure": {
+                    "cpu": &proc_cpu_pressure_path,
+                    "io": &proc_io_pressure_path,
+                    "memory": &proc_memory_pressure_path,
+                },
+                "pid_memberships": &pid_memberships,
+                "cgroup_artifacts": &cgroup_artifacts,
+                "started_at_unix_ms": started_at_unix_ms,
+                "ended_at_unix_ms": ended_at_unix_ms,
+            }))?,
+        )?;
+
+        Ok(PressureSnapshot {
+            label: spec.label,
+            selector,
+            resolved_pids,
+            output_dir: spec.output_dir.display().to_string(),
+            selector_path: selector_path.display().to_string(),
+            index_path: index_path.display().to_string(),
+            proc_cpu_pressure_path,
+            proc_io_pressure_path,
+            proc_memory_pressure_path,
+            started_at_unix_ms,
+            ended_at_unix_ms,
+            pid_memberships,
+            cgroup_artifacts,
+        })
+    }
+
+    async fn collect_topology(&self, spec: TopologySnapshotSpec) -> Result<TopologySnapshot> {
+        let _collection_guard = self.collection_lock.lock().await;
+
+        let selector = spec.selector.clone();
+        let resolved_pids = spec.resolved_pids.clone();
+        let selector_path = spec
+            .selector
+            .as_ref()
+            .map(|_| spec.output_dir.join("topology.selector.json"));
+        let topology_summary_path = spec.output_dir.join("topology.summary.json");
+        let index_path = spec.output_dir.join("topology.index.json");
+        let pids_root = spec.output_dir.join("pids");
+        std::fs::create_dir_all(&pids_root)
+            .with_context(|| format!("failed to create {}", pids_root.display()))?;
+        if let Some(selector_path) = &selector_path {
+            std::fs::write(
+                selector_path,
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "selector": &selector,
+                    "resolved_pids": &resolved_pids,
+                }))?,
+            )?;
+        }
+
+        let started_at_unix_ms = now_unix_ms();
+        let cpu_online_path = snapshot_optional_file(
+            Path::new("/sys/devices/system/cpu/online"),
+            &spec.output_dir.join("sys.cpu.online"),
+        )?;
+        let cpu_possible_path = snapshot_optional_file(
+            Path::new("/sys/devices/system/cpu/possible"),
+            &spec.output_dir.join("sys.cpu.possible"),
+        )?;
+        let cpu_present_path = snapshot_optional_file(
+            Path::new("/sys/devices/system/cpu/present"),
+            &spec.output_dir.join("sys.cpu.present"),
+        )?;
+        let smt_active_path = snapshot_optional_file(
+            Path::new("/sys/devices/system/cpu/smt/active"),
+            &spec.output_dir.join("sys.cpu.smt.active"),
+        )?;
+        let node_online_path = snapshot_optional_file(
+            Path::new("/sys/devices/system/node/online"),
+            &spec.output_dir.join("sys.node.online"),
+        )?;
+
+        let cpu_ids = detect_topology_cpu_ids();
+        let cpu_summary = cpu_ids
+            .iter()
+            .map(|cpu| summarize_cpu_topology(*cpu))
+            .collect::<Vec<_>>();
+
+        let mut pid_contexts = Vec::new();
+        let mut cgroup_paths = std::collections::BTreeSet::new();
+        if let Some(DaemonTargetSelector::Cgroup { path }) = &selector {
+            cgroup_paths.insert(resolve_cgroup_path(path)?);
+        }
+        for pid in &resolved_pids {
+            let pid_dir = pids_root.join(pid.to_string());
+            std::fs::create_dir_all(&pid_dir)
+                .with_context(|| format!("failed to create {}", pid_dir.display()))?;
+            let status_path = snapshot_optional_file(
+                &proc_pid_path(*pid, "status"),
+                &pid_dir.join("status.txt"),
+            )?;
+            let cgroup_membership_path = snapshot_optional_file(
+                &proc_pid_path(*pid, "cgroup"),
+                &pid_dir.join("cgroup.txt"),
+            )?;
+            let resolved_cgroup = resolve_pid_primary_cgroup(*pid)?;
+            if let Some(path) = &resolved_cgroup {
+                cgroup_paths.insert(path.clone());
+            }
+            pid_contexts.push(PidTopologyContextArtifact {
+                pid: *pid,
+                status_path,
+                cgroup_membership_path,
+                resolved_cgroup: resolved_cgroup.map(|path| path.display().to_string()),
+            });
+        }
+
+        let cgroup_root = spec.output_dir.join("cgroups");
+        let mut cgroup_contexts = Vec::new();
+        for cgroup_path in cgroup_paths {
+            cgroup_contexts.push(capture_cgroup_snapshot_artifacts(
+                &cgroup_root,
+                &cgroup_path,
+                false,
+            )?);
+        }
+        std::fs::write(
+            &topology_summary_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "cpu_ids": &cpu_ids,
+                "cpus": &cpu_summary,
+            }))?,
+        )?;
+        let ended_at_unix_ms = now_unix_ms();
+
+        std::fs::write(
+            &index_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "label": &spec.label,
+                "selector": &selector,
+                "resolved_pids": &resolved_pids,
+                "host_paths": {
+                    "cpu_online": &cpu_online_path,
+                    "cpu_possible": &cpu_possible_path,
+                    "cpu_present": &cpu_present_path,
+                    "smt_active": &smt_active_path,
+                    "node_online": &node_online_path,
+                },
+                "topology_summary_path": &topology_summary_path,
+                "pid_contexts": &pid_contexts,
+                "cgroup_contexts": &cgroup_contexts,
+                "started_at_unix_ms": started_at_unix_ms,
+                "ended_at_unix_ms": ended_at_unix_ms,
+            }))?,
+        )?;
+
+        Ok(TopologySnapshot {
+            label: spec.label,
+            selector,
+            resolved_pids,
+            output_dir: spec.output_dir.display().to_string(),
+            selector_path: selector_path.map(|path| path.display().to_string()),
+            index_path: index_path.display().to_string(),
+            cpu_online_path,
+            cpu_possible_path,
+            cpu_present_path,
+            smt_active_path,
+            node_online_path,
+            topology_summary_path: topology_summary_path.display().to_string(),
+            started_at_unix_ms,
+            ended_at_unix_ms,
+            pid_contexts,
+            cgroup_contexts,
+        })
+    }
+
     fn prepare_output_dir(&self, output_dir: &Path, overwrite: bool) -> Result<()> {
         if output_dir.exists() {
             if !output_dir.is_dir() {
@@ -796,12 +1253,12 @@ impl DaemonServer {
         Ok(())
     }
 
-    fn resolve_perf_selector(&self, selector: &PerfTargetSelector) -> Result<Vec<u32>> {
+    fn resolve_target_selector(&self, selector: &DaemonTargetSelector) -> Result<Vec<u32>> {
         let mut pids = match selector {
-            PerfTargetSelector::Pid { pids } => pids.clone(),
-            PerfTargetSelector::Uid { uid } => resolve_proc_selector("Uid", *uid),
-            PerfTargetSelector::Gid { gid } => resolve_proc_selector("Gid", *gid),
-            PerfTargetSelector::Cgroup { path } => resolve_cgroup_selector(path)?,
+            DaemonTargetSelector::Pid { pids } => pids.clone(),
+            DaemonTargetSelector::Uid { uid } => resolve_proc_selector("Uid", *uid),
+            DaemonTargetSelector::Gid { gid } => resolve_proc_selector("Gid", *gid),
+            DaemonTargetSelector::Cgroup { path } => resolve_cgroup_selector(path)?,
         };
         pids.sort_unstable();
         pids.dedup();
@@ -1331,6 +1788,21 @@ fn resolve_proc_selector(field: &str, expected: u32) -> Vec<u32> {
 }
 
 fn resolve_cgroup_selector(raw_path: &str) -> Result<Vec<u32>> {
+    let cgroup_path = resolve_cgroup_path(raw_path)?;
+    let procs_path = if cgroup_path.is_dir() {
+        cgroup_path.join("cgroup.procs")
+    } else {
+        cgroup_path
+    };
+    let contents = std::fs::read_to_string(&procs_path)
+        .with_context(|| format!("failed to read {}", procs_path.display()))?;
+    Ok(contents
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect())
+}
+
+fn resolve_cgroup_path(raw_path: &str) -> Result<PathBuf> {
     let raw_path = Path::new(raw_path);
     if raw_path
         .components()
@@ -1349,17 +1821,212 @@ fn resolve_cgroup_selector(raw_path: &str) -> Result<Vec<u32>> {
             cgroup_path.display()
         );
     }
-    let procs_path = if cgroup_path.is_dir() {
-        cgroup_path.join("cgroup.procs")
-    } else {
-        cgroup_path
+    Ok(cgroup_path)
+}
+
+fn normalize_label(label: Option<String>, fallback: &str) -> String {
+    label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn proc_pid_path(pid: u32, file_name: &str) -> PathBuf {
+    Path::new("/proc").join(pid.to_string()).join(file_name)
+}
+
+fn snapshot_optional_file(source: &Path, destination: &Path) -> Result<Option<String>> {
+    if !source.exists() {
+        return Ok(None);
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::copy(source, destination).with_context(|| {
+        format!(
+            "failed to snapshot {} into {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(Some(destination.display().to_string()))
+}
+
+fn resolve_pid_primary_cgroup(pid: u32) -> Result<Option<PathBuf>> {
+    let cgroup_path = proc_pid_path(pid, "cgroup");
+    let Ok(contents) = std::fs::read_to_string(&cgroup_path) else {
+        return Ok(None);
     };
-    let contents = std::fs::read_to_string(&procs_path)
-        .with_context(|| format!("failed to read {}", procs_path.display()))?;
-    Ok(contents
-        .lines()
-        .filter_map(|line| line.trim().parse::<u32>().ok())
-        .collect())
+    for line in contents.lines() {
+        let mut parts = line.splitn(3, ':');
+        let _hierarchy = parts.next();
+        let controllers = parts.next().unwrap_or_default();
+        let path = parts.next().unwrap_or_default();
+        if path.is_empty() {
+            continue;
+        }
+        if !(controllers.is_empty() || controllers.split(',').any(|value| value == "cpuset")) {
+            continue;
+        }
+        let resolved = if path.starts_with("/sys/fs/cgroup") {
+            resolve_cgroup_path(path)?
+        } else {
+            resolve_cgroup_path(&format!("/sys/fs/cgroup/{}", path.trim_start_matches('/')))?
+        };
+        return Ok(Some(resolved));
+    }
+    Ok(None)
+}
+
+fn sanitize_artifact_label(path: &Path) -> String {
+    let display = path.display().to_string();
+    let trimmed = display.trim_matches('/');
+    if trimmed.is_empty() {
+        "root".to_string()
+    } else {
+        trimmed
+            .replace('/', "__")
+            .replace(':', "_")
+            .replace('.', "_")
+    }
+}
+
+fn capture_cgroup_snapshot_artifacts(
+    cgroup_root: &Path,
+    cgroup_path: &Path,
+    include_pressure: bool,
+) -> Result<CgroupSnapshotArtifact> {
+    let artifact_dir = cgroup_root.join(sanitize_artifact_label(cgroup_path));
+    std::fs::create_dir_all(&artifact_dir)
+        .with_context(|| format!("failed to create {}", artifact_dir.display()))?;
+    Ok(CgroupSnapshotArtifact {
+        cgroup_path: cgroup_path.display().to_string(),
+        cpu_pressure_path: if include_pressure {
+            snapshot_optional_file(
+                &cgroup_path.join("cpu.pressure"),
+                &artifact_dir.join("cpu.pressure"),
+            )?
+        } else {
+            None
+        },
+        io_pressure_path: if include_pressure {
+            snapshot_optional_file(
+                &cgroup_path.join("io.pressure"),
+                &artifact_dir.join("io.pressure"),
+            )?
+        } else {
+            None
+        },
+        memory_pressure_path: if include_pressure {
+            snapshot_optional_file(
+                &cgroup_path.join("memory.pressure"),
+                &artifact_dir.join("memory.pressure"),
+            )?
+        } else {
+            None
+        },
+        cpu_stat_path: snapshot_optional_file(
+            &cgroup_path.join("cpu.stat"),
+            &artifact_dir.join("cpu.stat"),
+        )?,
+        cpuset_cpus_effective_path: snapshot_optional_file(
+            &cgroup_path.join("cpuset.cpus.effective"),
+            &artifact_dir.join("cpuset.cpus.effective"),
+        )?,
+        cpuset_mems_effective_path: snapshot_optional_file(
+            &cgroup_path.join("cpuset.mems.effective"),
+            &artifact_dir.join("cpuset.mems.effective"),
+        )?,
+    })
+}
+
+fn detect_topology_cpu_ids() -> Vec<u32> {
+    let mut cpu_ids = Vec::new();
+    if let Ok(contents) = std::fs::read_to_string("/sys/devices/system/cpu/online") {
+        cpu_ids = parse_cpu_list(&contents);
+    }
+    if cpu_ids.is_empty()
+        && let Ok(entries) = std::fs::read_dir("/sys/devices/system/cpu")
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if let Some(value) = name.strip_prefix("cpu")
+                && let Ok(cpu) = value.parse::<u32>()
+            {
+                cpu_ids.push(cpu);
+            }
+        }
+        cpu_ids.sort_unstable();
+        cpu_ids.dedup();
+    }
+    cpu_ids
+}
+
+fn summarize_cpu_topology(cpu: u32) -> serde_json::Value {
+    let cpu_root = Path::new("/sys/devices/system/cpu").join(format!("cpu{cpu}"));
+    let topology_root = cpu_root.join("topology");
+    serde_json::json!({
+        "cpu": cpu,
+        "online": cpu_root.exists(),
+        "core_id": read_optional_trimmed(&topology_root.join("core_id")),
+        "package_id": read_optional_trimmed(&topology_root.join("physical_package_id")),
+        "die_id": read_optional_trimmed(&topology_root.join("die_id")),
+        "thread_siblings_list": read_optional_trimmed(&topology_root.join("thread_siblings_list")),
+        "core_cpus_list": read_optional_trimmed(&topology_root.join("core_cpus_list")),
+        "node": detect_cpu_node(&cpu_root),
+    })
+}
+
+fn detect_cpu_node(cpu_root: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(cpu_root).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_str()?;
+        if name.starts_with("node") {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn read_optional_trimmed(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_cpu_list(raw: &str) -> Vec<u32> {
+    let mut cpus = Vec::new();
+    for part in raw
+        .trim()
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        if let Some((start, end)) = part.split_once('-') {
+            let Ok(start) = start.trim().parse::<u32>() else {
+                continue;
+            };
+            let Ok(end) = end.trim().parse::<u32>() else {
+                continue;
+            };
+            for cpu in start..=end {
+                cpus.push(cpu);
+            }
+        } else if let Ok(cpu) = part.parse::<u32>() {
+            cpus.push(cpu);
+        }
+    }
+    cpus.sort_unstable();
+    cpus.dedup();
+    cpus
 }
 
 fn summarize_output_file(stdout_path: &Path, stderr_path: &Path) -> Result<String> {

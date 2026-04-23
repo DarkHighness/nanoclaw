@@ -27,7 +27,7 @@ impl Tool for SchedClawDaemonTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::function(
             SCHED_CLAW_DAEMON_TOOL_NAME,
-            "Call the privileged sched-claw daemon for bounded rollout control and structured privileged scheduler evidence capture. Discover capability boundaries first, then use only the constrained actions it exposes; do not treat it as a generic root shell.",
+            "Call the privileged sched-claw daemon for bounded rollout control and structured privileged scheduler evidence capture or read-only snapshot collection. Discover capability boundaries first, then use only the constrained actions it exposes; do not treat it as a generic root shell.",
             serde_json::to_value(schema_for!(SchedClawDaemonRequest))
                 .expect("sched_claw_daemon schema"),
             ToolOutputMode::Text,
@@ -43,7 +43,7 @@ impl Tool for SchedClawDaemonTool {
             ToolApprovalProfile::new(false, true, Some(false), false)
                 .with_host_escape(true)
                 .with_approval_message(
-                    "This tool reaches a privileged daemon that can replace the active Linux scheduler and run bounded privileged scheduler capture.",
+                    "This tool reaches a privileged daemon that can replace the active Linux scheduler and run bounded privileged scheduler capture or read-only snapshot collection.",
                 ),
         )
     }

@@ -23,7 +23,7 @@ code generation; a narrow privileged daemon for sched-ext lifecycle control.
   - shell execution: `exec_command`, `write_stdin`
   - live documentation lookup: `web_search`, `web_fetch`
   - skill discovery: `skills_list`, `skill_view`, `tool_discover`
-  - privileged sched-claw daemon capability surface for rollout and bounded capture: `sched_claw_daemon`
+  - privileged sched-claw daemon capability surface for rollout, bounded capture, and read-only snapshots: `sched_claw_daemon`
 - Do not add a dedicated performance-collection tool. Collection and analysis
   stay in reusable skills plus the existing shell/file/web surfaces.
 - Do not let the agent spawn arbitrary root commands. Privileged launch and
@@ -61,6 +61,12 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `apps/sched-claw/skills/sched-perf-collection/scripts/collect_perf.sh`
     - `apps/sched-claw/skills/sched-perf-collection/scripts/collect_sched_timeline.sh`
       with `--driver host|daemon`
+    - `apps/sched-claw/skills/sched-perf-collection/scripts/collect_sched_state.sh`
+      with `--driver host|daemon`
+    - `apps/sched-claw/skills/sched-perf-collection/scripts/collect_pressure_snapshot.sh`
+      with `--driver host|daemon`
+    - `apps/sched-claw/skills/sched-perf-collection/scripts/collect_topology_snapshot.sh`
+      with `--driver host|daemon`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/analyze_perf_csv.py`
       with optional derived IPC/CPI or miss-rate proxies
@@ -89,6 +95,9 @@ belongs in skill scripts, not in more host-side workflow crates.
   - `sched-claw daemon show perf_record_capture --style plain`
   - `sched-claw daemon collect-perf --pid 4242 --duration-ms 1000 --output-dir artifacts/perf-a`
   - `sched-claw daemon collect-sched --pid 4242 --duration-ms 1000 --output-dir artifacts/sched-a`
+  - `sched-claw daemon collect-state --pid 4242 --output-dir artifacts/state-a`
+  - `sched-claw daemon collect-pressure --cgroup work.slice --output-dir artifacts/pressure-a`
+  - `sched-claw daemon collect-topology --pid 4242 --output-dir artifacts/topology-a`
 - `sched-claw-daemon` is a separate binary intended to run with elevated
   privileges. It manages one active sched-ext deployment at a time, captures the
   child process logs, and exposes:
@@ -97,6 +106,9 @@ belongs in skill scripts, not in more host-side workflow crates.
   - `activate`
   - `collect_perf`
   - `collect_sched`
+  - `collect_state`
+  - `collect_pressure`
+  - `collect_topology`
   - `stop`
   - `logs`
   - internally, the daemon protocol now separates static discovery
@@ -226,7 +238,10 @@ The preferred path is:
   durable workspace directory
 - collection via shell commands or helper scripts such as
   `skills/sched-perf-collection/scripts/collect_perf.sh` and
-  `skills/sched-perf-collection/scripts/collect_sched_timeline.sh`
+  `skills/sched-perf-collection/scripts/collect_sched_timeline.sh` and
+  `skills/sched-perf-collection/scripts/collect_sched_state.sh` and
+  `skills/sched-perf-collection/scripts/collect_pressure_snapshot.sh` and
+  `skills/sched-perf-collection/scripts/collect_topology_snapshot.sh`
 - analysis via repo-local scripts such as
   `skills/sched-perf-analysis/scripts/analyze_perf_csv.py`,
   `skills/sched-perf-analysis/scripts/compose_perf_evidence.py`,
@@ -240,6 +255,8 @@ The preferred path is:
 - privileged rollout only through `sched_claw_daemon`
 - bounded privileged perf attachment also goes through `sched_claw_daemon`; do
   not replace it with `sudo perf ...` shell escapes
+- bounded privileged procfs, PSI, cgroup, and topology snapshots also go through
+  `sched_claw_daemon`; do not replace them with `sudo cat ...` shell escapes
 
 Reference sched-ext starting points still live under
 `apps/sched-claw/templates/sched_ext/`, but they are reference material for
@@ -262,6 +279,7 @@ Current checks include:
 - builtin sched-claw skills, helper scripts, and shared `apps/code-agent/skills` availability
 - privileged daemon socket reachability
 - kernel release plus required `sched_ext` / BPF / cgroup config options
+- read-only kernel evidence surfaces such as `/proc/schedstat`, `/proc/pressure/cpu`, and CPU topology sysfs
 - core toolchain availability such as `clang`, `bpftool`, `perf`, `uv`, and `python3`
 - uv-managed analysis helper compatibility against the repository requirements
 - kernel prerequisites such as BTF and cgroup v2

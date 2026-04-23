@@ -27,9 +27,13 @@ tags:
 2. Prefer low-overhead summaries first.
    - use `scripts/collect_perf.sh` when you want a deterministic wrapper around `perf stat` or `perf record`
    - use `scripts/collect_sched_timeline.sh` when the open question is scheduler ordering, wakeup chains, or migration churn and you want `perf sched record` plus derived `timehist` and `latency` artifacts
+   - use `scripts/collect_sched_state.sh` when you need `/proc/schedstat`, `/proc/<pid>/sched`, or `/proc/<pid>/schedstat` snapshots without inventing a one-off procfs copy routine
+   - use `scripts/collect_pressure_snapshot.sh` when you need global PSI plus selector-scoped cgroup pressure and `cpu.stat` context
+   - use `scripts/collect_topology_snapshot.sh` when you need CPU, NUMA, SMT, or selector-scoped cpuset context before changing sched-ext placement policy
    - choose `--driver host` for ordinary collection and `--driver daemon` when attach-style privileged capture is required
    - direct shell capture is also fine when the wrapper would get in the way
    - when non-root collection is blocked by `perf_event_paranoid`, cgroup visibility, or attach permissions, prefer the structured `sched_claw_daemon` `collect_perf` action instead of inventing a root shell workaround
+   - likewise, when procfs or cgroupfs visibility is restricted, prefer the structured `sched_claw_daemon` `collect_state`, `collect_pressure`, or `collect_topology` actions instead of escalating to a root shell
    - `perf stat`, `/proc/schedstat`, `/proc/<pid>/schedstat`, PSI, `pidstat -w`, `mpstat -P ALL`, and `vmstat`
    - collect just enough to answer whether the issue looks like queueing, migration, wakeup latency, or plain saturation
 3. Escalate only when the summary leaves a scheduler-specific gap.
@@ -73,3 +77,18 @@ tags:
   - supports both `--driver host` and `--driver daemon`
   - supports command, pid, uid, gid, and cgroup targets
   - writes raw `perf.sched.data` plus derived scheduler timeline artifacts
+- `scripts/collect_sched_state.sh`
+  - snapshots `/proc/schedstat` plus per-pid `sched`, `schedstat`, `status`, and `cgroup` files
+  - supports both `--driver host` and `--driver daemon`
+  - supports pid, uid, gid, and cgroup targets
+  - preferred when run-queue counters or per-task scheduling state are the open question
+- `scripts/collect_pressure_snapshot.sh`
+  - snapshots `/proc/pressure/*` plus selector-scoped cgroup pressure, `cpu.stat`, and cpuset state
+  - supports both `--driver host` and `--driver daemon`
+  - supports pid, uid, gid, and cgroup targets
+  - preferred when the open question is whether the bottleneck is scheduler-local or broader resource pressure
+- `scripts/collect_topology_snapshot.sh`
+  - snapshots CPU, NUMA, SMT, and selector-scoped cpuset context
+  - supports both `--driver host` and `--driver daemon`
+  - supports pid, uid, gid, and cgroup targets, but the selector is optional
+  - preferred when placement, locality, cpuset isolation, or topology mismatch is the open question

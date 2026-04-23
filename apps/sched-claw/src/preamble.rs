@@ -41,7 +41,7 @@ pub fn build_system_preamble(
             .to_string(),
         "If a skill ships helper scripts, inspect them before use and prefer reusing them over retyping large shell pipelines."
             .to_string(),
-        "Use sched_claw_daemon only for capability discovery, status, activate, stop, logs, and bounded privileged capture. Do not use it as a generic privileged execution escape hatch."
+        "Use sched_claw_daemon only for capability discovery, status, activate, stop, logs, and bounded privileged capture or read-only snapshot actions. Do not use it as a generic privileged execution escape hatch."
             .to_string(),
         "Do not use the daemon as a generic privileged shell. Build, collect, analyze, and edit through normal tools; reserve privilege for rollout lifecycle control and bounded attach-style perf capture."
             .to_string(),
