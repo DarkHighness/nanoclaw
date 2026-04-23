@@ -3205,6 +3205,8 @@ dependencies = [
  "include_dir",
  "nanoclaw-config",
  "nix",
+ "sched-claw-daemon-protocol",
+ "sched-claw-domain",
  "schemars",
  "serde",
  "serde_json",
@@ -3215,6 +3217,24 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "sched-claw-daemon-protocol"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+]
+
+[[package]]
+name = "sched-claw-domain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

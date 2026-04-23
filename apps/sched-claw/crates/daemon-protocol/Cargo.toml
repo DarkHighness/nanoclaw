@@ -1,0 +1,9 @@
+[package]
+name = "sched-claw-daemon-protocol"
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[dependencies]
+schemars = "1.2.1"
+serde = { version = "1.0.228", features = ["derive"] }

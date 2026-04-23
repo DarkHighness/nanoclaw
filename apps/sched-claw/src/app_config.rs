@@ -1,4 +1,3 @@
-use agent::AgentWorkspaceLayout;
 use agent_env::EnvMap;
 use anyhow::Result;
 use nanoclaw_config::{CoreConfig, ResolvedAgentProfile, load_optional_app_config};
@@ -6,7 +5,7 @@ use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-pub const APP_NAME: &str = "sched-claw";
+pub use sched_claw_domain::paths::{APP_NAME, app_state_dir};
 const DEFAULT_DAEMON_TIMEOUT_MS: u64 = 30_000;
 const MAX_DAEMON_TIMEOUT_MS: u64 = 5 * 60_000;
 
@@ -119,12 +118,6 @@ impl SchedClawConfig {
     }
 }
 
-pub fn app_state_dir(workspace_root: &Path) -> PathBuf {
-    AgentWorkspaceLayout::new(workspace_root)
-        .apps_dir()
-        .join(APP_NAME)
-}
-
 pub fn default_daemon_socket_path(workspace_root: &Path) -> PathBuf {
     app_state_dir(workspace_root).join("sched-claw.sock")
 }
@@ -154,15 +147,11 @@ fn resolve_path(workspace_root: &Path, value: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{CliOverrides, SchedClawConfig, app_state_dir, default_daemon_socket_path};
-    use agent::AgentWorkspaceLayout;
     use tempfile::tempdir;
 
     #[test]
     fn defaults_socket_into_app_state_dir() {
         let dir = tempdir().unwrap();
-        AgentWorkspaceLayout::new(dir.path())
-            .ensure_standard_layout()
-            .unwrap();
 
         let config = SchedClawConfig::load_from_dir(dir.path(), &CliOverrides::default()).unwrap();
 

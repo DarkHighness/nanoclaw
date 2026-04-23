@@ -26,6 +26,24 @@ template materialization, scoring, and privileged rollout.
   rollback go through the daemon over a local Unix socket, with path and process
   constraints enforced server-side.
 
+## Crate boundaries
+
+The `sched-claw` app is no longer a single monolithic crate.
+
+- `apps/sched-claw/crates/domain`
+  - owns workload contracts, metric policy helpers, experiment manifests, and scoring
+  - stays free of runtime, UI, skill, and daemon implementation details
+- `apps/sched-claw/crates/daemon-protocol`
+  - owns the daemon request/response contract only
+  - keeps the privileged boundary reusable by the CLI, daemon server, and tool adapter
+- `apps/sched-claw`
+  - remains the host composition crate
+  - owns bootstrap, CLI, REPL, display, daemon client/server, skill materialization, and operator surfaces
+
+The intent is to keep pure domain code and daemon contracts stable while the
+host crate continues to evolve. Richer trial analysis or custom comparison
+logic belongs in skill scripts, not in the domain crate or the host runtime.
+
 ## Runtime shape
 
 - `sched-claw` provides:

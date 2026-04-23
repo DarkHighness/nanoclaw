@@ -1,7 +1,7 @@
-use crate::app_config::app_state_dir;
 use crate::metrics::{
     Guardrail, MetricMap, MetricTarget, PerformancePolicy, median_metric, relative_spread_pct,
 };
+use crate::paths::app_state_dir;
 use crate::workload::{HostFingerprint, WorkloadContract};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};

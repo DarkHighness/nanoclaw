@@ -10,6 +10,8 @@ agent = { path = "../../crates/core", features = ["agentic-tools", "web-tools"] 
 agent-env = { path = "../../crates/env" }
 code-agent-backend = { path = "../code-agent/crates/backend", default-features = false }
 nanoclaw-config = { path = "../../crates/config" }
+sched-claw-daemon-protocol = { path = "crates/daemon-protocol" }
+sched-claw-domain = { path = "crates/domain" }
 store = { path = "../../crates/store" }
 anyhow = "1.0.100"
 async-trait = "0.1.89"
