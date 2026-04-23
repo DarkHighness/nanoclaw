@@ -4,13 +4,15 @@ use sched_claw::app_config::{CliOverrides, SchedClawConfig};
 use sched_claw::bootstrap::load_bootstrap;
 use sched_claw::daemon_client::SchedClawDaemonClient;
 use sched_claw::daemon_protocol::{
-    DaemonCapabilityInvocation, PerfCallGraphMode, PerfCollectionMode, PerfTargetSelector,
-    SchedClawDaemonRequest, SchedClawDaemonResponse,
+    DaemonCapabilityInvocation, DaemonCapabilityName, PerfCallGraphMode, PerfCollectionMode,
+    PerfTargetSelector, SchedClawDaemonRequest, SchedClawDaemonResponse,
+    find_expected_daemon_capability,
 };
 use sched_claw::display::{
-    OutputStyle, render_daemon_response, render_doctor_report, render_session_detail,
-    render_session_export_artifact, render_session_list, render_session_search_results,
-    render_skill_detail, render_skill_list, render_tool_detail, render_tool_list,
+    OutputStyle, render_daemon_capability_detail, render_daemon_response, render_doctor_report,
+    render_session_detail, render_session_export_artifact, render_session_list,
+    render_session_search_results, render_skill_detail, render_skill_list, render_tool_detail,
+    render_tool_list,
 };
 use sched_claw::doctor::collect_doctor_report;
 use sched_claw::history::SessionHistory;
@@ -170,12 +172,21 @@ struct DaemonArgs {
 #[derive(Debug, Subcommand)]
 enum DaemonCommand {
     Capabilities(OutputArgs),
+    Show(DaemonShowArgs),
     Status(OutputArgs),
     Activate(DaemonActivateArgs),
     CollectPerf(DaemonCollectPerfArgs),
     CollectSched(DaemonCollectSchedArgs),
     Logs(DaemonLogsArgs),
     Stop(DaemonStopArgs),
+}
+
+#[derive(Debug, Args)]
+struct DaemonShowArgs {
+    #[arg(value_name = "CAPABILITY", value_parser = parse_daemon_capability_name)]
+    name: DaemonCapabilityName,
+    #[command(flatten)]
+    output: OutputArgs,
 }
 
 #[derive(Debug, Args)]
@@ -485,6 +496,15 @@ async fn run_daemon_command(
         DaemonCommand::Capabilities(output) => {
             (SchedClawDaemonRequest::Capabilities {}, output.style)
         }
+        DaemonCommand::Show(args) => {
+            let descriptor = find_expected_daemon_capability(args.name)
+                .with_context(|| format!("unknown daemon capability `{}`", args.name.as_str()))?;
+            println!(
+                "{}",
+                render_daemon_capability_detail(&descriptor, args.output.style)
+            );
+            return Ok(());
+        }
         DaemonCommand::Status(output) => (SchedClawDaemonRequest::Status {}, output.style),
         DaemonCommand::Activate(args) => (
             SchedClawDaemonRequest::Invoke {
@@ -567,6 +587,18 @@ async fn run_daemon_command(
         other => println!("{}", render_daemon_response(&other, style)),
     }
     Ok(())
+}
+
+fn parse_daemon_capability_name(value: &str) -> std::result::Result<DaemonCapabilityName, String> {
+    match value.trim() {
+        "deployment_control" => Ok(DaemonCapabilityName::DeploymentControl),
+        "perf_stat_capture" => Ok(DaemonCapabilityName::PerfStatCapture),
+        "perf_record_capture" => Ok(DaemonCapabilityName::PerfRecordCapture),
+        "scheduler_trace_capture" => Ok(DaemonCapabilityName::SchedulerTraceCapture),
+        other => Err(format!(
+            "unknown daemon capability `{other}`; expected one of deployment_control, perf_stat_capture, perf_record_capture, scheduler_trace_capture"
+        )),
+    }
 }
 
 fn join_prompt(parts: Vec<String>) -> Result<String> {
@@ -784,6 +816,29 @@ mod tests {
                     assert_eq!(output.style.as_str(), "plain");
                 }
                 other => panic!("expected capabilities command, got {other:?}"),
+            },
+            other => panic!("expected daemon command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_daemon_show_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "daemon",
+            "show",
+            "perf_record_capture",
+            "--style",
+            "plain",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Daemon(args)) => match args.command {
+                DaemonCommand::Show(args) => {
+                    assert_eq!(args.name.as_str(), "perf_record_capture");
+                    assert_eq!(args.output.style.as_str(), "plain");
+                }
+                other => panic!("expected show command, got {other:?}"),
             },
             other => panic!("expected daemon command, got {other:?}"),
         }

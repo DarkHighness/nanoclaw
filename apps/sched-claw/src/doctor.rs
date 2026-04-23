@@ -346,19 +346,19 @@ fn daemon_capability_parity_check(
 
     let expected_names = expected
         .iter()
-        .map(|item| item.name.as_str())
+        .map(|item| item.name)
         .collect::<std::collections::BTreeSet<_>>();
     let advertised_names = advertised
         .iter()
-        .map(|item| item.name.as_str())
+        .map(|item| item.name)
         .collect::<std::collections::BTreeSet<_>>();
     let missing = expected_names
         .difference(&advertised_names)
-        .copied()
+        .map(|name| name.as_str())
         .collect::<Vec<_>>();
     let extra = advertised_names
         .difference(&expected_names)
-        .copied()
+        .map(|name| name.as_str())
         .collect::<Vec<_>>();
 
     if missing.is_empty() && extra.is_empty() {

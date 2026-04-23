@@ -16,6 +16,29 @@ pub enum DaemonCapabilityKind {
     SchedulerTraceCapture,
 }
 
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq, Ord, PartialOrd,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonCapabilityName {
+    DeploymentControl,
+    PerfStatCapture,
+    PerfRecordCapture,
+    SchedulerTraceCapture,
+}
+
+impl DaemonCapabilityName {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DeploymentControl => "deployment_control",
+            Self::PerfStatCapture => "perf_stat_capture",
+            Self::PerfRecordCapture => "perf_record_capture",
+            Self::SchedulerTraceCapture => "scheduler_trace_capture",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonSelectorKind {
@@ -27,7 +50,7 @@ pub enum DaemonSelectorKind {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
 pub struct DaemonCapabilityDescriptor {
-    pub name: String,
+    pub name: DaemonCapabilityName,
     pub kind: DaemonCapabilityKind,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -43,7 +66,7 @@ pub struct DaemonCapabilityDescriptor {
 pub fn expected_daemon_capabilities() -> Vec<DaemonCapabilityDescriptor> {
     vec![
         DaemonCapabilityDescriptor {
-            name: "deployment_control".to_string(),
+            name: DaemonCapabilityName::DeploymentControl,
             kind: DaemonCapabilityKind::DeploymentControl,
             summary: "Activate, inspect, and stop a bounded sched-ext rollout without exposing an unrestricted root shell.".to_string(),
             selector_kinds: Vec::new(),
@@ -60,7 +83,7 @@ pub fn expected_daemon_capabilities() -> Vec<DaemonCapabilityDescriptor> {
             requires_root: true,
         },
         DaemonCapabilityDescriptor {
-            name: "perf_stat_capture".to_string(),
+            name: DaemonCapabilityName::PerfStatCapture,
             kind: DaemonCapabilityKind::PerfStatCapture,
             summary: "Attach bounded perf stat capture to an existing pid, uid, gid, or cgroup target.".to_string(),
             selector_kinds: perf_selector_kinds(),
@@ -78,7 +101,7 @@ pub fn expected_daemon_capabilities() -> Vec<DaemonCapabilityDescriptor> {
             requires_root: true,
         },
         DaemonCapabilityDescriptor {
-            name: "perf_record_capture".to_string(),
+            name: DaemonCapabilityName::PerfRecordCapture,
             kind: DaemonCapabilityKind::PerfRecordCapture,
             summary: "Attach bounded perf record capture with optional sample frequency and call graph mode.".to_string(),
             selector_kinds: perf_selector_kinds(),
@@ -96,7 +119,7 @@ pub fn expected_daemon_capabilities() -> Vec<DaemonCapabilityDescriptor> {
             requires_root: true,
         },
         DaemonCapabilityDescriptor {
-            name: "scheduler_trace_capture".to_string(),
+            name: DaemonCapabilityName::SchedulerTraceCapture,
             kind: DaemonCapabilityKind::SchedulerTraceCapture,
             summary: "Capture bounded perf sched record, timehist, and latency artifacts for scheduler ordering evidence.".to_string(),
             selector_kinds: perf_selector_kinds(),
@@ -195,6 +218,22 @@ pub enum DaemonCapabilityInvocation {
     },
 }
 
+impl DaemonCapabilityInvocation {
+    #[must_use]
+    pub const fn capability_name(&self) -> DaemonCapabilityName {
+        match self {
+            Self::RolloutActivate { .. } | Self::RolloutStop { .. } => {
+                DaemonCapabilityName::DeploymentControl
+            }
+            Self::PerfCapture { mode, .. } => match mode {
+                PerfCollectionMode::Stat => DaemonCapabilityName::PerfStatCapture,
+                PerfCollectionMode::Record => DaemonCapabilityName::PerfRecordCapture,
+            },
+            Self::SchedulerTraceCapture { .. } => DaemonCapabilityName::SchedulerTraceCapture,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SchedClawDaemonResponse {
@@ -228,6 +267,29 @@ pub enum DaemonCapabilityResult {
     SchedulerTraceCapture {
         snapshot: SchedCollectionSnapshot,
     },
+}
+
+impl DaemonCapabilityResult {
+    #[must_use]
+    pub const fn capability_name(&self) -> DaemonCapabilityName {
+        match self {
+            Self::Rollout { .. } => DaemonCapabilityName::DeploymentControl,
+            Self::PerfCapture { snapshot } => match snapshot.mode {
+                PerfCollectionMode::Stat => DaemonCapabilityName::PerfStatCapture,
+                PerfCollectionMode::Record => DaemonCapabilityName::PerfRecordCapture,
+            },
+            Self::SchedulerTraceCapture { .. } => DaemonCapabilityName::SchedulerTraceCapture,
+        }
+    }
+}
+
+#[must_use]
+pub fn find_expected_daemon_capability(
+    name: DaemonCapabilityName,
+) -> Option<DaemonCapabilityDescriptor> {
+    expected_daemon_capabilities()
+        .into_iter()
+        .find(|descriptor| descriptor.name == name)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]

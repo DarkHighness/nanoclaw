@@ -326,6 +326,59 @@ pub fn render_daemon_capabilities(
     render_named_daemon_capabilities("Daemon Capabilities", capabilities, style)
 }
 
+pub fn render_daemon_capability_detail(
+    descriptor: &DaemonCapabilityDescriptor,
+    style: OutputStyle,
+) -> String {
+    let sections = vec![
+        (
+            "Overview",
+            vec![
+                ("Name".to_string(), descriptor.name.as_str().to_string()),
+                (
+                    "Kind".to_string(),
+                    daemon_capability_kind_label(&descriptor.kind).to_string(),
+                ),
+                (
+                    "Requires Root".to_string(),
+                    bool_label(descriptor.requires_root),
+                ),
+                ("Summary".to_string(), descriptor.summary.clone()),
+            ],
+        ),
+        (
+            "Contract",
+            vec![
+                (
+                    "Selectors".to_string(),
+                    join_or_none(
+                        descriptor
+                            .selector_kinds
+                            .iter()
+                            .map(daemon_selector_kind_label)
+                            .map(ToString::to_string)
+                            .collect(),
+                    ),
+                ),
+                (
+                    "Outputs".to_string(),
+                    join_or_none(descriptor.outputs.clone()),
+                ),
+                (
+                    "Constraints".to_string(),
+                    join_or_none(descriptor.constraints.clone()),
+                ),
+            ],
+        ),
+    ];
+    render_sections(
+        &format!("Daemon Capability · {}", descriptor.name.as_str()),
+        &sections,
+        style,
+        None,
+    )
+}
+
 fn render_named_daemon_capabilities(
     title: &str,
     capabilities: &[DaemonCapabilityDescriptor],
@@ -346,7 +399,7 @@ fn render_named_daemon_capabilities(
                 .iter()
                 .map(|capability| {
                     vec![
-                        capability.name.clone(),
+                        capability.name.as_str().to_string(),
                         daemon_capability_kind_label(&capability.kind).to_string(),
                         join_or_none(
                             capability
@@ -370,7 +423,7 @@ fn render_named_daemon_capabilities(
                 let _ = writeln!(
                     &mut out,
                     "- {} [{}]",
-                    capability.name,
+                    capability.name.as_str(),
                     daemon_capability_kind_label(&capability.kind)
                 );
                 let _ = writeln!(&mut out, "  {}", capability.summary);
@@ -1329,8 +1382,9 @@ mod tests {
         render_session_list, render_skill_list, render_tool_list,
     };
     use crate::daemon_protocol::{
-        DaemonCapabilityDescriptor, DaemonCapabilityKind, DaemonSelectorKind, DaemonStatusSnapshot,
-        PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector, SchedCollectionSnapshot,
+        DaemonCapabilityDescriptor, DaemonCapabilityKind, DaemonCapabilityName, DaemonSelectorKind,
+        DaemonStatusSnapshot, PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector,
+        SchedCollectionSnapshot,
     };
     use crate::doctor::{DoctorCheck, DoctorReport, DoctorStatus};
     use crate::history::{SessionExportArtifact, SessionExportKind};
@@ -1397,7 +1451,7 @@ mod tests {
             helper_script_count: 4,
             configured_skill_roots: Vec::new(),
             expected_daemon_capabilities: vec![DaemonCapabilityDescriptor {
-                name: "deployment_control".to_string(),
+                name: DaemonCapabilityName::DeploymentControl,
                 kind: DaemonCapabilityKind::DeploymentControl,
                 summary: "rollout".to_string(),
                 selector_kinds: Vec::new(),
@@ -1406,7 +1460,7 @@ mod tests {
                 requires_root: true,
             }],
             daemon_capabilities: vec![DaemonCapabilityDescriptor {
-                name: "perf_stat_capture".to_string(),
+                name: DaemonCapabilityName::PerfStatCapture,
                 kind: DaemonCapabilityKind::PerfStatCapture,
                 summary: "capture".to_string(),
                 selector_kinds: vec![DaemonSelectorKind::Pid],
@@ -1434,7 +1488,7 @@ mod tests {
     fn renders_daemon_capabilities_plain_view() {
         let rendered = render_daemon_capabilities(
             &[DaemonCapabilityDescriptor {
-                name: "scheduler_trace_capture".to_string(),
+                name: DaemonCapabilityName::SchedulerTraceCapture,
                 kind: DaemonCapabilityKind::SchedulerTraceCapture,
                 summary: "trace".to_string(),
                 selector_kinds: vec![DaemonSelectorKind::Pid, DaemonSelectorKind::Cgroup],

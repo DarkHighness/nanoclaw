@@ -84,6 +84,7 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `sched-claw resume last "continue from the prior analysis"`
   - `sched-claw daemon status --style table`
   - `sched-claw daemon capabilities --style table`
+  - `sched-claw daemon show perf_record_capture --style plain`
   - `sched-claw daemon collect-perf --pid 4242 --duration-ms 1000 --output-dir artifacts/perf-a`
   - `sched-claw daemon collect-sched --pid 4242 --duration-ms 1000 --output-dir artifacts/sched-a`
 - `sched-claw-daemon` is a separate binary intended to run with elevated

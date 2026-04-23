@@ -1,8 +1,8 @@
 use sched_claw::app_config::DaemonClientConfig;
 use sched_claw::daemon_client::SchedClawDaemonClient;
 use sched_claw::daemon_protocol::{
-    DaemonCapabilityInvocation, DaemonCapabilityResult, PerfCallGraphMode, PerfCollectionMode,
-    PerfTargetSelector, SchedClawDaemonRequest, SchedClawDaemonResponse,
+    DaemonCapabilityInvocation, DaemonCapabilityName, DaemonCapabilityResult, PerfCallGraphMode,
+    PerfCollectionMode, PerfTargetSelector, SchedClawDaemonRequest, SchedClawDaemonResponse,
 };
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -102,12 +102,12 @@ async fn daemon_reports_capabilities() {
     assert!(
         capabilities
             .iter()
-            .any(|capability| capability.name == "deployment_control")
+            .any(|capability| capability.name == DaemonCapabilityName::DeploymentControl)
     );
     assert!(
         capabilities
             .iter()
-            .any(|capability| capability.name == "perf_stat_capture")
+            .any(|capability| capability.name == DaemonCapabilityName::PerfStatCapture)
     );
 
     harness.shutdown().await;
