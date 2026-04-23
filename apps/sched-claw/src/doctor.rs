@@ -217,62 +217,6 @@ pub async fn collect_doctor_report(
             "install linux perf tools if you need host-side profiling or proxy metrics".to_string(),
         ),
     ));
-    checks.push(command_check(
-        path_value,
-        "demo",
-        "cmake",
-        false,
-        "required by the LLVM/clang demo workload launcher",
-        Some("install cmake to use the LLVM/clang autotune demo".to_string()),
-    ));
-    checks.push(command_check(
-        path_value,
-        "demo",
-        "ninja",
-        false,
-        "required by the LLVM/clang demo workload launcher",
-        Some("install ninja to use the LLVM/clang autotune demo".to_string()),
-    ));
-    checks.push(command_check(
-        path_value,
-        "demo",
-        "sysbench",
-        false,
-        "required by the MySQL/sysbench demo workload launcher",
-        Some("install sysbench to use the MySQL/sysbench autotune demo".to_string()),
-    ));
-    checks.push(command_check(
-        path_value,
-        "demo",
-        "docker",
-        false,
-        "default MySQL demo mode uses dockerized MySQL",
-        Some("install docker or switch the MySQL demo launcher to --mode host".to_string()),
-    ));
-    checks.push(executable_file_check(
-        "demo",
-        "LLVM demo wrapper",
-        workspace_root.join("apps/sched-claw/scripts/demos/llvm-clang-autotune.sh"),
-        true,
-    ));
-    checks.push(executable_file_check(
-        "demo",
-        "LLVM workload launcher",
-        workspace_root.join("apps/sched-claw/scripts/workloads/run-llvm-clang-build.sh"),
-        true,
-    ));
-    checks.push(executable_file_check(
-        "demo",
-        "MySQL demo wrapper",
-        workspace_root.join("apps/sched-claw/scripts/demos/mysql-sysbench-autotune.sh"),
-        true,
-    ));
-    checks.push(executable_file_check(
-        "demo",
-        "MySQL workload launcher",
-        workspace_root.join("apps/sched-claw/scripts/workloads/run-mysql-sysbench.sh"),
-        true,
-    ));
 
     Ok(DoctorReport {
         workspace_root: workspace_root.to_path_buf(),
@@ -754,38 +698,6 @@ fn uv_bootstrap_check(path_env: Option<&str>, workspace_root: &Path) -> DoctorCh
 
     let _ = fs::remove_dir_all(&probe_root);
     check
-}
-
-fn executable_file_check(
-    category: &'static str,
-    name: &'static str,
-    path: PathBuf,
-    required: bool,
-) -> DoctorCheck {
-    if is_executable_file(&path) {
-        DoctorCheck {
-            category,
-            name,
-            status: DoctorStatus::Pass,
-            detail: format!("ready at {}", path.display()),
-            remediation: None,
-        }
-    } else {
-        DoctorCheck {
-            category,
-            name,
-            status: if required {
-                DoctorStatus::Fail
-            } else {
-                DoctorStatus::Warn
-            },
-            detail: format!("missing or not executable at {}", path.display()),
-            remediation: Some(format!(
-                "restore executable permissions on {}",
-                path.display()
-            )),
-        }
-    }
 }
 
 fn count_skills(root: &Path) -> Option<usize> {

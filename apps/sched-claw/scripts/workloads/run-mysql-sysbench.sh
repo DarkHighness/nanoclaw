@@ -22,6 +22,8 @@ REPORT_INTERVAL="5"
 ARTIFACT_DIR="$REPO_ROOT/.nanoclaw/apps/sched-claw/workloads/mysql-sysbench/artifacts/$STAMP"
 DOCKER_CONTAINER="sched-claw-mysql-sysbench"
 DOCKER_IMAGE="mysql:8.4"
+SYSBENCH_IMAGE="sched-claw-sysbench-runner:bookworm"
+SYSBENCH_DRIVER="docker"
 REPLACE_EXISTING=1
 STOP_DOCKER_ON_EXIT=1
 SKIP_PREPARE=0
@@ -50,6 +52,8 @@ Options:
   --artifact-dir <path>        Artifact directory for logs and metrics.
   --docker-container-name <n>  Docker container name. Default: sched-claw-mysql-sysbench
   --docker-image <image>       Docker image. Default: mysql:8.4
+  --sysbench-driver <mode>     Sysbench execution mode: docker|host. Default: docker
+  --sysbench-image <image>     Docker image for the sysbench runner. Default: sched-claw-sysbench-runner:bookworm
   --skip-prepare               Skip sysbench prepare.
   --skip-cleanup               Skip sysbench cleanup.
   --keep-docker                Keep docker container after run.
@@ -120,6 +124,14 @@ while [ $# -gt 0 ]; do
       DOCKER_IMAGE="$2"
       shift 2
       ;;
+    --sysbench-driver)
+      SYSBENCH_DRIVER="$2"
+      shift 2
+      ;;
+    --sysbench-image)
+      SYSBENCH_IMAGE="$2"
+      shift 2
+      ;;
     --skip-prepare)
       SKIP_PREPARE=1
       shift
@@ -147,9 +159,9 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$MODE" = "docker" ] || [ "$MODE" = "host" ] || sched_claw_fail "--mode must be docker or host"
+[ "$SYSBENCH_DRIVER" = "docker" ] || [ "$SYSBENCH_DRIVER" = "host" ] || sched_claw_fail "--sysbench-driver must be docker or host"
 
-SYSBENCH_BASE=(
-  sysbench
+SYSBENCH_ARGS=(
   oltp_read_write
   --mysql-host="$MYSQL_HOST"
   --mysql-port="$MYSQL_PORT"
@@ -159,22 +171,22 @@ SYSBENCH_BASE=(
   --tables="$TABLES"
   --table-size="$TABLE_SIZE"
 )
-PREPARE_CMD=("${SYSBENCH_BASE[@]}" prepare)
-RUN_CMD=(
-  "${SYSBENCH_BASE[@]}"
+PREPARE_ARGS=("${SYSBENCH_ARGS[@]}" prepare)
+RUN_ARGS=(
+  "${SYSBENCH_ARGS[@]}"
   --threads="$THREADS"
   --time="$TIME_SECONDS"
   --report-interval="$REPORT_INTERVAL"
   run
 )
-WARMUP_CMD=(
-  "${SYSBENCH_BASE[@]}"
+WARMUP_ARGS=(
+  "${SYSBENCH_ARGS[@]}"
   --threads="$THREADS"
   --time="$WARMUP_SECONDS"
   --report-interval="$REPORT_INTERVAL"
   run
 )
-CLEANUP_CMD=("${SYSBENCH_BASE[@]}" cleanup)
+CLEANUP_ARGS=("${SYSBENCH_ARGS[@]}" cleanup)
 DOCKER_RUN_CMD=(
   docker run -d
   --name "$DOCKER_CONTAINER"
@@ -185,11 +197,37 @@ DOCKER_RUN_CMD=(
   --skip-log-bin
   --innodb-flush-log-at-trx-commit=2
 )
+SYSBENCH_DOCKERFILE="$REPO_ROOT/apps/sched-claw/scripts/docker/sysbench-runner.Dockerfile"
 
 printf 'artifact_dir=%s\n' "$ARTIFACT_DIR"
 printf 'mode=%s\n' "$MODE"
+printf 'sysbench_driver=%s\n' "$SYSBENCH_DRIVER"
 printf 'primary_metric=transactions_per_sec\n'
 printf 'latency_guardrail=p95_latency_ms\n'
+
+build_sysbench_image_cmd() {
+  printf '%q ' docker build -t "$SYSBENCH_IMAGE" -f "$SYSBENCH_DOCKERFILE" "$REPO_ROOT/apps/sched-claw/scripts/docker"
+}
+
+run_sysbench_docker() {
+  docker run --rm --network host "$SYSBENCH_IMAGE" sysbench "$@"
+}
+
+print_sysbench_cmd() {
+  if [ "$SYSBENCH_DRIVER" = "docker" ]; then
+    sched_claw_print_cmd docker run --rm --network host "$SYSBENCH_IMAGE" sysbench "$@"
+  else
+    sched_claw_print_cmd sysbench "$@"
+  fi
+}
+
+run_sysbench() {
+  if [ "$SYSBENCH_DRIVER" = "docker" ]; then
+    run_sysbench_docker "$@"
+  else
+    sysbench "$@"
+  fi
+}
 
 if [ "$DRY_RUN" = 1 ]; then
   if [ "$MODE" = "docker" ]; then
@@ -197,19 +235,21 @@ if [ "$DRY_RUN" = 1 ]; then
     sched_claw_print_cmd "${DOCKER_RUN_CMD[@]}"
     sched_claw_print_cmd docker exec "$DOCKER_CONTAINER" mysqladmin ping -uroot "-p$MYSQL_PASSWORD" --silent
   fi
-  [ "$SKIP_PREPARE" = 1 ] || sched_claw_print_cmd "${PREPARE_CMD[@]}"
-  if [ "$WARMUP_SECONDS" != "0" ]; then
-    sched_claw_print_cmd "${WARMUP_CMD[@]}"
+  if [ "$SYSBENCH_DRIVER" = "docker" ]; then
+    printf '+ %s\n' "$(build_sysbench_image_cmd)"
   fi
-  sched_claw_print_cmd "${RUN_CMD[@]}"
-  [ "$SKIP_CLEANUP" = 1 ] || sched_claw_print_cmd "${CLEANUP_CMD[@]}"
+  [ "$SKIP_PREPARE" = 1 ] || print_sysbench_cmd "${PREPARE_ARGS[@]}"
+  if [ "$WARMUP_SECONDS" != "0" ]; then
+    print_sysbench_cmd "${WARMUP_ARGS[@]}"
+  fi
+  print_sysbench_cmd "${RUN_ARGS[@]}"
+  [ "$SKIP_CLEANUP" = 1 ] || print_sysbench_cmd "${CLEANUP_ARGS[@]}"
   if [ "$MODE" = "docker" ] && [ "$STOP_DOCKER_ON_EXIT" = 1 ]; then
     sched_claw_print_cmd docker rm -f "$DOCKER_CONTAINER"
   fi
   exit 0
 fi
 
-sched_claw_require_command sysbench
 mkdir -p "$ARTIFACT_DIR"
 
 cleanup_docker() {
@@ -220,8 +260,18 @@ cleanup_docker() {
 
 trap cleanup_docker EXIT
 
-if [ "$MODE" = "docker" ]; then
+if [ "$MODE" = "docker" ] || [ "$SYSBENCH_DRIVER" = "docker" ]; then
   sched_claw_require_command docker
+fi
+
+if [ "$SYSBENCH_DRIVER" = "docker" ]; then
+  docker build -t "$SYSBENCH_IMAGE" -f "$SYSBENCH_DOCKERFILE" "$REPO_ROOT/apps/sched-claw/scripts/docker" \
+    >"$ARTIFACT_DIR/sysbench-image-build.log" 2>&1
+else
+  sched_claw_require_command sysbench
+fi
+
+if [ "$MODE" = "docker" ]; then
   if [ "$REPLACE_EXISTING" = 1 ]; then
     docker rm -f "$DOCKER_CONTAINER" >/dev/null 2>&1 || true
   fi
@@ -239,25 +289,45 @@ fi
 
 {
   printf '# prepare\n'
-  sched_claw_command_string "${PREPARE_CMD[@]}"
+  if [ "$SYSBENCH_DRIVER" = "docker" ]; then
+    printf '%s' "$(build_sysbench_image_cmd)"
+    printf '\n'
+  fi
+  if [ "$SYSBENCH_DRIVER" = "docker" ]; then
+    sched_claw_command_string docker run --rm --network host "$SYSBENCH_IMAGE" sysbench "${PREPARE_ARGS[@]}"
+  else
+    sched_claw_command_string sysbench "${PREPARE_ARGS[@]}"
+  fi
   printf '\n# warmup\n'
-  sched_claw_command_string "${WARMUP_CMD[@]}"
+  if [ "$SYSBENCH_DRIVER" = "docker" ]; then
+    sched_claw_command_string docker run --rm --network host "$SYSBENCH_IMAGE" sysbench "${WARMUP_ARGS[@]}"
+  else
+    sched_claw_command_string sysbench "${WARMUP_ARGS[@]}"
+  fi
   printf '\n# run\n'
-  sched_claw_command_string "${RUN_CMD[@]}"
+  if [ "$SYSBENCH_DRIVER" = "docker" ]; then
+    sched_claw_command_string docker run --rm --network host "$SYSBENCH_IMAGE" sysbench "${RUN_ARGS[@]}"
+  else
+    sched_claw_command_string sysbench "${RUN_ARGS[@]}"
+  fi
   printf '\n# cleanup\n'
-  sched_claw_command_string "${CLEANUP_CMD[@]}"
+  if [ "$SYSBENCH_DRIVER" = "docker" ]; then
+    sched_claw_command_string docker run --rm --network host "$SYSBENCH_IMAGE" sysbench "${CLEANUP_ARGS[@]}"
+  else
+    sched_claw_command_string sysbench "${CLEANUP_ARGS[@]}"
+  fi
   printf '\n'
 } >"$ARTIFACT_DIR/commands.sh"
 
 if [ "$SKIP_PREPARE" = 0 ]; then
-  "${PREPARE_CMD[@]}" 2>&1 | tee "$ARTIFACT_DIR/prepare.log"
+  run_sysbench "${PREPARE_ARGS[@]}" 2>&1 | tee "$ARTIFACT_DIR/prepare.log"
 fi
 
 if [ "$WARMUP_SECONDS" != "0" ]; then
-  "${WARMUP_CMD[@]}" 2>&1 | tee "$ARTIFACT_DIR/warmup.log"
+  run_sysbench "${WARMUP_ARGS[@]}" 2>&1 | tee "$ARTIFACT_DIR/warmup.log"
 fi
 
-"${RUN_CMD[@]}" 2>&1 | tee "$ARTIFACT_DIR/run.log"
+run_sysbench "${RUN_ARGS[@]}" 2>&1 | tee "$ARTIFACT_DIR/run.log"
 
 transactions_per_sec=$(sed -n 's/.*transactions:[^()]*(\([0-9.]\+\) per sec.).*/\1/p' "$ARTIFACT_DIR/run.log" | tail -n 1)
 queries_per_sec=$(sed -n 's/.*queries:[^()]*(\([0-9.]\+\) per sec.).*/\1/p' "$ARTIFACT_DIR/run.log" | tail -n 1)
@@ -274,7 +344,7 @@ latency_guardrail=p95_latency_ms
 EOF
 
 if [ "$SKIP_CLEANUP" = 0 ]; then
-  "${CLEANUP_CMD[@]}" 2>&1 | tee "$ARTIFACT_DIR/cleanup.log"
+  run_sysbench "${CLEANUP_ARGS[@]}" 2>&1 | tee "$ARTIFACT_DIR/cleanup.log"
 fi
 
 printf 'metrics_file=%s\n' "$ARTIFACT_DIR/metrics.env"

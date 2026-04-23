@@ -212,7 +212,6 @@ Current checks include:
 - core toolchain availability such as `clang`, `bpftool`, `perf`, `uv`, and `python3`
 - uv-managed analysis helper compatibility against the repository requirements
 - kernel prerequisites such as BTF and cgroup v2
-- demo scripts plus LLVM and MySQL demo prerequisites
 
 Use it before claiming the product is ready, and after an operator changes the
 host to clear a blocking gap.
@@ -234,6 +233,8 @@ instead of adding a dedicated workload command surface.
     - `apps/sched-claw/scripts/demos/mysql-sysbench-autotune.sh`
   - workload launcher:
     - `apps/sched-claw/scripts/workloads/run-mysql-sysbench.sh`
+  - self-bootstrapped sysbench runner image recipe:
+    - `apps/sched-claw/scripts/docker/sysbench-runner.Dockerfile`
   - builtin skill:
     - `mysql-sysbench-tuning`
 

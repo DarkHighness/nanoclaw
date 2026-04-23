@@ -30,11 +30,14 @@ tags:
   - `apps/sched-claw/scripts/demos/mysql-sysbench-autotune.sh`
 - Workload launcher:
   - `apps/sched-claw/scripts/workloads/run-mysql-sysbench.sh`
+- Dockerized sysbench runner recipe:
+  - `apps/sched-claw/scripts/docker/sysbench-runner.Dockerfile`
 
 ## Workflow
 1. Pick the MySQL source.
    - `--mode docker` is the self-contained demo path.
    - `--mode host` is for an already-running MySQL instance.
+   - The default launcher path also builds a local sysbench runner image, so the demo does not require a host-installed `sysbench` binary.
 2. Read the demo workload context.
    - The demo wrapper writes a workload-context note next to its artifacts with the launcher path, direct metrics, guardrails, and rollback notes.
    - Do not collapse throughput and latency into a single vague “performance” label.
