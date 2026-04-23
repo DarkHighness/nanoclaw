@@ -27,7 +27,6 @@ steps that match the current evidence and question.
 2. Establish a reproducible baseline directory.
    - Unless the repository already has a stronger convention, create `.nanoclaw/apps/sched-claw/artifacts/<run-label>/`.
    - Save commands, raw outputs, and short notes side by side so the later sched-ext comparison can replay the same evidence path.
-   - If an operator explicitly wants the legacy experiment manifest, treat it as optional bookkeeping rather than the required path.
 3. Capture low-overhead scheduler evidence first.
    - Prefer `uname -a`, `lscpu`, `/proc/schedstat`, `/proc/<pid>/schedstat`, `/proc/pressure/{cpu,io,memory}`, `mpstat -P ALL`, `pidstat -w`, `vmstat`, and `perf stat`.
    - Start with summaries that tell you whether the problem is queueing, migration, wakeup latency, or plain saturation.

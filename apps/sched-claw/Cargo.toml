@@ -12,8 +12,6 @@ code-agent-backend = { path = "../code-agent/crates/backend", default-features =
 nanoclaw-config = { path = "../../crates/config" }
 sched-claw-daemon-core = { path = "crates/daemon-core" }
 sched-claw-daemon-protocol = { path = "crates/daemon-protocol" }
-sched-claw-domain = { path = "crates/domain" }
-sched-claw-execution = { path = "crates/execution" }
 store = { path = "../../crates/store" }
 anyhow = "1.0.100"
 async-trait = "0.1.89"

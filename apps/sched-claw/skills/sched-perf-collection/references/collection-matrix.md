@@ -12,8 +12,6 @@ Use the lightest collector that can falsify the current hypothesis.
     `perf stat` command
   - persist the resulting `perf.stat.csv`, command line, and notes next to the
     workload artifacts
-  - if an operator is intentionally using the hidden experiment substrate,
-    mirror the artifact into that manifest as optional bookkeeping
 - Typical commands:
   - `perf stat -x, --no-big-num -- <workload>`
   - `perf stat -x, --no-big-num -p <pid> --timeout 10000`

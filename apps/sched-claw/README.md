@@ -8,8 +8,6 @@ scheduler, and hand privileged rollout work to a dedicated daemon.
 The host intentionally does not hard-code a scheduler workflow. Skills define
 the SOP; the host primarily provides generic local capabilities for session
 history, skill discovery, filesystem or shell access, and privileged rollout.
-Optional operator-side experiment or template helpers remain available for
-compatibility, but they are not the default agent path.
 
 The primary direction is now a thinner harness: normal tools plus
 repository-embedded skills and scripts for collection, analysis, plotting, and
@@ -34,17 +32,12 @@ code generation; a narrow privileged daemon for sched-ext lifecycle control.
 
 ## Crate boundaries
 
-The `sched-claw` app is no longer a single monolithic crate.
+The supported `sched-claw` build now keeps only the crates that are on the
+primary runtime path:
 
-- `apps/sched-claw/crates/domain`
-  - owns workload contracts plus optional operator-side manifest and metric helpers
-  - stays free of runtime, UI, skill, and daemon implementation details
 - `apps/sched-claw/crates/daemon-protocol`
   - owns the daemon request/response contract only
   - keeps the privileged boundary reusable by the CLI, daemon server, and tool adapter
-- `apps/sched-claw/crates/execution`
-  - owns reusable sched-ext execution helpers such as code scaffolding, build capture, rollout planning, and workload run capture
-  - stays focused on execution artifacts instead of CLI, REPL, or skill policy
 - `apps/sched-claw/crates/daemon-core`
   - owns daemon client and server transport plus privileged process lifecycle enforcement
   - keeps Unix-socket I/O and rollout safety checks out of the host composition crate
@@ -52,10 +45,9 @@ The `sched-claw` app is no longer a single monolithic crate.
   - remains the host composition crate
   - owns bootstrap, CLI, REPL, display, doctor surfaces, skill materialization, and operator-facing composition
 
-The intent is to keep pure domain code, execution substrate, and daemon
-contracts stable while the host crate continues to evolve. Richer trial
-analysis or custom comparison logic belongs in skill scripts, not in the
-domain crate, execution crate, or host runtime.
+The intent is to keep the host focused on agent runtime composition and a narrow
+privileged boundary. Collection, analysis, plotting, and code generation logic
+belongs in skill scripts, not in more host-side workflow crates.
 
 ## Runtime shape
 
@@ -90,10 +82,6 @@ domain crate, execution crate, or host runtime.
   - `stop`
   - `logs`
 
-Legacy operator-oriented `experiment` and `template` subcommands still exist
-for manual recovery and compatibility, but they are no longer the default
-agent-facing path and are hidden from the primary CLI help.
-
 ## Skills
 
 Built-in skills are materialized under:
@@ -108,7 +96,7 @@ They cover:
 - scheduler-specific performance analysis SOPs and durable fact or inference capture
 - Linux scheduler-focused evidence collection and triage
 - translating evidence and analysis into explicit sched-ext design records
-- sched-ext build, verifier, run, score, and rollout safety loops
+- sched-ext build, verifier, run, and rollout safety loops
 - Translating workload evidence into sched-ext policy and rollout steps
 - LLVM/clang build autotune demos with direct wall-clock metrics plus IPC/CPI fallback
 - MySQL sysbench autotune demos with direct throughput and latency metrics
@@ -186,13 +174,8 @@ implicit side effect hidden in the store directory.
 These commands intentionally reuse the shared `store` and `runtime` layers
 instead of maintaining a separate history protocol.
 
-## Optional operator substrate
+## Artifact-first workflow
 
-The host still carries hidden `experiment` and `template` subcommands for
-manual recovery, audit, and compatibility with earlier iterations. They remain
-shell-invoked local helpers rather than model-visible tools.
-
-Treat them as optional operator substrate, not as the primary agent workflow.
 The preferred path is:
 
 - workload context captured as normal files under `.nanoclaw/` or another
@@ -204,13 +187,6 @@ The preferred path is:
 - sched-ext code scaffolding via repo-local scripts such as
   `skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh`
 - privileged rollout only through `sched_ext_daemon`
-
-If an operator needs hidden substrate state, it can still persist:
-
-- workload selectors such as script, pid, uid, gid, or cgroup
-- direct-vs-proxy metric intent
-- evidence, analysis, and design records
-- optional candidate lineage, build or verifier logs, and deployment history
 
 Reference sched-ext starting points still live under
 `apps/sched-claw/templates/sched_ext/`, but they are reference material for
@@ -232,7 +208,9 @@ Current checks include:
 - selected provider credentials for the active primary model
 - builtin sched-claw skills, helper scripts, and shared `apps/code-agent/skills` availability
 - privileged daemon socket reachability
+- kernel release plus required `sched_ext` / BPF / cgroup config options
 - core toolchain availability such as `clang`, `bpftool`, `perf`, `uv`, and `python3`
+- uv-managed analysis helper compatibility against the repository requirements
 - kernel prerequisites such as BTF and cgroup v2
 - demo scripts plus LLVM and MySQL demo prerequisites
 
@@ -345,7 +323,6 @@ Automated validation currently includes:
 
 Recent additions also have unit coverage for:
 
-- hidden operator substrate persistence and rollout gating
 - REPL command parsing
 - session history reference resolution and transcript rendering
 - startup catalog alias resolution

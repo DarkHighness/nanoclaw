@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 pub use sched_claw_daemon_core::daemon_client::DaemonClientConfig;
-pub use sched_claw_domain::paths::{APP_NAME, app_state_dir};
+pub const APP_NAME: &str = "sched-claw";
 const DEFAULT_DAEMON_TIMEOUT_MS: u64 = 30_000;
 const MAX_DAEMON_TIMEOUT_MS: u64 = 5 * 60_000;
 
@@ -115,6 +115,10 @@ impl SchedClawConfig {
 
 pub fn default_daemon_socket_path(workspace_root: &Path) -> PathBuf {
     app_state_dir(workspace_root).join("sched-claw.sock")
+}
+
+pub fn app_state_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".nanoclaw/apps").join(APP_NAME)
 }
 
 fn normalize_string_set(values: Vec<String>) -> BTreeSet<String> {

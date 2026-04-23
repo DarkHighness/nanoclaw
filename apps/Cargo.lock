@@ -3206,8 +3206,6 @@ dependencies = [
  "nanoclaw-config",
  "sched-claw-daemon-core",
  "sched-claw-daemon-protocol",
- "sched-claw-domain",
- "sched-claw-execution",
  "schemars",
  "serde",
  "serde_json",
@@ -3239,28 +3237,6 @@ version = "0.1.0"
 dependencies = [
  "schemars",
  "serde",
-]
-
-[[package]]
-name = "sched-claw-domain"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "tempfile",
- "toml",
-]
-
-[[package]]
-name = "sched-claw-execution"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "sched-claw-daemon-protocol",
- "sched-claw-domain",
- "tempfile",
- "tokio",
 ]
 
 [[package]]

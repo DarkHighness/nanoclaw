@@ -56,6 +56,6 @@ tags:
 
 ## Optional Helper Script
 - `scripts/compare_trials.py`
-  - compares baseline and candidate runs from an experiment manifest when that legacy format exists
+  - compares baseline and candidate runs from explicit result files or a manifest-like sidecar when such a file exists
   - supports caller-selected reducers and optional outlier methods
   - does not write back host policy; it is only an analysis aid

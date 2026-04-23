@@ -135,5 +135,3 @@ The host should keep implementing these substrate properties:
 - code generation around named sched-ext levers, not unconstrained blank-page
   synthesis
 - privileged rollout through a lifecycle daemon, not generic root shell access
-- optional hidden operator substrate for audit or recovery, without making it
-  the required agent workflow

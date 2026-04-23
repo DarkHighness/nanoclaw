@@ -5,6 +5,11 @@ use anyhow::Result;
 use nanoclaw_config::ProviderKind;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const RECOMMENDED_KERNEL_MAJOR: u64 = 6;
+const RECOMMENDED_KERNEL_MINOR: u64 = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum DoctorStatus {
@@ -77,11 +82,29 @@ impl DoctorReport {
     }
 }
 
+#[derive(Clone, Debug)]
+struct LoadedKernelConfig {
+    source_path: PathBuf,
+    contents: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct KernelRelease {
+    raw: String,
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
 pub async fn collect_doctor_report(
     workspace_root: &Path,
     config: &SchedClawConfig,
 ) -> Result<DoctorReport> {
     let mut checks = Vec::new();
+    let path_value = config.env_map.get_raw("PATH");
+    let kernel_release = detect_kernel_release();
+    let kernel_config = load_kernel_config(kernel_release.as_ref().map(|value| value.raw.as_str()));
+
     checks.push(provider_key_check(config));
     checks.push(skill_source_check(
         workspace_root.join("apps/sched-claw/skills"),
@@ -126,6 +149,9 @@ pub async fn collect_doctor_report(
         "used to seed candidate directories and build stubs without host-owned workflow code",
     ));
     checks.push(daemon_check(config).await);
+    checks.push(kernel_release_check(kernel_release.as_ref()));
+    checks.push(kernel_config_source_check(kernel_config.as_ref()));
+    checks.push(kernel_config_option_check(kernel_config.as_ref()));
     checks.push(path_presence_check(
         "kernel",
         "BTF vmlinux",
@@ -142,8 +168,6 @@ pub async fn collect_doctor_report(
         "used when workload contracts or sched-ext candidates target cgroups",
         Some("mount cgroup v2 or avoid cgroup-targeted captures on this host".to_string()),
     ));
-
-    let path_value = config.env_map.get_raw("PATH");
     checks.push(command_check(
         path_value,
         "toolchain",
@@ -182,6 +206,7 @@ pub async fn collect_doctor_report(
         "used by skill helper scripts for metrics analysis and plotting",
         Some("install python3 if you want the built-in analysis helper scripts".to_string()),
     ));
+    checks.push(uv_bootstrap_check(path_value, workspace_root));
     checks.push(command_check(
         path_value,
         "analysis",
@@ -409,6 +434,123 @@ async fn daemon_check(config: &SchedClawConfig) -> DoctorCheck {
     }
 }
 
+fn kernel_release_check(release: Option<&KernelRelease>) -> DoctorCheck {
+    let Some(release) = release else {
+        return DoctorCheck {
+            category: "kernel",
+            name: "kernel release",
+            status: DoctorStatus::Warn,
+            detail: "failed to detect kernel release via uname -r".to_string(),
+            remediation: Some(
+                "verify that the host exposes uname -r and record the tested kernel version"
+                    .to_string(),
+            ),
+        };
+    };
+
+    let meets_baseline =
+        (release.major, release.minor) >= (RECOMMENDED_KERNEL_MAJOR, RECOMMENDED_KERNEL_MINOR);
+    DoctorCheck {
+        category: "kernel",
+        name: "kernel release",
+        status: if meets_baseline {
+            DoctorStatus::Pass
+        } else {
+            DoctorStatus::Warn
+        },
+        detail: format!(
+            "{} ({}) the harness baseline {}.{}+",
+            release.raw,
+            if meets_baseline {
+                "meets"
+            } else {
+                "is below"
+            },
+            RECOMMENDED_KERNEL_MAJOR,
+            RECOMMENDED_KERNEL_MINOR
+        ),
+        remediation: (!meets_baseline).then_some(
+            "use a newer kernel or confirm that your distro backports the required sched-ext surface before rollout"
+                .to_string(),
+        ),
+    }
+}
+
+fn kernel_config_source_check(config: Option<&LoadedKernelConfig>) -> DoctorCheck {
+    match config {
+        Some(config) => DoctorCheck {
+            category: "kernel",
+            name: "kernel config source",
+            status: DoctorStatus::Pass,
+            detail: format!("loaded from {}", config.source_path.display()),
+            remediation: None,
+        },
+        None => DoctorCheck {
+            category: "kernel",
+            name: "kernel config source",
+            status: DoctorStatus::Warn,
+            detail: "could not load /boot/config-<release> or /proc/config.gz".to_string(),
+            remediation: Some(
+                "install a readable kernel config or expose /proc/config.gz so doctor can verify sched-ext prerequisites"
+                    .to_string(),
+            ),
+        },
+    }
+}
+
+fn kernel_config_option_check(config: Option<&LoadedKernelConfig>) -> DoctorCheck {
+    let Some(config) = config else {
+        return DoctorCheck {
+            category: "kernel",
+            name: "kernel config prerequisites",
+            status: DoctorStatus::Warn,
+            detail: "kernel config not readable; sched-ext prerequisites could not be verified"
+                .to_string(),
+            remediation: Some(
+                "make the current kernel config readable and rerun sched-claw doctor".to_string(),
+            ),
+        };
+    };
+
+    let required = [
+        ("CONFIG_BPF", "y"),
+        ("CONFIG_BPF_SYSCALL", "y"),
+        ("CONFIG_DEBUG_INFO_BTF", "y"),
+        ("CONFIG_CGROUPS", "y"),
+        ("CONFIG_CGROUP_SCHED", "y"),
+        ("CONFIG_SCHED_CLASS_EXT", "y"),
+    ];
+
+    let mut failures = Vec::new();
+    let mut observed = Vec::new();
+    for (key, expected) in required {
+        let value = kernel_config_value(&config.contents, key).unwrap_or("<missing>");
+        observed.push(format!("{key}={value}"));
+        if value != expected {
+            failures.push(format!("{key} expected {expected} got {value}"));
+        }
+    }
+
+    DoctorCheck {
+        category: "kernel",
+        name: "kernel config prerequisites",
+        status: if failures.is_empty() {
+            DoctorStatus::Pass
+        } else {
+            DoctorStatus::Fail
+        },
+        detail: if failures.is_empty() {
+            observed.join(", ")
+        } else {
+            format!("{}; observed {}", failures.join("; "), observed.join(", "))
+        },
+        remediation: (!failures.is_empty()).then_some(
+            "use a kernel build with sched-ext, BPF, BTF, and cgroup scheduling enabled"
+                .to_string(),
+        ),
+    }
+}
+
 fn path_presence_check(
     category: &'static str,
     name: &'static str,
@@ -468,6 +610,150 @@ fn command_check(
             remediation,
         },
     }
+}
+
+fn uv_bootstrap_check(path_env: Option<&str>, workspace_root: &Path) -> DoctorCheck {
+    let Some(uv_path) = find_command_on_path("uv", path_env) else {
+        return DoctorCheck {
+            category: "analysis",
+            name: "uv helper compatibility",
+            status: DoctorStatus::Fail,
+            detail: "uv is unavailable, so the analysis helper environment cannot be provisioned"
+                .to_string(),
+            remediation: Some(
+                "install uv and rerun sched-claw doctor before using pandas, polars, or matplotlib helpers"
+                    .to_string(),
+            ),
+        };
+    };
+    let Some(python_path) = find_command_on_path("python3", path_env) else {
+        return DoctorCheck {
+            category: "analysis",
+            name: "uv helper compatibility",
+            status: DoctorStatus::Fail,
+            detail:
+                "python3 is unavailable, so the uv-managed analysis environment cannot be created"
+                    .to_string(),
+            remediation: Some(
+                "install python3 and rerun sched-claw doctor before using analysis helpers"
+                    .to_string(),
+            ),
+        };
+    };
+
+    let requirements =
+        workspace_root.join("apps/sched-claw/skills/sched-perf-analysis/scripts/requirements.txt");
+    if !requirements.is_file() {
+        return DoctorCheck {
+            category: "analysis",
+            name: "uv helper compatibility",
+            status: DoctorStatus::Fail,
+            detail: format!(
+                "analysis requirements file is missing at {}",
+                requirements.display()
+            ),
+            remediation: Some(format!("restore {}", requirements.display())),
+        };
+    }
+
+    let probe_root = std::env::temp_dir().join(format!(
+        "sched-claw-doctor-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_millis())
+            .unwrap_or_default()
+    ));
+    let venv_dir = probe_root.join(".venv");
+    let python_in_venv = venv_dir.join("bin/python");
+    let uv_version =
+        command_version_line(&uv_path, &["--version"]).unwrap_or_else(|| "uv unknown".to_string());
+    let python_version = command_version_line(&python_path, &["--version"])
+        .unwrap_or_else(|| "python3 unknown".to_string());
+
+    let venv_output = ProcessCommand::new(&uv_path)
+        .args(["venv", "--python"])
+        .arg(&python_path)
+        .arg(&venv_dir)
+        .output();
+
+    let check = match venv_output {
+        Ok(output) if output.status.success() => {
+            let dry_run = ProcessCommand::new(&uv_path)
+                .arg("pip")
+                .arg("install")
+                .arg("--dry-run")
+                .arg("--strict")
+                .arg("--python")
+                .arg(&python_in_venv)
+                .arg("-r")
+                .arg(&requirements)
+                .output();
+            match dry_run {
+                Ok(output) if output.status.success() => DoctorCheck {
+                    category: "analysis",
+                    name: "uv helper compatibility",
+                    status: DoctorStatus::Pass,
+                    detail: format!(
+                        "{} + {} resolved {}",
+                        uv_version,
+                        python_version,
+                        requirements.display()
+                    ),
+                    remediation: None,
+                },
+                Ok(output) => DoctorCheck {
+                    category: "analysis",
+                    name: "uv helper compatibility",
+                    status: DoctorStatus::Fail,
+                    detail: format!(
+                        "uv could create a venv but failed to resolve helper requirements: {}",
+                        summarize_output(&output.stdout, &output.stderr)
+                    ),
+                    remediation: Some(
+                        "run bootstrap_uv_env.sh manually and fix Python or package resolution issues before using analysis helpers"
+                            .to_string(),
+                    ),
+                },
+                Err(error) => DoctorCheck {
+                    category: "analysis",
+                    name: "uv helper compatibility",
+                    status: DoctorStatus::Fail,
+                    detail: format!("failed to run uv dry-run dependency probe: {error}"),
+                    remediation: Some(
+                        "verify that uv can execute pip install --dry-run for the analysis requirements"
+                            .to_string(),
+                    ),
+                },
+            }
+        }
+        Ok(output) => DoctorCheck {
+            category: "analysis",
+            name: "uv helper compatibility",
+            status: DoctorStatus::Fail,
+            detail: format!(
+                "uv failed to create a virtual environment: {}",
+                summarize_output(&output.stdout, &output.stderr)
+            ),
+            remediation: Some(
+                "verify uv, python3, and filesystem permissions before using the analysis helper scripts"
+                    .to_string(),
+            ),
+        },
+        Err(error) => DoctorCheck {
+            category: "analysis",
+            name: "uv helper compatibility",
+            status: DoctorStatus::Fail,
+            detail: format!("failed to run uv venv probe: {error}"),
+            remediation: Some(
+                "verify that uv is executable and can create a virtual environment on this host"
+                    .to_string(),
+            ),
+        },
+    };
+
+    let _ = fs::remove_dir_all(&probe_root);
+    check
 }
 
 fn executable_file_check(
@@ -537,6 +823,80 @@ fn provider_label(provider: &ProviderKind) -> &'static str {
     }
 }
 
+fn load_kernel_config(release: Option<&str>) -> Option<LoadedKernelConfig> {
+    if let Some(release) = release {
+        let boot_path = PathBuf::from(format!("/boot/config-{release}"));
+        if let Ok(contents) = fs::read_to_string(&boot_path) {
+            return Some(LoadedKernelConfig {
+                source_path: boot_path,
+                contents,
+            });
+        }
+    }
+
+    if Path::new("/proc/config.gz").is_file() {
+        for command in ["gzip", "zcat"] {
+            let Ok(output) = ProcessCommand::new(command)
+                .args(["-dc", "/proc/config.gz"])
+                .output()
+            else {
+                continue;
+            };
+            if output.status.success() {
+                return Some(LoadedKernelConfig {
+                    source_path: PathBuf::from("/proc/config.gz"),
+                    contents: String::from_utf8_lossy(&output.stdout).into_owned(),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn kernel_config_value<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
+    contents.lines().find_map(|line| {
+        let (line_key, value) = line.split_once('=')?;
+        (line_key == key).then_some(value)
+    })
+}
+
+fn detect_kernel_release() -> Option<KernelRelease> {
+    let output = ProcessCommand::new("uname").arg("-r").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_kernel_release(&raw)
+}
+
+fn parse_kernel_release(raw: &str) -> Option<KernelRelease> {
+    let mut numbers = Vec::new();
+    let mut current = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_digit() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            numbers.push(current.parse::<u64>().ok()?);
+            current.clear();
+            if numbers.len() == 3 {
+                break;
+            }
+        }
+    }
+    if !current.is_empty() && numbers.len() < 3 {
+        numbers.push(current.parse::<u64>().ok()?);
+    }
+    if numbers.len() < 2 {
+        return None;
+    }
+    Some(KernelRelease {
+        raw: raw.to_string(),
+        major: numbers[0],
+        minor: numbers[1],
+        patch: numbers.get(2).copied().unwrap_or_default(),
+    })
+}
+
 fn find_command_on_path(command: &str, path_env: Option<&str>) -> Option<PathBuf> {
     let candidate = PathBuf::from(command);
     if candidate.components().count() > 1 || candidate.is_absolute() {
@@ -547,6 +907,32 @@ fn find_command_on_path(command: &str, path_env: Option<&str>) -> Option<PathBuf
     std::env::split_paths(path_env)
         .map(|dir| dir.join(command))
         .find(|path| is_executable_file(path))
+}
+
+fn command_version_line(command: &Path, args: &[&str]) -> Option<String> {
+    let output = ProcessCommand::new(command).args(args).output().ok()?;
+    let text = if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    } else {
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToString::to_string)
+}
+
+fn summarize_output(stdout: &[u8], stderr: &[u8]) -> String {
+    for source in [stderr, stdout] {
+        if let Some(line) = String::from_utf8_lossy(source)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+        {
+            return line.to_string();
+        }
+    }
+    "<no output>".to_string()
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -574,7 +960,7 @@ fn is_executable_mode(_metadata: &fs::Metadata) -> bool {
 mod tests {
     use super::{
         DoctorCheck, DoctorReport, DoctorStatus, count_helper_scripts, count_skills,
-        find_command_on_path, is_executable_file,
+        find_command_on_path, is_executable_file, kernel_config_value, parse_kernel_release,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -680,5 +1066,24 @@ mod tests {
             fs::set_permissions(&file, permissions).unwrap();
             assert!(!is_executable_file(&file));
         }
+    }
+
+    #[test]
+    fn parses_kernel_release_with_distro_suffix() {
+        let parsed = parse_kernel_release("6.14.0-1006-intel").unwrap();
+        assert_eq!(parsed.major, 6);
+        assert_eq!(parsed.minor, 14);
+        assert_eq!(parsed.patch, 0);
+    }
+
+    #[test]
+    fn extracts_kernel_config_values() {
+        let config = "CONFIG_BPF=y\nCONFIG_SCHED_CLASS_EXT=m\n";
+        assert_eq!(kernel_config_value(config, "CONFIG_BPF"), Some("y"));
+        assert_eq!(
+            kernel_config_value(config, "CONFIG_SCHED_CLASS_EXT"),
+            Some("m")
+        );
+        assert_eq!(kernel_config_value(config, "CONFIG_DEBUG_INFO_BTF"), None);
     }
 }
