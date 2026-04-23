@@ -38,7 +38,11 @@ echo "completed"
         .send(&SchedClawDaemonRequest::Invoke {
             invocation: DaemonCapabilityInvocation::RolloutActivate {
                 label: Some("loop-test".to_string()),
-                argv: vec![script.display().to_string(), "--demo".to_string()],
+                argv: vec![
+                    "/bin/sh".to_string(),
+                    script.display().to_string(),
+                    "--demo".to_string(),
+                ],
                 cwd: Some(harness.workspace_root().display().to_string()),
                 env: Default::default(),
                 lease_timeout_ms: None,
@@ -125,7 +129,7 @@ exit 0
         .send(&SchedClawDaemonRequest::Invoke {
             invocation: DaemonCapabilityInvocation::RolloutActivate {
                 label: Some("fast-exit".to_string()),
-                argv: vec![script.display().to_string()],
+                argv: vec!["/bin/sh".to_string(), script.display().to_string()],
                 cwd: Some(harness.workspace_root().display().to_string()),
                 env: Default::default(),
                 lease_timeout_ms: None,
@@ -173,7 +177,7 @@ done
         .send(&SchedClawDaemonRequest::Invoke {
             invocation: DaemonCapabilityInvocation::RolloutActivate {
                 label: Some("lease-test".to_string()),
-                argv: vec![script.display().to_string()],
+                argv: vec!["/bin/sh".to_string(), script.display().to_string()],
                 cwd: Some(harness.workspace_root().display().to_string()),
                 env: Default::default(),
                 lease_timeout_ms: Some(500),
@@ -214,7 +218,11 @@ while true; do
 done
 "#,
     );
-    let mut target_child = Command::new(&target).stdout(Stdio::null()).spawn().unwrap();
+    let mut target_child = Command::new("/bin/sh")
+        .arg(&target)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
     let pid = target_child.id().unwrap();
 
     let response = harness
@@ -280,7 +288,11 @@ while true; do
 done
 "#,
     );
-    let mut target_child = Command::new(&target).stdout(Stdio::null()).spawn().unwrap();
+    let mut target_child = Command::new("/bin/sh")
+        .arg(&target)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
     let pid = target_child.id().unwrap();
 
     let response = harness
@@ -339,7 +351,11 @@ while true; do
 done
 "#,
     );
-    let mut target_child = Command::new(&target).stdout(Stdio::null()).spawn().unwrap();
+    let mut target_child = Command::new("/bin/sh")
+        .arg(&target)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
     let pid = target_child.id().unwrap();
 
     let response = harness
@@ -420,6 +436,8 @@ impl DaemonHarness {
             .arg(&socket_path)
             .arg("--allow-root")
             .arg(workspace.path())
+            .arg("--allow-root")
+            .arg("/bin")
             .env(
                 "PATH",
                 format!(

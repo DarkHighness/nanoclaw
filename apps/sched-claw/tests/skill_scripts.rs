@@ -435,7 +435,8 @@ done
     permissions.set_mode(0o755);
     std::fs::set_permissions(&busy_path, permissions)?;
 
-    let mut busy_child = Command::new(&busy_path)
+    let mut busy_child = Command::new("/bin/sh")
+        .arg(&busy_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -585,7 +586,8 @@ done
     permissions.set_mode(0o755);
     std::fs::set_permissions(&busy_path, permissions)?;
 
-    let mut busy_child = Command::new(&busy_path)
+    let mut busy_child = Command::new("/bin/sh")
+        .arg(&busy_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

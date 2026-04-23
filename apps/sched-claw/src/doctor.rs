@@ -1,6 +1,6 @@
 use crate::app_config::{SchedClawConfig, app_state_dir};
 use crate::daemon_client::SchedClawDaemonClient;
-use crate::daemon_protocol::DaemonCapabilityDescriptor;
+use crate::daemon_protocol::{DaemonCapabilityDescriptor, expected_daemon_capabilities};
 use agent_env::vars;
 use anyhow::Result;
 use nanoclaw_config::ProviderKind;
@@ -56,6 +56,7 @@ pub struct DoctorReport {
     pub model_name: String,
     pub helper_script_count: usize,
     pub configured_skill_roots: Vec<PathBuf>,
+    pub expected_daemon_capabilities: Vec<DaemonCapabilityDescriptor>,
     pub daemon_capabilities: Vec<DaemonCapabilityDescriptor>,
     pub checks: Vec<DoctorCheck>,
 }
@@ -103,6 +104,7 @@ pub async fn collect_doctor_report(
     config: &SchedClawConfig,
 ) -> Result<DoctorReport> {
     let mut checks = Vec::new();
+    let expected_capabilities = expected_daemon_capabilities();
     let path_value = config.env_map.get_raw("PATH");
     let kernel_release = detect_kernel_release();
     let kernel_config = load_kernel_config(kernel_release.as_ref().map(|value| value.raw.as_str()));
@@ -212,6 +214,11 @@ pub async fn collect_doctor_report(
     ));
     let (daemon_status, daemon_capabilities) = daemon_diagnostics(config).await;
     checks.push(daemon_status);
+    if let Some(parity_check) =
+        daemon_capability_parity_check(&expected_capabilities, &daemon_capabilities)
+    {
+        checks.push(parity_check);
+    }
     checks.push(kernel_release_check(kernel_release.as_ref()));
     checks.push(kernel_config_source_check(kernel_config.as_ref()));
     checks.push(kernel_config_option_check(kernel_config.as_ref()));
@@ -291,6 +298,7 @@ pub async fn collect_doctor_report(
         model_name: config.primary_profile.model.model.clone(),
         helper_script_count: count_helper_scripts(&workspace_root.join("apps/sched-claw/skills")),
         configured_skill_roots: config.skill_roots.clone(),
+        expected_daemon_capabilities: expected_capabilities,
         daemon_capabilities,
         checks,
     })
@@ -326,6 +334,63 @@ fn provider_key_check(config: &SchedClawConfig) -> DoctorCheck {
             )),
         },
     }
+}
+
+fn daemon_capability_parity_check(
+    expected: &[DaemonCapabilityDescriptor],
+    advertised: &[DaemonCapabilityDescriptor],
+) -> Option<DoctorCheck> {
+    if advertised.is_empty() {
+        return None;
+    }
+
+    let expected_names = expected
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let advertised_names = advertised
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing = expected_names
+        .difference(&advertised_names)
+        .copied()
+        .collect::<Vec<_>>();
+    let extra = advertised_names
+        .difference(&expected_names)
+        .copied()
+        .collect::<Vec<_>>();
+
+    if missing.is_empty() && extra.is_empty() {
+        return Some(DoctorCheck {
+            category: "daemon",
+            name: "daemon capability parity",
+            status: DoctorStatus::Pass,
+            detail: format!(
+                "advertised {} capabilities match the expected host contract",
+                advertised.len()
+            ),
+            remediation: None,
+        });
+    }
+
+    let mut detail_parts = Vec::new();
+    if !missing.is_empty() {
+        detail_parts.push(format!("missing: {}", missing.join(", ")));
+    }
+    if !extra.is_empty() {
+        detail_parts.push(format!("extra: {}", extra.join(", ")));
+    }
+    Some(DoctorCheck {
+        category: "daemon",
+        name: "daemon capability parity",
+        status: DoctorStatus::Warn,
+        detail: detail_parts.join(" ; "),
+        remediation: Some(
+            "rebuild or restart the daemon and host together so both sides agree on the privileged capability contract"
+                .to_string(),
+        ),
+    })
 }
 
 fn skill_source_check(root: PathBuf, required: bool, label: &'static str) -> DoctorCheck {
@@ -1066,6 +1131,7 @@ mod tests {
             model_name: "gpt-5.4".to_string(),
             helper_script_count: 4,
             configured_skill_roots: Vec::new(),
+            expected_daemon_capabilities: Vec::new(),
             daemon_capabilities: Vec::new(),
             checks: vec![
                 DoctorCheck {

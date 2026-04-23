@@ -39,6 +39,99 @@ pub struct DaemonCapabilityDescriptor {
     pub requires_root: bool,
 }
 
+#[must_use]
+pub fn expected_daemon_capabilities() -> Vec<DaemonCapabilityDescriptor> {
+    vec![
+        DaemonCapabilityDescriptor {
+            name: "deployment_control".to_string(),
+            kind: DaemonCapabilityKind::DeploymentControl,
+            summary: "Activate, inspect, and stop a bounded sched-ext rollout without exposing an unrestricted root shell.".to_string(),
+            selector_kinds: Vec::new(),
+            outputs: vec![
+                "daemon status snapshot".to_string(),
+                "deployment log tail".to_string(),
+                "deployment exit snapshot".to_string(),
+            ],
+            constraints: vec![
+                "argv and cwd must resolve inside allowed roots".to_string(),
+                "only one active deployment at a time".to_string(),
+                "optional rollout lease enforces automatic stop".to_string(),
+            ],
+            requires_root: true,
+        },
+        DaemonCapabilityDescriptor {
+            name: "perf_stat_capture".to_string(),
+            kind: DaemonCapabilityKind::PerfStatCapture,
+            summary: "Attach bounded perf stat capture to an existing pid, uid, gid, or cgroup target.".to_string(),
+            selector_kinds: perf_selector_kinds(),
+            outputs: vec![
+                "perf.stat.csv".to_string(),
+                "perf.command.json".to_string(),
+                "perf.selector.json".to_string(),
+                "perf stdout and stderr logs".to_string(),
+            ],
+            constraints: vec![
+                perf_duration_constraint(),
+                "output_dir must resolve inside allowed roots".to_string(),
+                "events are validated and shell expansion is not allowed".to_string(),
+            ],
+            requires_root: true,
+        },
+        DaemonCapabilityDescriptor {
+            name: "perf_record_capture".to_string(),
+            kind: DaemonCapabilityKind::PerfRecordCapture,
+            summary: "Attach bounded perf record capture with optional sample frequency and call graph mode.".to_string(),
+            selector_kinds: perf_selector_kinds(),
+            outputs: vec![
+                "perf.data".to_string(),
+                "perf.command.json".to_string(),
+                "perf.selector.json".to_string(),
+                "perf stdout and stderr logs".to_string(),
+            ],
+            constraints: vec![
+                perf_duration_constraint(),
+                "sample_frequency_hz and call_graph are only valid for record mode".to_string(),
+                "output_dir must resolve inside allowed roots".to_string(),
+            ],
+            requires_root: true,
+        },
+        DaemonCapabilityDescriptor {
+            name: "scheduler_trace_capture".to_string(),
+            kind: DaemonCapabilityKind::SchedulerTraceCapture,
+            summary: "Capture bounded perf sched record, timehist, and latency artifacts for scheduler ordering evidence.".to_string(),
+            selector_kinds: perf_selector_kinds(),
+            outputs: vec![
+                "perf.sched.data".to_string(),
+                "perf.sched.timehist.txt".to_string(),
+                "perf.sched.latency.txt".to_string(),
+                "command, selector, and stderr artifacts".to_string(),
+            ],
+            constraints: vec![
+                perf_duration_constraint(),
+                "output_dir must resolve inside allowed roots".to_string(),
+                "shell execution is not permitted; only structured selectors are accepted".to_string(),
+            ],
+            requires_root: true,
+        },
+    ]
+}
+
+fn perf_selector_kinds() -> Vec<DaemonSelectorKind> {
+    vec![
+        DaemonSelectorKind::Pid,
+        DaemonSelectorKind::Uid,
+        DaemonSelectorKind::Gid,
+        DaemonSelectorKind::Cgroup,
+    ]
+}
+
+fn perf_duration_constraint() -> String {
+    format!(
+        "duration_ms must stay within {}..={}",
+        MIN_PERF_DURATION_MS, MAX_PERF_DURATION_MS
+    )
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum SchedClawDaemonRequest {

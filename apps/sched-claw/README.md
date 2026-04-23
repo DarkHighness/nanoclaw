@@ -100,6 +100,9 @@ belongs in skill scripts, not in more host-side workflow crates.
     (`status`/`capabilities`/`logs`) from bounded capability invocation, so the
     host can discover what privilege exists before selecting a rollout or
     capture path
+  - the canonical capability catalog lives in `daemon-protocol`, and `doctor`
+    reports both the expected host contract and the daemon's advertised
+    capability set so version skew is visible
 
 ## Skills
 

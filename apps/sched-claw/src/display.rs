@@ -323,9 +323,17 @@ pub fn render_daemon_capabilities(
     capabilities: &[DaemonCapabilityDescriptor],
     style: OutputStyle,
 ) -> String {
+    render_named_daemon_capabilities("Daemon Capabilities", capabilities, style)
+}
+
+fn render_named_daemon_capabilities(
+    title: &str,
+    capabilities: &[DaemonCapabilityDescriptor],
+    style: OutputStyle,
+) -> String {
     match style {
         OutputStyle::Table => render_grid(
-            Some(format!("Daemon Capabilities · {}", capabilities.len())),
+            Some(format!("{title} · {}", capabilities.len())),
             &[
                 "Name",
                 "Kind",
@@ -357,7 +365,7 @@ pub fn render_daemon_capabilities(
         ),
         OutputStyle::Plain => {
             let mut out = String::new();
-            let _ = writeln!(&mut out, "Daemon Capabilities ({})", capabilities.len());
+            let _ = writeln!(&mut out, "{title} ({})", capabilities.len());
             for capability in capabilities {
                 let _ = writeln!(
                     &mut out,
@@ -807,7 +815,11 @@ pub fn render_doctor_report(report: &DoctorReport, style: OutputStyle) -> String
             ),
         ),
         (
-            "Daemon Capabilities".to_string(),
+            "Expected Daemon Capabilities".to_string(),
+            report.expected_daemon_capabilities.len().to_string(),
+        ),
+        (
+            "Advertised Daemon Capabilities".to_string(),
             report.daemon_capabilities.len().to_string(),
         ),
     ];
@@ -815,8 +827,16 @@ pub fn render_doctor_report(report: &DoctorReport, style: OutputStyle) -> String
     let appendix = match style {
         OutputStyle::Table => {
             let mut sections = Vec::new();
+            if !report.expected_daemon_capabilities.is_empty() {
+                sections.push(render_named_daemon_capabilities(
+                    "Expected Daemon Capabilities",
+                    &report.expected_daemon_capabilities,
+                    OutputStyle::Table,
+                ));
+            }
             if !report.daemon_capabilities.is_empty() {
-                sections.push(render_daemon_capabilities(
+                sections.push(render_named_daemon_capabilities(
+                    "Advertised Daemon Capabilities",
                     &report.daemon_capabilities,
                     OutputStyle::Table,
                 ));
@@ -845,11 +865,27 @@ pub fn render_doctor_report(report: &DoctorReport, style: OutputStyle) -> String
         }
         OutputStyle::Plain => {
             let mut out = String::new();
+            if !report.expected_daemon_capabilities.is_empty() {
+                let _ = writeln!(
+                    &mut out,
+                    "{}",
+                    render_named_daemon_capabilities(
+                        "Expected Daemon Capabilities",
+                        &report.expected_daemon_capabilities,
+                        OutputStyle::Plain
+                    )
+                );
+                let _ = writeln!(&mut out);
+            }
             if !report.daemon_capabilities.is_empty() {
                 let _ = writeln!(
                     &mut out,
                     "{}",
-                    render_daemon_capabilities(&report.daemon_capabilities, OutputStyle::Plain)
+                    render_named_daemon_capabilities(
+                        "Advertised Daemon Capabilities",
+                        &report.daemon_capabilities,
+                        OutputStyle::Plain
+                    )
                 );
                 let _ = writeln!(&mut out);
             }
@@ -1360,6 +1396,15 @@ mod tests {
             model_name: "gpt-5.4".to_string(),
             helper_script_count: 4,
             configured_skill_roots: Vec::new(),
+            expected_daemon_capabilities: vec![DaemonCapabilityDescriptor {
+                name: "deployment_control".to_string(),
+                kind: DaemonCapabilityKind::DeploymentControl,
+                summary: "rollout".to_string(),
+                selector_kinds: Vec::new(),
+                outputs: vec!["status".to_string()],
+                constraints: vec!["bounded".to_string()],
+                requires_root: true,
+            }],
             daemon_capabilities: vec![DaemonCapabilityDescriptor {
                 name: "perf_stat_capture".to_string(),
                 kind: DaemonCapabilityKind::PerfStatCapture,
@@ -1380,7 +1425,8 @@ mod tests {
         let rendered = render_doctor_report(&report, OutputStyle::Plain);
         assert!(rendered.contains("Doctor"));
         assert!(rendered.contains("Skill Helpers: 4"));
-        assert!(rendered.contains("Daemon Capabilities (1)"));
+        assert!(rendered.contains("Expected Daemon Capabilities (1)"));
+        assert!(rendered.contains("Advertised Daemon Capabilities (1)"));
         assert!(rendered.contains("[fail] runtime / provider"));
     }
 
