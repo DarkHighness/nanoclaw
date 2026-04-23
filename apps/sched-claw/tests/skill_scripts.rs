@@ -20,9 +20,13 @@ fn shell_helper_scripts_have_valid_bash_syntax() -> Result<()> {
         repo_root().join("skills/sched-perf-collection/scripts/collect_topology_snapshot.sh"),
         repo_root().join("skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh"),
         repo_root().join("skills/sched-perf-analysis/scripts/render_perf_report.sh"),
+        repo_root().join("skills/sched-workload-contract/scripts/scaffold_workload_contract.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_design_brief.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh"),
+        repo_root()
+            .join("skills/sched-ext-build-verify/scripts/capture_build_verifier_artifacts.sh"),
+        repo_root().join("skills/sched-ext-rollout-safety/scripts/scaffold_rollout_plan.sh"),
         repo_root().join("skills/sched-policy-mapping/scripts/scaffold_policy_mapping.sh"),
     ];
 
@@ -326,6 +330,107 @@ fn collect_topology_snapshot_helper_captures_topology_artifacts() -> Result<()> 
     assert!(output.join("sys.cpu.online").is_file() || output.join("sys.cpu.possible").is_file());
     assert!(output.join("collector.command.txt").is_file());
     assert!(output.join("selector.txt").is_file());
+    Ok(())
+}
+
+#[test]
+fn scaffold_workload_contract_helper_writes_toml() -> Result<()> {
+    let dir = tempdir()?;
+    let output = dir.path().join("contract.toml");
+    let script =
+        repo_root().join("skills/sched-workload-contract/scripts/scaffold_workload_contract.sh");
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--output",
+            output.to_str().unwrap(),
+            "--workload",
+            "llvm",
+            "--selector-kind",
+            "script",
+            "--selector-value",
+            "scripts/workloads/run-llvm-clang-build.sh",
+            "--primary-metric",
+            "wall_time_s",
+            "--primary-goal",
+            "minimize",
+            "--basis",
+            "direct",
+            "--guardrail",
+            "throughput:maximize:5",
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "workload contract helper failed");
+    let rendered = std::fs::read_to_string(output)?;
+    assert!(rendered.contains("name = \"llvm\""));
+    assert!(rendered.contains("selector_kind = \"script\""));
+    assert!(rendered.contains("guardrails = [\"throughput:maximize:5\"]"));
+    Ok(())
+}
+
+#[test]
+fn capture_build_verifier_artifacts_helper_captures_status() -> Result<()> {
+    let dir = tempdir()?;
+    let script = repo_root()
+        .join("skills/sched-ext-build-verify/scripts/capture_build_verifier_artifacts.sh");
+    let artifacts = dir.path().join("artifacts");
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--artifact-dir",
+            artifacts.to_str().unwrap(),
+            "--source",
+            "cand-a.bpf.c",
+            "--object",
+            "cand-a.bpf.o",
+            "--build-command",
+            "printf build-ok",
+            "--verify-command",
+            "printf verify-ok",
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "build verifier helper failed");
+    assert!(artifacts.join("build.command.txt").is_file());
+    assert!(artifacts.join("build.stdout.log").is_file());
+    assert!(artifacts.join("verify.command.txt").is_file());
+    let summary = std::fs::read_to_string(artifacts.join("summary.env"))?;
+    assert!(summary.contains("build_status=0"));
+    assert!(summary.contains("verify_status=0"));
+    Ok(())
+}
+
+#[test]
+fn scaffold_rollout_plan_helper_writes_markdown() -> Result<()> {
+    let dir = tempdir()?;
+    let output = dir.path().join("rollout.md");
+    let script =
+        repo_root().join("skills/sched-ext-rollout-safety/scripts/scaffold_rollout_plan.sh");
+
+    let status = Command::new("bash")
+        .arg(&script)
+        .args([
+            "--output",
+            output.to_str().unwrap(),
+            "--candidate",
+            "cand-a",
+            "--lease-seconds",
+            "30",
+            "--rollback-trigger",
+            "p95 latency > baseline + 10%",
+            "--guardrail",
+            "throughput must not regress",
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "rollout plan helper failed");
+    let rendered = std::fs::read_to_string(output)?;
+    assert!(rendered.contains("# rollout plan: cand-a"));
+    assert!(rendered.contains("lease: `30s`"));
+    assert!(rendered.contains("throughput must not regress"));
     Ok(())
 }
 

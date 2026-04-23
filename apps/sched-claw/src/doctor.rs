@@ -239,6 +239,33 @@ pub async fn collect_doctor_report(
         false,
         "used to keep evidence-to-policy reasoning durable before candidate-specific code scaffolding begins",
     ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-workload-contract/scripts/scaffold_workload_contract.sh",
+        ),
+        "contract",
+        "workload contract scaffold helper",
+        false,
+        "used to write a durable TOML workload contract before codegen or rollout work begins",
+    ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-ext-build-verify/scripts/capture_build_verifier_artifacts.sh",
+        ),
+        "build",
+        "build and verifier capture helper",
+        false,
+        "used to persist compiler and verifier artifacts without promoting host workflow logic",
+    ));
+    checks.push(helper_script_check(
+        workspace_root.join(
+            "apps/sched-claw/skills/sched-ext-rollout-safety/scripts/scaffold_rollout_plan.sh",
+        ),
+        "rollout",
+        "rollout plan scaffold helper",
+        false,
+        "used to keep rollout guards and rollback triggers durable before daemon activation",
+    ));
     let (daemon_status, daemon_capabilities) = daemon_diagnostics(config).await;
     checks.push(daemon_status);
     if let Some(parity_check) =

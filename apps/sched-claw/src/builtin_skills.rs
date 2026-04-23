@@ -118,11 +118,19 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("sched-ext-build-verify/scripts/capture_build_verifier_artifacts.sh")
+                .is_file()
+        );
+        assert!(
             root.join("sched-ext-design-loop/references/rollout-checklist.md")
                 .is_file()
         );
         assert!(
             root.join("sched-ext-rollout-safety/references/activation-checklist.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-ext-rollout-safety/scripts/scaffold_rollout_plan.sh")
                 .is_file()
         );
         assert!(
@@ -183,6 +191,10 @@ mod tests {
         );
         assert!(
             root.join("sched-workload-contract/references/selector-and-metric-policy.md")
+                .is_file()
+        );
+        assert!(
+            root.join("sched-workload-contract/scripts/scaffold_workload_contract.sh")
                 .is_file()
         );
     }

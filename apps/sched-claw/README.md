@@ -77,6 +77,9 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_design_brief.sh`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh`
+    - `apps/sched-claw/skills/sched-workload-contract/scripts/scaffold_workload_contract.sh`
+    - `apps/sched-claw/skills/sched-ext-build-verify/scripts/capture_build_verifier_artifacts.sh`
+    - `apps/sched-claw/skills/sched-ext-rollout-safety/scripts/scaffold_rollout_plan.sh`
   - local inspection and audit helpers such as:
     - `sched-claw tool list --style table`
     - `sched-claw tool show sched_claw_daemon --style plain`
@@ -248,10 +251,16 @@ The preferred path is:
   `skills/sched-perf-analysis/scripts/compose_sched_trace_evidence.py`, and
   `skills/sched-perf-analysis/scripts/render_perf_report.sh`, and
   `skills/sched-perf-analysis/scripts/summarize_sched_latency.py`
+- workload contract scaffolding via
+  `skills/sched-workload-contract/scripts/scaffold_workload_contract.sh`
 - sched-ext code scaffolding via repo-local scripts such as
   `skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh` and
   `skills/sched-ext-codegen/scripts/scaffold_design_brief.sh` and
   `skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh`
+- build and verifier artifact capture via
+  `skills/sched-ext-build-verify/scripts/capture_build_verifier_artifacts.sh`
+- rollout guard scaffolding via
+  `skills/sched-ext-rollout-safety/scripts/scaffold_rollout_plan.sh`
 - privileged rollout only through `sched_claw_daemon`
 - bounded privileged perf attachment also goes through `sched_claw_daemon`; do
   not replace it with `sudo perf ...` shell escapes

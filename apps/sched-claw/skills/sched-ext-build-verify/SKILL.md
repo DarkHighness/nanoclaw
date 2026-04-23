@@ -24,6 +24,7 @@ tags:
    - keep `source`, `object`, `build.sh`, and notes near each other in the workspace
 2. Build through normal shell commands or the scaffolded `build.sh`.
    - capture compiler stdout or stderr and verifier logs into files next to the source or artifact directory
+   - `scripts/capture_build_verifier_artifacts.sh` is the default helper when you want one command to leave durable build, verify, and status files behind
 3. Read the build result before changing code.
    - separate compiler failure, missing include/toolchain failure, and verifier rejection
 4. For verifier failures, narrow the cause.
@@ -49,3 +50,9 @@ tags:
 
 ## Reference Material
 - `references/build-and-verifier-checklist.md`
+
+## Optional Helper Scripts
+- `scripts/capture_build_verifier_artifacts.sh`
+  - captures build command, stdout, stderr, and exit status into a durable artifact directory
+  - optionally captures verifier command, stdout, stderr, and exit status as well
+  - preferred when code edits are done and the next question is whether the object and verifier evidence are durable enough for rollout discussion

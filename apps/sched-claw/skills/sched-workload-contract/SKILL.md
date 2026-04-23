@@ -29,6 +29,7 @@ tags:
 3. Make the policy explicit in a saved contract artifact.
    - record the primary metric, goal, optional guardrails, and whether the basis is direct or proxy
    - use `proxy_estimate` wording only when proxy metrics are actually needed
+   - `scripts/scaffold_workload_contract.sh` is the default helper when you want a durable TOML contract instead of ad-hoc prose
 4. Record the evaluation scope.
    - steady state vs startup
    - single-tenant vs noisy host
@@ -49,3 +50,9 @@ tags:
 
 ## Reference Material
 - `references/selector-and-metric-policy.md`
+
+## Optional Helper Scripts
+- `scripts/scaffold_workload_contract.sh`
+  - writes a durable TOML workload contract scaffold
+  - keeps selector, direct metric policy, proxy metrics, and guardrails explicit
+  - preferred when a tuning request is about to move from discussion into durable artifacts

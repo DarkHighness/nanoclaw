@@ -26,6 +26,7 @@ tags:
    - what workload phase is being observed
    - what metric or log signal forces rollback
    - how long the candidate may stay active
+   - `scripts/scaffold_rollout_plan.sh` is the default helper when you want those gates durable before activation
 3. Use the daemon narrowly.
    - `status`
    - `activate`
@@ -54,3 +55,8 @@ tags:
 
 ## Reference Material
 - `references/activation-checklist.md`
+
+## Optional Helper Scripts
+- `scripts/scaffold_rollout_plan.sh`
+  - writes a durable Markdown rollout plan with lease, guardrails, rollback triggers, and daemon command placeholders
+  - preferred when a candidate is close to activation and the missing piece is operational clarity rather than more host-side orchestration
