@@ -7,10 +7,43 @@ pub const DEFAULT_LOG_TAIL_LINES: usize = 100;
 pub const MIN_PERF_DURATION_MS: u64 = 100;
 pub const MAX_PERF_DURATION_MS: u64 = 5 * 60_000;
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonCapabilityKind {
+    DeploymentControl,
+    PerfStatCapture,
+    PerfRecordCapture,
+    SchedulerTraceCapture,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonSelectorKind {
+    Pid,
+    Uid,
+    Gid,
+    Cgroup,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+pub struct DaemonCapabilityDescriptor {
+    pub name: String,
+    pub kind: DaemonCapabilityKind,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selector_kinds: Vec<DaemonSelectorKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
+    pub requires_root: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum SchedExtDaemonRequest {
     Status {},
+    Capabilities {},
     Activate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
@@ -66,6 +99,9 @@ pub enum SchedExtDaemonRequest {
 pub enum SchedExtDaemonResponse {
     Status {
         snapshot: DaemonStatusSnapshot,
+    },
+    Capabilities {
+        capabilities: Vec<DaemonCapabilityDescriptor>,
     },
     Logs {
         snapshot: DaemonLogsSnapshot,

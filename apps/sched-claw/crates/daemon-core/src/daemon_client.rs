@@ -1,6 +1,6 @@
 use crate::daemon_protocol::{
-    DEFAULT_LOG_TAIL_LINES, DaemonLogsSnapshot, DaemonStatusSnapshot, SchedExtDaemonRequest,
-    SchedExtDaemonResponse,
+    DEFAULT_LOG_TAIL_LINES, DaemonCapabilityDescriptor, DaemonLogsSnapshot, DaemonStatusSnapshot,
+    SchedExtDaemonRequest, SchedExtDaemonResponse,
 };
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
@@ -78,6 +78,14 @@ impl SchedExtDaemonClient {
             SchedExtDaemonResponse::Logs { snapshot } => Ok(snapshot),
             SchedExtDaemonResponse::Error { message } => bail!(message),
             other => bail!("daemon returned unexpected response for logs: {other:?}"),
+        }
+    }
+
+    pub async fn capabilities(&self) -> Result<Vec<DaemonCapabilityDescriptor>> {
+        match self.send(&SchedExtDaemonRequest::Capabilities {}).await? {
+            SchedExtDaemonResponse::Capabilities { capabilities } => Ok(capabilities),
+            SchedExtDaemonResponse::Error { message } => bail!(message),
+            other => bail!("daemon returned unexpected response for capabilities: {other:?}"),
         }
     }
 

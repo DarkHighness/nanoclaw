@@ -29,7 +29,7 @@ tags:
    - use `scripts/collect_sched_timeline.sh` when the open question is scheduler ordering, wakeup chains, or migration churn and you want `perf sched record` plus derived `timehist` and `latency` artifacts
    - choose `--driver host` for ordinary collection and `--driver daemon` when attach-style privileged capture is required
    - direct shell capture is also fine when the wrapper would get in the way
-   - when non-root collection is blocked by `perf_event_paranoid`, cgroup visibility, or attach permissions, prefer the structured `sched_ext_daemon` `collect_perf` action instead of inventing a root shell workaround
+   - when non-root collection is blocked by `perf_event_paranoid`, cgroup visibility, or attach permissions, prefer the structured `sched_claw_daemon` `collect_perf` action instead of inventing a root shell workaround
    - `perf stat`, `/proc/schedstat`, `/proc/<pid>/schedstat`, PSI, `pidstat -w`, `mpstat -P ALL`, and `vmstat`
    - collect just enough to answer whether the issue looks like queueing, migration, wakeup latency, or plain saturation
 3. Escalate only when the summary leaves a scheduler-specific gap.

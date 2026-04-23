@@ -1,7 +1,7 @@
 use crate::daemon_protocol::{
-    ActiveDeploymentSnapshot, DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot,
-    PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector,
-    SchedCollectionSnapshot, SchedExtDaemonResponse,
+    ActiveDeploymentSnapshot, DaemonCapabilityDescriptor, DaemonLogsSnapshot, DaemonStatusSnapshot,
+    DeploymentExitSnapshot, PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot,
+    PerfTargetSelector, SchedCollectionSnapshot, SchedExtDaemonResponse,
 };
 use crate::doctor::DoctorReport;
 use crate::history::{LoadedSessionDetail, SessionExportArtifact, SessionExportKind, preview_id};
@@ -292,6 +292,9 @@ pub fn render_skill_detail(skill: &Skill, style: OutputStyle) -> String {
 pub fn render_daemon_response(response: &SchedExtDaemonResponse, style: OutputStyle) -> String {
     match response {
         SchedExtDaemonResponse::Status { snapshot } => render_daemon_status(snapshot, style),
+        SchedExtDaemonResponse::Capabilities { capabilities } => {
+            render_daemon_capabilities(capabilities, style)
+        }
         SchedExtDaemonResponse::Logs { snapshot } => render_daemon_logs(snapshot, style),
         SchedExtDaemonResponse::PerfCollection { snapshot } => {
             render_perf_collection(snapshot, style)
@@ -308,6 +311,82 @@ pub fn render_daemon_response(response: &SchedExtDaemonResponse, style: OutputSt
             }
         }
         SchedExtDaemonResponse::Error { message } => format!("daemon error: {message}"),
+    }
+}
+
+pub fn render_daemon_capabilities(
+    capabilities: &[DaemonCapabilityDescriptor],
+    style: OutputStyle,
+) -> String {
+    match style {
+        OutputStyle::Table => render_grid(
+            Some(format!("Daemon Capabilities · {}", capabilities.len())),
+            &[
+                "Name",
+                "Kind",
+                "Selectors",
+                "Requires Root",
+                "Outputs",
+                "Constraints",
+            ],
+            &capabilities
+                .iter()
+                .map(|capability| {
+                    vec![
+                        capability.name.clone(),
+                        daemon_capability_kind_label(&capability.kind).to_string(),
+                        join_or_none(
+                            capability
+                                .selector_kinds
+                                .iter()
+                                .map(daemon_selector_kind_label)
+                                .map(ToString::to_string)
+                                .collect(),
+                        ),
+                        bool_label(capability.requires_root),
+                        join_or_none(capability.outputs.clone()),
+                        join_or_none(capability.constraints.clone()),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        OutputStyle::Plain => {
+            let mut out = String::new();
+            let _ = writeln!(&mut out, "Daemon Capabilities ({})", capabilities.len());
+            for capability in capabilities {
+                let _ = writeln!(
+                    &mut out,
+                    "- {} [{}]",
+                    capability.name,
+                    daemon_capability_kind_label(&capability.kind)
+                );
+                let _ = writeln!(&mut out, "  {}", capability.summary);
+                let _ = writeln!(
+                    &mut out,
+                    "  selectors: {}",
+                    join_or_none(
+                        capability
+                            .selector_kinds
+                            .iter()
+                            .map(daemon_selector_kind_label)
+                            .map(ToString::to_string)
+                            .collect(),
+                    )
+                );
+                let _ = writeln!(&mut out, "  requires_root: {}", capability.requires_root);
+                let _ = writeln!(
+                    &mut out,
+                    "  outputs: {}",
+                    join_or_none(capability.outputs.clone())
+                );
+                let _ = writeln!(
+                    &mut out,
+                    "  constraints: {}",
+                    join_or_none(capability.constraints.clone())
+                );
+            }
+            out.trim_end().to_string()
+        }
     }
 }
 
@@ -722,31 +801,53 @@ pub fn render_doctor_report(report: &DoctorReport, style: OutputStyle) -> String
                     .collect(),
             ),
         ),
+        (
+            "Daemon Capabilities".to_string(),
+            report.daemon_capabilities.len().to_string(),
+        ),
     ];
 
     let appendix = match style {
-        OutputStyle::Table => render_grid(
-            Some(format!("Doctor Checks · {}", report.checks.len())),
-            &["Category", "Check", "Status", "Detail", "Remediation"],
-            &report
-                .checks
-                .iter()
-                .map(|check| {
-                    vec![
-                        check.category.to_string(),
-                        check.name.to_string(),
-                        check.status.as_str().to_string(),
-                        check.detail.clone(),
-                        check
-                            .remediation
-                            .clone()
-                            .unwrap_or_else(|| "<none>".to_string()),
-                    ]
-                })
-                .collect::<Vec<_>>(),
-        ),
+        OutputStyle::Table => {
+            let mut sections = Vec::new();
+            if !report.daemon_capabilities.is_empty() {
+                sections.push(render_daemon_capabilities(
+                    &report.daemon_capabilities,
+                    OutputStyle::Table,
+                ));
+            }
+            sections.push(render_grid(
+                Some(format!("Doctor Checks · {}", report.checks.len())),
+                &["Category", "Check", "Status", "Detail", "Remediation"],
+                &report
+                    .checks
+                    .iter()
+                    .map(|check| {
+                        vec![
+                            check.category.to_string(),
+                            check.name.to_string(),
+                            check.status.as_str().to_string(),
+                            check.detail.clone(),
+                            check
+                                .remediation
+                                .clone()
+                                .unwrap_or_else(|| "<none>".to_string()),
+                        ]
+                    })
+                    .collect::<Vec<_>>(),
+            ));
+            sections.join("\n\n")
+        }
         OutputStyle::Plain => {
             let mut out = String::new();
+            if !report.daemon_capabilities.is_empty() {
+                let _ = writeln!(
+                    &mut out,
+                    "{}",
+                    render_daemon_capabilities(&report.daemon_capabilities, OutputStyle::Plain)
+                );
+                let _ = writeln!(&mut out);
+            }
             let _ = writeln!(&mut out, "Checks:");
             for check in &report.checks {
                 let _ = writeln!(
@@ -1123,6 +1224,28 @@ fn bool_label(value: bool) -> String {
     if value { "yes" } else { "no" }.to_string()
 }
 
+fn daemon_capability_kind_label(
+    kind: &crate::daemon_protocol::DaemonCapabilityKind,
+) -> &'static str {
+    match kind {
+        crate::daemon_protocol::DaemonCapabilityKind::DeploymentControl => "deployment_control",
+        crate::daemon_protocol::DaemonCapabilityKind::PerfStatCapture => "perf_stat_capture",
+        crate::daemon_protocol::DaemonCapabilityKind::PerfRecordCapture => "perf_record_capture",
+        crate::daemon_protocol::DaemonCapabilityKind::SchedulerTraceCapture => {
+            "scheduler_trace_capture"
+        }
+    }
+}
+
+fn daemon_selector_kind_label(kind: &crate::daemon_protocol::DaemonSelectorKind) -> &'static str {
+    match kind {
+        crate::daemon_protocol::DaemonSelectorKind::Pid => "pid",
+        crate::daemon_protocol::DaemonSelectorKind::Uid => "uid",
+        crate::daemon_protocol::DaemonSelectorKind::Gid => "gid",
+        crate::daemon_protocol::DaemonSelectorKind::Cgroup => "cgroup",
+    }
+}
+
 fn tool_kind_label(kind: &ToolKind) -> &'static str {
     match kind {
         ToolKind::Function => "function",
@@ -1160,13 +1283,13 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputStyle, render_daemon_status, render_doctor_report, render_perf_collection,
-        render_sched_collection, render_session_export_artifact, render_session_list,
-        render_skill_list, render_tool_list,
+        OutputStyle, render_daemon_capabilities, render_daemon_status, render_doctor_report,
+        render_perf_collection, render_sched_collection, render_session_export_artifact,
+        render_session_list, render_skill_list, render_tool_list,
     };
     use crate::daemon_protocol::{
-        DaemonStatusSnapshot, PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector,
-        SchedCollectionSnapshot,
+        DaemonCapabilityDescriptor, DaemonCapabilityKind, DaemonSelectorKind, DaemonStatusSnapshot,
+        PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector, SchedCollectionSnapshot,
     };
     use crate::doctor::{DoctorCheck, DoctorReport, DoctorStatus};
     use crate::history::{SessionExportArtifact, SessionExportKind};
@@ -1232,6 +1355,15 @@ mod tests {
             model_name: "gpt-5.4".to_string(),
             helper_script_count: 4,
             configured_skill_roots: Vec::new(),
+            daemon_capabilities: vec![DaemonCapabilityDescriptor {
+                name: "perf_stat_capture".to_string(),
+                kind: DaemonCapabilityKind::PerfStatCapture,
+                summary: "capture".to_string(),
+                selector_kinds: vec![DaemonSelectorKind::Pid],
+                outputs: vec!["perf.stat.csv".to_string()],
+                constraints: vec!["duration bounded".to_string()],
+                requires_root: true,
+            }],
             checks: vec![DoctorCheck {
                 category: "runtime",
                 name: "provider",
@@ -1243,7 +1375,27 @@ mod tests {
         let rendered = render_doctor_report(&report, OutputStyle::Plain);
         assert!(rendered.contains("Doctor"));
         assert!(rendered.contains("Skill Helpers: 4"));
+        assert!(rendered.contains("Daemon Capabilities (1)"));
         assert!(rendered.contains("[fail] runtime / provider"));
+    }
+
+    #[test]
+    fn renders_daemon_capabilities_plain_view() {
+        let rendered = render_daemon_capabilities(
+            &[DaemonCapabilityDescriptor {
+                name: "scheduler_trace_capture".to_string(),
+                kind: DaemonCapabilityKind::SchedulerTraceCapture,
+                summary: "trace".to_string(),
+                selector_kinds: vec![DaemonSelectorKind::Pid, DaemonSelectorKind::Cgroup],
+                outputs: vec!["perf.sched.data".to_string()],
+                constraints: vec!["bounded".to_string()],
+                requires_root: true,
+            }],
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Daemon Capabilities (1)"));
+        assert!(rendered.contains("scheduler_trace_capture"));
+        assert!(rendered.contains("selectors: pid, cgroup"));
     }
 
     #[test]

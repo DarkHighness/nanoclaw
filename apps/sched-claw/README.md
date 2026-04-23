@@ -23,7 +23,7 @@ code generation; a narrow privileged daemon for sched-ext lifecycle control.
   - shell execution: `exec_command`, `write_stdin`
   - live documentation lookup: `web_search`, `web_fetch`
   - skill discovery: `skills_list`, `skill_view`, `tool_discover`
-  - privileged sched-ext lifecycle plus bounded perf or scheduler-trace capture: `sched_ext_daemon`
+  - privileged sched-claw daemon capability surface for rollout and bounded capture: `sched_claw_daemon`
 - Do not add a dedicated performance-collection tool. Collection and analysis
   stay in reusable skills plus the existing shell/file/web surfaces.
 - Do not let the agent spawn arbitrary root commands. Privileged launch and
@@ -73,7 +73,7 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh`
   - local inspection and audit helpers such as:
     - `sched-claw tool list --style table`
-    - `sched-claw tool show sched_ext_daemon --style plain`
+    - `sched-claw tool show sched_claw_daemon --style plain`
     - `sched-claw skill list --style table`
     - `sched-claw skill show linux-scheduler-triage --style plain`
     - `sched-claw sessions --style table`
@@ -83,12 +83,14 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `sched-claw export-events last artifacts/session.jsonl`
     - `sched-claw resume last "continue from the prior analysis"`
   - `sched-claw daemon status --style table`
+  - `sched-claw daemon capabilities --style table`
   - `sched-claw daemon collect-perf --pid 4242 --duration-ms 1000 --output-dir artifacts/perf-a`
   - `sched-claw daemon collect-sched --pid 4242 --duration-ms 1000 --output-dir artifacts/sched-a`
 - `sched-claw-daemon` is a separate binary intended to run with elevated
   privileges. It manages one active sched-ext deployment at a time, captures the
   child process logs, and exposes:
   - `status`
+  - `capabilities`
   - `activate`
   - `collect_perf`
   - `collect_sched`
@@ -215,8 +217,8 @@ The preferred path is:
   `skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh` and
   `skills/sched-ext-codegen/scripts/scaffold_design_brief.sh` and
   `skills/sched-ext-codegen/scripts/scaffold_edit_checklist.sh`
-- privileged rollout only through `sched_ext_daemon`
-- bounded privileged perf attachment also goes through `sched_ext_daemon`; do
+- privileged rollout only through `sched_claw_daemon`
+- bounded privileged perf attachment also goes through `sched_claw_daemon`; do
   not replace it with `sudo perf ...` shell escapes
 
 Reference sched-ext starting points still live under
@@ -334,7 +336,7 @@ substrate path:
 - evidence capture and artifact management use normal tools
 - scheduler source generation uses normal file-edit tools
 - only privileged activation, stop, log inspection, and bounded attach-style
-  perf capture use `sched_ext_daemon`
+  perf capture use `sched_claw_daemon`
 
 The daemon now also supports bounded leases for active deployments. That gives
 the host a generic safety primitive for rollout windows without turning the

@@ -1,7 +1,7 @@
 use crate::app_config::{CliOverrides, SchedClawConfig};
 use crate::builtin_skills::{builtin_skill_root, materialize_builtin_skills};
 use crate::daemon_client::SchedExtDaemonClient;
-use crate::daemon_tool::SchedExtDaemonTool;
+use crate::daemon_tool::SchedClawDaemonTool;
 use crate::preamble::build_system_preamble;
 use crate::startup_catalog::StartupCatalog;
 use agent::tools::{
@@ -130,7 +130,7 @@ fn build_tool_registry(
     tools.register(ToolDiscoverTool::new(discovery_registry));
     tools.register(SkillsListTool::new(skill_catalog.clone()));
     tools.register(SkillViewTool::new(skill_catalog.clone()));
-    tools.register(SchedExtDaemonTool::new(daemon_client));
+    tools.register(SchedClawDaemonTool::new(daemon_client));
     tools
 }
 

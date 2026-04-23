@@ -8,14 +8,14 @@ use async_trait::async_trait;
 use schemars::schema_for;
 use serde_json::Value;
 
-const SCHED_EXT_DAEMON_TOOL_NAME: &str = "sched_ext_daemon";
+const SCHED_CLAW_DAEMON_TOOL_NAME: &str = "sched_claw_daemon";
 
 #[derive(Clone, Debug)]
-pub struct SchedExtDaemonTool {
+pub struct SchedClawDaemonTool {
     client: SchedExtDaemonClient,
 }
 
-impl SchedExtDaemonTool {
+impl SchedClawDaemonTool {
     #[must_use]
     pub fn new(client: SchedExtDaemonClient) -> Self {
         Self { client }
@@ -23,26 +23,27 @@ impl SchedExtDaemonTool {
 }
 
 #[async_trait]
-impl Tool for SchedExtDaemonTool {
+impl Tool for SchedClawDaemonTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::function(
-            SCHED_EXT_DAEMON_TOOL_NAME,
-            "Call the privileged sched-ext daemon for constrained scheduler lifecycle work and structured privileged scheduler evidence capture. Use it only for status, activate, stop, logs, collect_perf, and collect_sched; do not treat it as a generic root shell.",
+            SCHED_CLAW_DAEMON_TOOL_NAME,
+            "Call the privileged sched-claw daemon for bounded rollout control and structured privileged scheduler evidence capture. Discover capability boundaries first, then use only the constrained actions it exposes; do not treat it as a generic root shell.",
             serde_json::to_value(schema_for!(SchedExtDaemonRequest))
-                .expect("sched_ext_daemon schema"),
+                .expect("sched_claw_daemon schema"),
             ToolOutputMode::Text,
             ToolOrigin::Local,
             ToolSource::Dynamic,
         )
+        .with_aliases(vec!["daemon".into()])
         .with_output_schema(
             serde_json::to_value(schema_for!(SchedExtDaemonResponse))
-                .expect("sched_ext_daemon output schema"),
+                .expect("sched_claw_daemon output schema"),
         )
         .with_approval(
             ToolApprovalProfile::new(false, true, Some(false), false)
                 .with_host_escape(true)
                 .with_approval_message(
-                    "This tool reaches a privileged daemon that can replace the active Linux scheduler and run structured privileged perf capture.",
+                    "This tool reaches a privileged daemon that can replace the active Linux scheduler and run bounded privileged scheduler capture.",
                 ),
         )
     }
@@ -59,7 +60,7 @@ impl Tool for SchedExtDaemonTool {
             Err(error) => {
                 return Ok(ToolResult::error(
                     call_id,
-                    SCHED_EXT_DAEMON_TOOL_NAME,
+                    SCHED_CLAW_DAEMON_TOOL_NAME,
                     format!(
                         "failed to reach daemon socket {}: {error:#}",
                         self.client.socket_path().display()
@@ -71,12 +72,12 @@ impl Tool for SchedExtDaemonTool {
         match &response {
             SchedExtDaemonResponse::Error { .. } => {
                 Ok(
-                    ToolResult::error(call_id, SCHED_EXT_DAEMON_TOOL_NAME, rendered)
+                    ToolResult::error(call_id, SCHED_CLAW_DAEMON_TOOL_NAME, rendered)
                         .with_structured_content(serde_json::to_value(response)?),
                 )
             }
             _ => Ok(
-                ToolResult::text(call_id, SCHED_EXT_DAEMON_TOOL_NAME, rendered)
+                ToolResult::text(call_id, SCHED_CLAW_DAEMON_TOOL_NAME, rendered)
                     .with_structured_content(serde_json::to_value(response)?),
             ),
         }

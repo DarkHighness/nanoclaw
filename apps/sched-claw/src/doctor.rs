@@ -1,5 +1,6 @@
 use crate::app_config::{SchedClawConfig, app_state_dir};
 use crate::daemon_client::SchedExtDaemonClient;
+use crate::daemon_protocol::DaemonCapabilityDescriptor;
 use agent_env::vars;
 use anyhow::Result;
 use nanoclaw_config::ProviderKind;
@@ -55,6 +56,7 @@ pub struct DoctorReport {
     pub model_name: String,
     pub helper_script_count: usize,
     pub configured_skill_roots: Vec<PathBuf>,
+    pub daemon_capabilities: Vec<DaemonCapabilityDescriptor>,
     pub checks: Vec<DoctorCheck>,
 }
 
@@ -208,7 +210,8 @@ pub async fn collect_doctor_report(
         false,
         "used to keep evidence-to-policy reasoning durable before candidate-specific code scaffolding begins",
     ));
-    checks.push(daemon_check(config).await);
+    let (daemon_status, daemon_capabilities) = daemon_diagnostics(config).await;
+    checks.push(daemon_status);
     checks.push(kernel_release_check(kernel_release.as_ref()));
     checks.push(kernel_config_source_check(kernel_config.as_ref()));
     checks.push(kernel_config_option_check(kernel_config.as_ref()));
@@ -288,6 +291,7 @@ pub async fn collect_doctor_report(
         model_name: config.primary_profile.model.model.clone(),
         helper_script_count: count_helper_scripts(&workspace_root.join("apps/sched-claw/skills")),
         configured_skill_roots: config.skill_roots.clone(),
+        daemon_capabilities,
         checks,
     })
 }
@@ -392,50 +396,65 @@ fn helper_script_check(
     }
 }
 
-async fn daemon_check(config: &SchedClawConfig) -> DoctorCheck {
+async fn daemon_diagnostics(
+    config: &SchedClawConfig,
+) -> (DoctorCheck, Vec<DaemonCapabilityDescriptor>) {
     if !config.daemon.socket_path.exists() {
-        return DoctorCheck {
-            category: "daemon",
-            name: "privileged sched-ext daemon",
-            status: DoctorStatus::Fail,
-            detail: format!(
-                "daemon socket does not exist at {}",
-                config.daemon.socket_path.display()
-            ),
-            remediation: Some(
-                "start apps/sched-claw/scripts/start-root-daemon.sh or launch sched-claw-daemon manually"
-                    .to_string(),
-            ),
-        };
+        return (
+            DoctorCheck {
+                category: "daemon",
+                name: "privileged sched-claw daemon",
+                status: DoctorStatus::Fail,
+                detail: format!(
+                    "daemon socket does not exist at {}",
+                    config.daemon.socket_path.display()
+                ),
+                remediation: Some(
+                    "start apps/sched-claw/scripts/start-root-daemon.sh or launch sched-claw-daemon manually"
+                        .to_string(),
+                ),
+            },
+            Vec::new(),
+        );
     }
 
     let client = SchedExtDaemonClient::new(config.daemon.clone());
     match client.status().await {
-        Ok(snapshot) => DoctorCheck {
-            category: "daemon",
-            name: "privileged sched-ext daemon",
-            status: DoctorStatus::Pass,
-            detail: format!(
-                "reachable at {} (daemon_pid={}, active={})",
-                config.daemon.socket_path.display(),
-                snapshot.daemon_pid,
-                if snapshot.active.is_some() { "yes" } else { "no" }
-            ),
-            remediation: None,
-        },
-        Err(error) => DoctorCheck {
-            category: "daemon",
-            name: "privileged sched-ext daemon",
-            status: DoctorStatus::Fail,
-            detail: format!(
-                "socket exists at {} but status failed: {error}",
-                config.daemon.socket_path.display()
-            ),
-            remediation: Some(
-                "restart the root daemon and verify that the non-root client can connect to the socket"
-                    .to_string(),
-            ),
-        },
+        Ok(snapshot) => {
+            let capabilities = client.capabilities().await.unwrap_or_default();
+            (
+                DoctorCheck {
+                    category: "daemon",
+                    name: "privileged sched-claw daemon",
+                    status: DoctorStatus::Pass,
+                    detail: format!(
+                        "reachable at {} (daemon_pid={}, active={}, capabilities={})",
+                        config.daemon.socket_path.display(),
+                        snapshot.daemon_pid,
+                        if snapshot.active.is_some() { "yes" } else { "no" },
+                        capabilities.len(),
+                    ),
+                    remediation: None,
+                },
+                capabilities,
+            )
+        }
+        Err(error) => (
+            DoctorCheck {
+                category: "daemon",
+                name: "privileged sched-claw daemon",
+                status: DoctorStatus::Fail,
+                detail: format!(
+                    "socket exists at {} but status failed: {error}",
+                    config.daemon.socket_path.display()
+                ),
+                remediation: Some(
+                    "restart the root daemon and verify that the non-root client can connect to the socket"
+                        .to_string(),
+                ),
+            },
+            Vec::new(),
+        ),
     }
 }
 
@@ -1047,6 +1066,7 @@ mod tests {
             model_name: "gpt-5.4".to_string(),
             helper_script_count: 4,
             configured_skill_roots: Vec::new(),
+            daemon_capabilities: Vec::new(),
             checks: vec![
                 DoctorCheck {
                     category: "runtime",

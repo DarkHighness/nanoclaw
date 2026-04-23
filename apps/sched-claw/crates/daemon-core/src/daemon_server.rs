@@ -1,6 +1,7 @@
 use crate::daemon_protocol::{
-    ActiveDeploymentSnapshot, DEFAULT_LOG_TAIL_LINES, DEFAULT_STOP_TIMEOUT_MS, DaemonLogLine,
-    DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot, MAX_PERF_DURATION_MS,
+    ActiveDeploymentSnapshot, DEFAULT_LOG_TAIL_LINES, DEFAULT_STOP_TIMEOUT_MS,
+    DaemonCapabilityDescriptor, DaemonCapabilityKind, DaemonLogLine, DaemonLogsSnapshot,
+    DaemonSelectorKind, DaemonStatusSnapshot, DeploymentExitSnapshot, MAX_PERF_DURATION_MS,
     MIN_PERF_DURATION_MS, PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot,
     PerfTargetSelector, SchedCollectionSnapshot, SchedExtDaemonRequest, SchedExtDaemonResponse,
 };
@@ -309,6 +310,9 @@ impl DaemonServer {
             SchedExtDaemonRequest::Status {} => Ok(SchedExtDaemonResponse::Status {
                 snapshot: self.status_snapshot(),
             }),
+            SchedExtDaemonRequest::Capabilities {} => Ok(SchedExtDaemonResponse::Capabilities {
+                capabilities: self.capability_descriptors(),
+            }),
             SchedExtDaemonRequest::Logs { tail_lines } => Ok(SchedExtDaemonResponse::Logs {
                 snapshot: self.logs_snapshot(tail_lines.unwrap_or(DEFAULT_LOG_TAIL_LINES)),
             }),
@@ -395,6 +399,106 @@ impl DaemonServer {
                 })
             }
         }
+    }
+
+    fn capability_descriptors(&self) -> Vec<DaemonCapabilityDescriptor> {
+        vec![
+            DaemonCapabilityDescriptor {
+                name: "deployment_control".to_string(),
+                kind: DaemonCapabilityKind::DeploymentControl,
+                summary: "Activate, inspect, and stop a bounded sched-ext rollout without exposing an unrestricted root shell.".to_string(),
+                selector_kinds: Vec::new(),
+                outputs: vec![
+                    "daemon status snapshot".to_string(),
+                    "deployment log tail".to_string(),
+                    "deployment exit snapshot".to_string(),
+                ],
+                constraints: vec![
+                    "argv and cwd must resolve inside allowed roots".to_string(),
+                    "only one active deployment at a time".to_string(),
+                    "optional rollout lease enforces automatic stop".to_string(),
+                ],
+                requires_root: true,
+            },
+            DaemonCapabilityDescriptor {
+                name: "perf_stat_capture".to_string(),
+                kind: DaemonCapabilityKind::PerfStatCapture,
+                summary: "Attach bounded perf stat capture to an existing pid, uid, gid, or cgroup target.".to_string(),
+                selector_kinds: vec![
+                    DaemonSelectorKind::Pid,
+                    DaemonSelectorKind::Uid,
+                    DaemonSelectorKind::Gid,
+                    DaemonSelectorKind::Cgroup,
+                ],
+                outputs: vec![
+                    "perf.stat.csv".to_string(),
+                    "perf.command.json".to_string(),
+                    "perf.selector.json".to_string(),
+                    "perf stdout and stderr logs".to_string(),
+                ],
+                constraints: vec![
+                    format!(
+                        "duration_ms must stay within {}..={}",
+                        MIN_PERF_DURATION_MS, MAX_PERF_DURATION_MS
+                    ),
+                    "output_dir must resolve inside allowed roots".to_string(),
+                    "events are validated and shell expansion is not allowed".to_string(),
+                ],
+                requires_root: true,
+            },
+            DaemonCapabilityDescriptor {
+                name: "perf_record_capture".to_string(),
+                kind: DaemonCapabilityKind::PerfRecordCapture,
+                summary: "Attach bounded perf record capture with optional sample frequency and call graph mode.".to_string(),
+                selector_kinds: vec![
+                    DaemonSelectorKind::Pid,
+                    DaemonSelectorKind::Uid,
+                    DaemonSelectorKind::Gid,
+                    DaemonSelectorKind::Cgroup,
+                ],
+                outputs: vec![
+                    "perf.data".to_string(),
+                    "perf.command.json".to_string(),
+                    "perf.selector.json".to_string(),
+                    "perf stdout and stderr logs".to_string(),
+                ],
+                constraints: vec![
+                    format!(
+                        "duration_ms must stay within {}..={}",
+                        MIN_PERF_DURATION_MS, MAX_PERF_DURATION_MS
+                    ),
+                    "sample_frequency_hz and call_graph are only valid for record mode".to_string(),
+                    "output_dir must resolve inside allowed roots".to_string(),
+                ],
+                requires_root: true,
+            },
+            DaemonCapabilityDescriptor {
+                name: "scheduler_trace_capture".to_string(),
+                kind: DaemonCapabilityKind::SchedulerTraceCapture,
+                summary: "Capture bounded perf sched record, timehist, and latency artifacts for scheduler ordering evidence.".to_string(),
+                selector_kinds: vec![
+                    DaemonSelectorKind::Pid,
+                    DaemonSelectorKind::Uid,
+                    DaemonSelectorKind::Gid,
+                    DaemonSelectorKind::Cgroup,
+                ],
+                outputs: vec![
+                    "perf.sched.data".to_string(),
+                    "perf.sched.timehist.txt".to_string(),
+                    "perf.sched.latency.txt".to_string(),
+                    "command, selector, and stderr artifacts".to_string(),
+                ],
+                constraints: vec![
+                    format!(
+                        "duration_ms must stay within {}..={}",
+                        MIN_PERF_DURATION_MS, MAX_PERF_DURATION_MS
+                    ),
+                    "output_dir must resolve inside allowed roots".to_string(),
+                    "shell execution is not permitted; only structured selectors are accepted".to_string(),
+                ],
+                requires_root: true,
+            },
+        ]
     }
 
     fn validate_perf_collection(

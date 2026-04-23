@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn resolves_tools_and_skills_by_alias() {
         let catalog = StartupCatalog::from_parts(
-            vec![fixture_tool("sched_ext_daemon", "daemon")],
+            vec![fixture_tool("sched_claw_daemon", "daemon")],
             &SkillCatalog::new(vec![fixture_skill("sched-ext-design-loop", "sched-loop")]),
         );
 
@@ -129,7 +129,7 @@ mod tests {
             catalog
                 .resolve_tool("daemon")
                 .map(|spec| spec.name.as_str()),
-            Some("sched_ext_daemon")
+            Some("sched_claw_daemon")
         );
         assert_eq!(
             catalog

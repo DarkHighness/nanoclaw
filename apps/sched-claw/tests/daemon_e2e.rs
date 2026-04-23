@@ -75,6 +75,34 @@ echo "completed"
 }
 
 #[tokio::test]
+async fn daemon_reports_capabilities() {
+    let harness = DaemonHarness::start().await;
+
+    let response = harness
+        .client
+        .send(&SchedExtDaemonRequest::Capabilities {})
+        .await
+        .unwrap();
+
+    let capabilities = match response {
+        SchedExtDaemonResponse::Capabilities { capabilities } => capabilities,
+        other => panic!("expected capabilities response, got {other:?}"),
+    };
+    assert!(
+        capabilities
+            .iter()
+            .any(|capability| capability.name == "deployment_control")
+    );
+    assert!(
+        capabilities
+            .iter()
+            .any(|capability| capability.name == "perf_stat_capture")
+    );
+
+    harness.shutdown().await;
+}
+
+#[tokio::test]
 async fn daemon_reaps_completed_process_on_next_request() {
     let harness = DaemonHarness::start().await;
     let script = harness.write_executable(

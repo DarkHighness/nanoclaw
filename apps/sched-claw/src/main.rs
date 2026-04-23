@@ -169,6 +169,7 @@ struct DaemonArgs {
 
 #[derive(Debug, Subcommand)]
 enum DaemonCommand {
+    Capabilities(OutputArgs),
     Status(OutputArgs),
     Activate(DaemonActivateArgs),
     CollectPerf(DaemonCollectPerfArgs),
@@ -481,6 +482,9 @@ async fn run_daemon_command(
         SchedClawConfig::load_from_dir(workspace_root, overrides)?.daemon,
     );
     let (request, style) = match args.command {
+        DaemonCommand::Capabilities(output) => {
+            (SchedExtDaemonRequest::Capabilities {}, output.style)
+        }
         DaemonCommand::Status(output) => (SchedExtDaemonRequest::Status {}, output.style),
         DaemonCommand::Activate(args) => (
             SchedExtDaemonRequest::Activate {
@@ -757,6 +761,21 @@ mod tests {
                     assert_eq!(args.output.style.as_str(), "plain");
                 }
                 other => panic!("expected collect-sched command, got {other:?}"),
+            },
+            other => panic!("expected daemon command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_daemon_capabilities_command() {
+        let cli = Cli::try_parse_from(["sched-claw", "daemon", "capabilities", "--style", "plain"])
+            .unwrap();
+        match cli.command {
+            Some(Command::Daemon(args)) => match args.command {
+                DaemonCommand::Capabilities(output) => {
+                    assert_eq!(output.style.as_str(), "plain");
+                }
+                other => panic!("expected capabilities command, got {other:?}"),
             },
             other => panic!("expected daemon command, got {other:?}"),
         }
