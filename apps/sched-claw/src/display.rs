@@ -1,5 +1,6 @@
 use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot,
+    PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector,
     SchedExtDaemonResponse,
 };
 use crate::doctor::DoctorReport;
@@ -292,6 +293,9 @@ pub fn render_daemon_response(response: &SchedExtDaemonResponse, style: OutputSt
     match response {
         SchedExtDaemonResponse::Status { snapshot } => render_daemon_status(snapshot, style),
         SchedExtDaemonResponse::Logs { snapshot } => render_daemon_logs(snapshot, style),
+        SchedExtDaemonResponse::PerfCollection { snapshot } => {
+            render_perf_collection(snapshot, style)
+        }
         SchedExtDaemonResponse::Ack { message, snapshot } => {
             let body = render_daemon_status(snapshot, style);
             if body.is_empty() {
@@ -301,6 +305,106 @@ pub fn render_daemon_response(response: &SchedExtDaemonResponse, style: OutputSt
             }
         }
         SchedExtDaemonResponse::Error { message } => format!("daemon error: {message}"),
+    }
+}
+
+pub fn render_perf_collection(snapshot: &PerfCollectionSnapshot, style: OutputStyle) -> String {
+    let selector = match &snapshot.selector {
+        PerfTargetSelector::Pid { pids } => {
+            format!(
+                "pid={}",
+                pids.iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+        PerfTargetSelector::Uid { uid } => format!("uid={uid}"),
+        PerfTargetSelector::Gid { gid } => format!("gid={gid}"),
+        PerfTargetSelector::Cgroup { path } => format!("cgroup={path}"),
+    };
+    let call_graph = snapshot
+        .call_graph
+        .map(perf_call_graph_label)
+        .unwrap_or_else(|| "<none>".to_string());
+    let events = if snapshot.events.is_empty() {
+        "<default>".to_string()
+    } else {
+        snapshot.events.join(", ")
+    };
+    render_sections(
+        &format!("Perf Capture · {}", snapshot.label),
+        &[
+            (
+                "Overview",
+                vec![
+                    (
+                        "Mode".to_string(),
+                        perf_collection_mode_label(snapshot.mode),
+                    ),
+                    ("Selector".to_string(), selector),
+                    (
+                        "Resolved PIDs".to_string(),
+                        join_or_none(
+                            snapshot
+                                .resolved_pids
+                                .iter()
+                                .map(u32::to_string)
+                                .collect::<Vec<_>>(),
+                        ),
+                    ),
+                    (
+                        "Duration".to_string(),
+                        format!("{} ms", snapshot.requested_duration_ms),
+                    ),
+                    ("Events".to_string(), events),
+                    ("Call Graph".to_string(), call_graph),
+                    (
+                        "Sample Frequency".to_string(),
+                        snapshot
+                            .sample_frequency_hz
+                            .map(|value| format!("{value} Hz"))
+                            .unwrap_or_else(|| "<none>".to_string()),
+                    ),
+                    ("Stop Reason".to_string(), snapshot.stop_reason.clone()),
+                    (
+                        "Exit".to_string(),
+                        format!("code={:?} signal={:?}", snapshot.exit_code, snapshot.signal),
+                    ),
+                ],
+            ),
+            (
+                "Artifacts",
+                vec![
+                    ("Output Dir".to_string(), snapshot.output_dir.clone()),
+                    (
+                        "Primary Output".to_string(),
+                        snapshot.primary_output_path.clone(),
+                    ),
+                    ("Command".to_string(), snapshot.command_path.clone()),
+                    ("Selector".to_string(), snapshot.selector_path.clone()),
+                    ("Stdout".to_string(), snapshot.stdout_path.clone()),
+                    ("Stderr".to_string(), snapshot.stderr_path.clone()),
+                ],
+            ),
+        ],
+        style,
+        Some(format!("perf argv: {}", snapshot.perf_argv.join(" "))),
+    )
+}
+
+fn perf_collection_mode_label(mode: PerfCollectionMode) -> String {
+    match mode {
+        PerfCollectionMode::Stat => "stat".to_string(),
+        PerfCollectionMode::Record => "record".to_string(),
+    }
+}
+
+fn perf_call_graph_label(mode: PerfCallGraphMode) -> String {
+    match mode {
+        PerfCallGraphMode::FramePointer => "frame_pointer".to_string(),
+        PerfCallGraphMode::Dwarf => "dwarf".to_string(),
+        PerfCallGraphMode::Lbr => "lbr".to_string(),
     }
 }
 
@@ -957,10 +1061,12 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputStyle, render_daemon_status, render_doctor_report, render_session_export_artifact,
-        render_session_list, render_skill_list, render_tool_list,
+        OutputStyle, render_daemon_status, render_doctor_report, render_perf_collection,
+        render_session_export_artifact, render_session_list, render_skill_list, render_tool_list,
     };
-    use crate::daemon_protocol::DaemonStatusSnapshot;
+    use crate::daemon_protocol::{
+        DaemonStatusSnapshot, PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector,
+    };
     use crate::doctor::{DoctorCheck, DoctorReport, DoctorStatus};
     use crate::history::{SessionExportArtifact, SessionExportKind};
     use agent::{
@@ -1054,6 +1160,38 @@ mod tests {
         );
         assert!(rendered.contains("Daemon Status"));
         assert!(rendered.contains("Daemon PID: 42"));
+    }
+
+    #[test]
+    fn renders_perf_collection_sections() {
+        let rendered = render_perf_collection(
+            &PerfCollectionSnapshot {
+                label: "perf-a".to_string(),
+                mode: PerfCollectionMode::Stat,
+                selector: PerfTargetSelector::Pid { pids: vec![42] },
+                resolved_pids: vec![42],
+                requested_duration_ms: 500,
+                events: vec!["cycles".to_string()],
+                sample_frequency_hz: None,
+                call_graph: None,
+                output_dir: "/repo/artifacts/perf-a".to_string(),
+                primary_output_path: "/repo/artifacts/perf-a/perf.stat.csv".to_string(),
+                command_path: "/repo/artifacts/perf-a/perf.command.json".to_string(),
+                selector_path: "/repo/artifacts/perf-a/perf.selector.json".to_string(),
+                stdout_path: "/repo/artifacts/perf-a/perf.stdout.log".to_string(),
+                stderr_path: "/repo/artifacts/perf-a/perf.stderr.log".to_string(),
+                started_at_unix_ms: 1,
+                ended_at_unix_ms: 2,
+                stop_reason: "duration_elapsed".to_string(),
+                exit_code: Some(0),
+                signal: None,
+                perf_argv: vec!["stat".to_string(), "-p".to_string(), "42".to_string()],
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Perf Capture · perf-a"));
+        assert!(rendered.contains("Mode: stat"));
+        assert!(rendered.contains("Primary Output: /repo/artifacts/perf-a/perf.stat.csv"));
     }
 
     #[test]

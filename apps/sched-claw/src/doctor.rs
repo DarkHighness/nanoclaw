@@ -140,6 +140,14 @@ pub async fn collect_doctor_report(
         "used for pandas or polars summaries and matplotlib plots",
     ));
     checks.push(helper_script_check(
+        workspace_root
+            .join("apps/sched-claw/skills/sched-perf-analysis/scripts/render_perf_report.sh"),
+        "analysis",
+        "perf report rendering helper",
+        false,
+        "used to turn perf.data captures into perf report or perf script artifacts",
+    ));
+    checks.push(helper_script_check(
         workspace_root.join(
             "apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh",
         ),
@@ -217,6 +225,7 @@ pub async fn collect_doctor_report(
             "install linux perf tools if you need host-side profiling or proxy metrics".to_string(),
         ),
     ));
+    checks.push(perf_event_paranoid_check());
 
     Ok(DoctorReport {
         workspace_root: workspace_root.to_path_buf(),
@@ -698,6 +707,58 @@ fn uv_bootstrap_check(path_env: Option<&str>, workspace_root: &Path) -> DoctorCh
 
     let _ = fs::remove_dir_all(&probe_root);
     check
+}
+
+fn perf_event_paranoid_check() -> DoctorCheck {
+    let path = Path::new("/proc/sys/kernel/perf_event_paranoid");
+    let Ok(raw) = fs::read_to_string(path) else {
+        return DoctorCheck {
+            category: "analysis",
+            name: "perf_event_paranoid",
+            status: DoctorStatus::Warn,
+            detail: format!("could not read {}", path.display()),
+            remediation: Some(
+                "inspect /proc/sys/kernel/perf_event_paranoid if non-root perf capture behaves unexpectedly"
+                    .to_string(),
+            ),
+        };
+    };
+    let trimmed = raw.trim();
+    let Ok(value) = trimmed.parse::<i32>() else {
+        return DoctorCheck {
+            category: "analysis",
+            name: "perf_event_paranoid",
+            status: DoctorStatus::Warn,
+            detail: format!("unexpected value `{trimmed}` in {}", path.display()),
+            remediation: Some(
+                "set a sane perf_event_paranoid value if non-root perf capture needs to work"
+                    .to_string(),
+            ),
+        };
+    };
+    let (status, detail, remediation) = if value <= 2 {
+        (
+            DoctorStatus::Pass,
+            format!("{value} (compatible with many non-root perf stat or perf record flows)"),
+            None,
+        )
+    } else {
+        (
+            DoctorStatus::Warn,
+            format!("{value} (non-root perf capture may be restricted; use the privileged daemon collect_perf path when needed)"),
+            Some(
+                "lower perf_event_paranoid for unprivileged collection, or keep using the daemon collect_perf action for bounded privileged capture"
+                    .to_string(),
+            ),
+        )
+    };
+    DoctorCheck {
+        category: "analysis",
+        name: "perf_event_paranoid",
+        status,
+        detail,
+        remediation,
+    }
 }
 
 fn count_skills(root: &Path) -> Option<usize> {

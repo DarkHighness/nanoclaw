@@ -39,9 +39,9 @@ pub fn build_system_preamble(
             .to_string(),
         "If a skill ships helper scripts, inspect them before use and prefer reusing them over retyping large shell pipelines."
             .to_string(),
-        "Use sched_ext_daemon only for status, activate, stop, and logs. Do not use it as a generic privileged execution escape hatch."
+        "Use sched_ext_daemon only for status, activate, stop, logs, and structured privileged perf capture. Do not use it as a generic privileged execution escape hatch."
             .to_string(),
-        "Do not use the daemon as a generic privileged shell. Build, collect, analyze, and edit through normal tools; reserve privilege for rollout lifecycle control."
+        "Do not use the daemon as a generic privileged shell. Build, collect, analyze, and edit through normal tools; reserve privilege for rollout lifecycle control and bounded attach-style perf capture."
             .to_string(),
         "When defining a workload or rollout target, keep the selector explicit: script, pid, uid, gid, or cgroup."
             .to_string(),

@@ -3,7 +3,10 @@ use clap::{Args, Parser, Subcommand};
 use sched_claw::app_config::{CliOverrides, SchedClawConfig};
 use sched_claw::bootstrap::load_bootstrap;
 use sched_claw::daemon_client::SchedExtDaemonClient;
-use sched_claw::daemon_protocol::{SchedExtDaemonRequest, SchedExtDaemonResponse};
+use sched_claw::daemon_protocol::{
+    PerfCallGraphMode, PerfCollectionMode, PerfTargetSelector, SchedExtDaemonRequest,
+    SchedExtDaemonResponse,
+};
 use sched_claw::display::{
     OutputStyle, render_daemon_response, render_doctor_report, render_session_detail,
     render_session_export_artifact, render_session_list, render_session_search_results,
@@ -168,6 +171,7 @@ struct DaemonArgs {
 enum DaemonCommand {
     Status(OutputArgs),
     Activate(DaemonActivateArgs),
+    CollectPerf(DaemonCollectPerfArgs),
     Logs(DaemonLogsArgs),
     Stop(DaemonStopArgs),
 }
@@ -198,6 +202,49 @@ struct DaemonActivateArgs {
 struct DaemonLogsArgs {
     #[arg(long, value_name = "LINES")]
     tail_lines: Option<usize>,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum PerfModeArg {
+    Stat,
+    Record,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum PerfCallGraphArg {
+    FramePointer,
+    Dwarf,
+    Lbr,
+}
+
+#[derive(Debug, Args)]
+struct DaemonCollectPerfArgs {
+    #[arg(long, value_name = "TEXT")]
+    label: Option<String>,
+    #[arg(long, value_enum, default_value_t = PerfModeArg::Stat)]
+    mode: PerfModeArg,
+    #[arg(long, value_name = "DIR")]
+    output_dir: String,
+    #[arg(long, value_name = "MS")]
+    duration_ms: u64,
+    #[arg(long = "event", value_name = "EVENT")]
+    events: Vec<String>,
+    #[arg(long, value_name = "PID", value_delimiter = ',')]
+    pid: Vec<u32>,
+    #[arg(long, value_name = "UID")]
+    uid: Option<u32>,
+    #[arg(long, value_name = "GID")]
+    gid: Option<u32>,
+    #[arg(long, value_name = "PATH")]
+    cgroup: Option<String>,
+    #[arg(long, value_name = "HZ")]
+    sample_frequency_hz: Option<u32>,
+    #[arg(long, value_enum)]
+    call_graph: Option<PerfCallGraphArg>,
+    #[arg(long)]
+    overwrite: bool,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -421,6 +468,23 @@ async fn run_daemon_command(
             },
             args.output.style,
         ),
+        DaemonCommand::CollectPerf(args) => {
+            let selector = parse_perf_selector(&args)?;
+            (
+                SchedExtDaemonRequest::CollectPerf {
+                    label: args.label,
+                    mode: map_perf_mode(args.mode),
+                    selector,
+                    output_dir: args.output_dir,
+                    duration_ms: args.duration_ms,
+                    events: args.events,
+                    sample_frequency_hz: args.sample_frequency_hz,
+                    call_graph: args.call_graph.map(map_perf_call_graph),
+                    overwrite: args.overwrite,
+                },
+                args.output.style,
+            )
+        }
         DaemonCommand::Logs(args) => (
             SchedExtDaemonRequest::Logs {
                 tail_lines: args.tail_lines,
@@ -463,6 +527,57 @@ fn parse_key_value_arg(value: &str) -> Result<(String, String)> {
 
 fn lease_seconds_to_ms(seconds: Option<u64>) -> Option<u64> {
     seconds.map(|value| value.max(1).saturating_mul(1_000))
+}
+
+fn map_perf_mode(value: PerfModeArg) -> PerfCollectionMode {
+    match value {
+        PerfModeArg::Stat => PerfCollectionMode::Stat,
+        PerfModeArg::Record => PerfCollectionMode::Record,
+    }
+}
+
+fn map_perf_call_graph(value: PerfCallGraphArg) -> PerfCallGraphMode {
+    match value {
+        PerfCallGraphArg::FramePointer => PerfCallGraphMode::FramePointer,
+        PerfCallGraphArg::Dwarf => PerfCallGraphMode::Dwarf,
+        PerfCallGraphArg::Lbr => PerfCallGraphMode::Lbr,
+    }
+}
+
+fn parse_perf_selector(args: &DaemonCollectPerfArgs) -> Result<PerfTargetSelector> {
+    let mut seen = 0usize;
+    if !args.pid.is_empty() {
+        seen += 1;
+    }
+    if args.uid.is_some() {
+        seen += 1;
+    }
+    if args.gid.is_some() {
+        seen += 1;
+    }
+    if args.cgroup.is_some() {
+        seen += 1;
+    }
+    if seen != 1 {
+        anyhow::bail!("exactly one of --pid, --uid, --gid, or --cgroup is required");
+    }
+    if !args.pid.is_empty() {
+        return Ok(PerfTargetSelector::Pid {
+            pids: args.pid.clone(),
+        });
+    }
+    if let Some(uid) = args.uid {
+        return Ok(PerfTargetSelector::Uid { uid });
+    }
+    if let Some(gid) = args.gid {
+        return Ok(PerfTargetSelector::Gid { gid });
+    }
+    Ok(PerfTargetSelector::Cgroup {
+        path: args
+            .cgroup
+            .clone()
+            .expect("cgroup selector is present when no other selector matches"),
+    })
 }
 
 fn init_tracing() {
@@ -525,6 +640,41 @@ mod tests {
                     assert_eq!(args.argv, vec!["loader".to_string(), "--flag".to_string()]);
                 }
                 other => panic!("expected activate command, got {other:?}"),
+            },
+            other => panic!("expected daemon command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_daemon_collect_perf_pid_target() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "daemon",
+            "collect-perf",
+            "--mode",
+            "record",
+            "--output-dir",
+            "artifacts/perf-a",
+            "--duration-ms",
+            "750",
+            "--pid",
+            "123,456",
+            "--event",
+            "cycles",
+            "--call-graph",
+            "dwarf",
+            "--style",
+            "plain",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Daemon(args)) => match args.command {
+                DaemonCommand::CollectPerf(args) => {
+                    assert_eq!(args.pid, vec![123, 456]);
+                    assert_eq!(args.events, vec!["cycles"]);
+                    assert_eq!(args.output.style.as_str(), "plain");
+                }
+                other => panic!("expected collect-perf command, got {other:?}"),
             },
             other => panic!("expected daemon command, got {other:?}"),
         }

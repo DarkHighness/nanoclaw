@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 pub const DEFAULT_STOP_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_LOG_TAIL_LINES: usize = 100;
+pub const MIN_PERF_DURATION_MS: u64 = 100;
+pub const MAX_PERF_DURATION_MS: u64 = 5 * 60_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -30,6 +32,22 @@ pub enum SchedExtDaemonRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail_lines: Option<usize>,
     },
+    CollectPerf {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        mode: PerfCollectionMode,
+        selector: PerfTargetSelector,
+        output_dir: String,
+        duration_ms: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        events: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_frequency_hz: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_graph: Option<PerfCallGraphMode>,
+        #[serde(default)]
+        overwrite: bool,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -40,6 +58,9 @@ pub enum SchedExtDaemonResponse {
     },
     Logs {
         snapshot: DaemonLogsSnapshot,
+    },
+    PerfCollection {
+        snapshot: PerfCollectionSnapshot,
     },
     Ack {
         message: String,
@@ -112,4 +133,56 @@ pub struct DaemonLogLine {
     pub source: String,
     pub emitted_at_unix_ms: u64,
     pub line: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PerfCollectionMode {
+    Stat,
+    Record,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+#[serde(tag = "target", rename_all = "snake_case")]
+pub enum PerfTargetSelector {
+    Pid { pids: Vec<u32> },
+    Uid { uid: u32 },
+    Gid { gid: u32 },
+    Cgroup { path: String },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PerfCallGraphMode {
+    FramePointer,
+    Dwarf,
+    Lbr,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct PerfCollectionSnapshot {
+    pub label: String,
+    pub mode: PerfCollectionMode,
+    pub selector: PerfTargetSelector,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_pids: Vec<u32>,
+    pub requested_duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_frequency_hz: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_graph: Option<PerfCallGraphMode>,
+    pub output_dir: String,
+    pub primary_output_path: String,
+    pub command_path: String,
+    pub selector_path: String,
+    pub stdout_path: String,
+    pub stderr_path: String,
+    pub started_at_unix_ms: u64,
+    pub ended_at_unix_ms: u64,
+    pub stop_reason: String,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub perf_argv: Vec<String>,
 }

@@ -27,6 +27,7 @@ tags:
 2. Prefer low-overhead summaries first.
    - use `scripts/collect_perf.sh` when you want a deterministic wrapper around `perf stat` or `perf record`
    - direct shell capture is also fine when the wrapper would get in the way
+   - when non-root collection is blocked by `perf_event_paranoid`, cgroup visibility, or attach permissions, prefer the structured `sched_ext_daemon` `collect_perf` action instead of inventing a root shell workaround
    - `perf stat`, `/proc/schedstat`, `/proc/<pid>/schedstat`, PSI, `pidstat -w`, `mpstat -P ALL`, and `vmstat`
    - collect just enough to answer whether the issue looks like queueing, migration, wakeup latency, or plain saturation
 3. Escalate only when the summary leaves a scheduler-specific gap.
@@ -41,6 +42,7 @@ tags:
 
 ## Rules
 - Do not invent a dedicated collection tool when shell commands and artifact capture already work.
+- When privilege is required, use the daemon's structured perf capture surface rather than `sudo perf ...` or `sh -c`.
 - Do not jump to high-overhead tracing before you have low-overhead evidence that justifies it.
 - If the host is noisy, record that as a note instead of pretending the sample is clean.
 - Prefer short, replayable commands over interactive sessions.
@@ -61,3 +63,4 @@ tags:
   - wraps `perf stat` or `perf record`
   - supports command, pid, uid, gid, and cgroup targets
   - writes the exact command line plus stdout and stderr artifacts
+  - preferred for non-root or same-user collection flows

@@ -1,6 +1,6 @@
 ---
 name: "sched-claw-product-readiness"
-description: "Use when the task is to decide whether a host is ready to run sched-claw as a real autotuning product. Covers readiness inspection, dependency gaps, daemon reachability, demo assets, and how to turn missing prerequisites into an explicit operator plan."
+description: "Use when the task is to decide whether a host is ready to run sched-claw as a real autotuning product. Covers readiness inspection, dependency gaps, daemon reachability, privileged perf capture prerequisites, and how to turn missing prerequisites into an explicit operator plan."
 aliases:
   - "product-readiness"
 tags:
@@ -31,12 +31,11 @@ tags:
    - runtime: provider credentials and model bootstrap
    - skills: builtin skill bundle, helper scripts, and shared Linux perf skills
    - toolchain: `clang`, `bpftool`, `perf`, `uv`, `python3`
-   - kernel: BTF and cgroup support
-   - daemon: privileged rollout reachability
-   - demo: LLVM or MySQL launcher prerequisites
+   - kernel: BTF, cgroup support, and `perf_event_paranoid` visibility
+   - daemon: privileged rollout reachability plus bounded `collect_perf` support
 4. Keep the harness split clean.
    - normal tools plus repo scripts handle collection, analysis, plotting, and code generation
-   - the daemon handles privileged sched-ext lifecycle only
+   - the daemon handles privileged sched-ext lifecycle plus bounded attach-style perf capture
    - if a task needs deterministic automation, prefer an explicit script over a new host workflow command
 5. Convert gaps into an operator plan.
    - State which failures block all progress and which only block a specific demo or rollout phase.

@@ -1,6 +1,9 @@
 use sched_claw::app_config::DaemonClientConfig;
 use sched_claw::daemon_client::SchedExtDaemonClient;
-use sched_claw::daemon_protocol::SchedExtDaemonRequest;
+use sched_claw::daemon_protocol::{
+    PerfCallGraphMode, PerfCollectionMode, PerfTargetSelector, SchedExtDaemonRequest,
+    SchedExtDaemonResponse,
+};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -157,6 +160,123 @@ done
     harness.shutdown().await;
 }
 
+#[tokio::test]
+async fn daemon_collects_perf_artifacts_for_pid_targets() {
+    let harness = DaemonHarness::start().await;
+    let target = harness.write_executable(
+        "busy.sh",
+        r#"#!/bin/sh
+trap 'exit 0' TERM INT
+while true; do
+  :
+done
+"#,
+    );
+    let mut target_child = Command::new(&target).stdout(Stdio::null()).spawn().unwrap();
+    let pid = target_child.id().unwrap();
+
+    let response = harness
+        .client
+        .send(&SchedExtDaemonRequest::CollectPerf {
+            label: Some("pid-stat".to_string()),
+            mode: PerfCollectionMode::Stat,
+            selector: PerfTargetSelector::Pid { pids: vec![pid] },
+            output_dir: "artifacts/perf-a".to_string(),
+            duration_ms: 250,
+            events: vec!["cycles".to_string(), "instructions".to_string()],
+            sample_frequency_hz: None,
+            call_graph: None,
+            overwrite: false,
+        })
+        .await
+        .unwrap();
+
+    let snapshot = match response {
+        SchedExtDaemonResponse::PerfCollection { snapshot } => snapshot,
+        other => panic!("expected perf collection response, got {other:?}"),
+    };
+    assert_eq!(snapshot.label, "pid-stat");
+    assert_eq!(snapshot.stop_reason, "duration_elapsed");
+    assert_eq!(snapshot.resolved_pids, vec![pid]);
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/perf-a/perf.stat.csv")
+            .is_file()
+    );
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/perf-a/perf.command.json")
+            .is_file()
+    );
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/perf-a/perf.selector.json")
+            .is_file()
+    );
+
+    let _ = target_child.start_kill();
+    let _ = target_child.wait().await;
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn daemon_collects_perf_record_with_call_graph() {
+    let harness = DaemonHarness::start().await;
+    let target = harness.write_executable(
+        "busy-record.sh",
+        r#"#!/bin/sh
+trap 'exit 0' TERM INT
+while true; do
+  :
+done
+"#,
+    );
+    let mut target_child = Command::new(&target).stdout(Stdio::null()).spawn().unwrap();
+    let pid = target_child.id().unwrap();
+
+    let response = harness
+        .client
+        .send(&SchedExtDaemonRequest::CollectPerf {
+            label: Some("pid-record".to_string()),
+            mode: PerfCollectionMode::Record,
+            selector: PerfTargetSelector::Pid { pids: vec![pid] },
+            output_dir: "artifacts/perf-record".to_string(),
+            duration_ms: 250,
+            events: vec!["cpu-clock".to_string()],
+            sample_frequency_hz: Some(199),
+            call_graph: Some(PerfCallGraphMode::Dwarf),
+            overwrite: false,
+        })
+        .await
+        .unwrap();
+
+    let snapshot = match response {
+        SchedExtDaemonResponse::PerfCollection { snapshot } => snapshot,
+        other => panic!("expected perf collection response, got {other:?}"),
+    };
+    assert_eq!(snapshot.mode, PerfCollectionMode::Record);
+    assert_eq!(snapshot.call_graph, Some(PerfCallGraphMode::Dwarf));
+    assert!(
+        snapshot
+            .perf_argv
+            .iter()
+            .any(|value| value == "--call-graph")
+    );
+    assert!(
+        harness
+            .workspace_root()
+            .join("artifacts/perf-record/perf.data")
+            .is_file()
+    );
+
+    let _ = target_child.start_kill();
+    let _ = target_child.wait().await;
+    harness.shutdown().await;
+}
+
 struct DaemonHarness {
     _workspace: TempDir,
     socket_path: PathBuf,
@@ -170,6 +290,7 @@ impl DaemonHarness {
         agent::AgentWorkspaceLayout::new(workspace.path())
             .ensure_standard_layout()
             .unwrap();
+        write_mock_perf(workspace.path());
         let socket_path = workspace
             .path()
             .join(".nanoclaw/apps/sched-claw/test-daemon.sock");
@@ -185,6 +306,14 @@ impl DaemonHarness {
             .arg(&socket_path)
             .arg("--allow-root")
             .arg(workspace.path())
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    workspace.path().display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
             .stdout(std::fs::File::create(&daemon_log).unwrap())
             .stderr(Stdio::inherit())
             .spawn()
@@ -234,6 +363,55 @@ impl DaemonHarness {
         let _ = self.child.wait().await;
         let _ = std::fs::remove_file(&self.socket_path);
     }
+}
+
+fn write_mock_perf(workspace_root: &Path) {
+    let path = workspace_root.join("perf");
+    std::fs::write(
+        &path,
+        r#"#!/bin/sh
+set -eu
+mode=""
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    stat|record)
+      mode="$1"
+      shift
+      ;;
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+write_output() {
+  if [ -z "$output" ]; then
+    exit 3
+  fi
+  mkdir -p "$(dirname "$output")"
+  if [ "$mode" = "stat" ]; then
+    cat >"$output" <<'EOF'
+1000,,cycles,1.0,100.00,,
+2000,,instructions,1.0,100.00,,
+EOF
+  else
+    printf 'PERF DATA\n' >"$output"
+  fi
+}
+trap 'write_output; exit 0' INT TERM
+while true; do
+  sleep 0.05
+done
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&path, permissions).unwrap();
 }
 
 async fn wait_until<F, Fut>(timeout_window: Duration, mut condition: F)

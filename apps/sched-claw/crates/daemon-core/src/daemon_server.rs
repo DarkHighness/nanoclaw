@@ -1,12 +1,14 @@
 use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DEFAULT_LOG_TAIL_LINES, DEFAULT_STOP_TIMEOUT_MS, DaemonLogLine,
-    DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot, SchedExtDaemonRequest,
-    SchedExtDaemonResponse,
+    DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot, MAX_PERF_DURATION_MS,
+    MIN_PERF_DURATION_MS, PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot,
+    PerfTargetSelector, SchedExtDaemonRequest, SchedExtDaemonResponse,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::{Gid, Pid, Uid, chown};
 use std::collections::{BTreeMap, VecDeque};
+use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -34,6 +36,7 @@ pub struct ServeOptions {
 struct DaemonServer {
     state: Arc<Mutex<DaemonState>>,
     options: Arc<NormalizedServeOptions>,
+    collection_lock: Arc<AsyncMutex<()>>,
 }
 
 struct NormalizedServeOptions {
@@ -78,6 +81,20 @@ struct LaunchSpec {
     cwd: PathBuf,
     env: BTreeMap<String, String>,
     lease_timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct PerfCollectionSpec {
+    label: String,
+    mode: PerfCollectionMode,
+    selector: PerfTargetSelector,
+    resolved_pids: Vec<u32>,
+    output_dir: PathBuf,
+    duration_ms: u64,
+    events: Vec<String>,
+    sample_frequency_hz: Option<u32>,
+    call_graph: Option<PerfCallGraphMode>,
+    perf_argv: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -196,6 +213,7 @@ impl DaemonServer {
                 client_uid: options.client_uid.map(Uid::from_raw),
                 client_gid: options.client_gid.map(Gid::from_raw),
             }),
+            collection_lock: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -281,6 +299,31 @@ impl DaemonServer {
             SchedExtDaemonRequest::Logs { tail_lines } => Ok(SchedExtDaemonResponse::Logs {
                 snapshot: self.logs_snapshot(tail_lines.unwrap_or(DEFAULT_LOG_TAIL_LINES)),
             }),
+            SchedExtDaemonRequest::CollectPerf {
+                label,
+                mode,
+                selector,
+                output_dir,
+                duration_ms,
+                events,
+                sample_frequency_hz,
+                call_graph,
+                overwrite,
+            } => {
+                let spec = self.validate_perf_collection(
+                    label,
+                    mode,
+                    selector,
+                    output_dir,
+                    duration_ms,
+                    events,
+                    sample_frequency_hz,
+                    call_graph,
+                    overwrite,
+                )?;
+                let snapshot = self.collect_perf(spec).await?;
+                Ok(SchedExtDaemonResponse::PerfCollection { snapshot })
+            }
             SchedExtDaemonRequest::Activate {
                 label,
                 argv,
@@ -320,6 +363,225 @@ impl DaemonServer {
                 })
             }
         }
+    }
+
+    fn validate_perf_collection(
+        &self,
+        label: Option<String>,
+        mode: PerfCollectionMode,
+        selector: PerfTargetSelector,
+        output_dir: String,
+        duration_ms: u64,
+        events: Vec<String>,
+        sample_frequency_hz: Option<u32>,
+        call_graph: Option<PerfCallGraphMode>,
+        overwrite: bool,
+    ) -> Result<PerfCollectionSpec> {
+        if !(MIN_PERF_DURATION_MS..=MAX_PERF_DURATION_MS).contains(&duration_ms) {
+            bail!(
+                "duration_ms must be between {} and {}",
+                MIN_PERF_DURATION_MS,
+                MAX_PERF_DURATION_MS
+            );
+        }
+        let resolved_pids = self.resolve_perf_selector(&selector)?;
+        if resolved_pids.is_empty() {
+            bail!("no live pids resolved for perf selector");
+        }
+
+        let output_dir =
+            resolve_allow_missing_path(&self.options.workspace_root, Path::new(&output_dir))
+                .with_context(|| format!("failed to resolve output dir {output_dir}"))?;
+        self.ensure_allowed_path_for_create(&output_dir)?;
+        self.prepare_output_dir(&output_dir, overwrite)?;
+
+        for event in &events {
+            validate_perf_event(event)?;
+        }
+        if sample_frequency_hz.is_some() && mode != PerfCollectionMode::Record {
+            bail!("sample_frequency_hz is only valid for perf record");
+        }
+        if call_graph.is_some() && mode != PerfCollectionMode::Record {
+            bail!("call_graph is only valid for perf record");
+        }
+        if sample_frequency_hz == Some(0) {
+            bail!("sample_frequency_hz must be greater than zero");
+        }
+        let perf_argv = build_perf_argv(
+            mode,
+            &resolved_pids,
+            &events,
+            sample_frequency_hz,
+            call_graph,
+            &output_dir,
+        );
+        let label = label
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| match mode {
+                PerfCollectionMode::Stat => "perf-stat".to_string(),
+                PerfCollectionMode::Record => "perf-record".to_string(),
+            });
+
+        Ok(PerfCollectionSpec {
+            label,
+            mode,
+            selector,
+            resolved_pids,
+            output_dir,
+            duration_ms,
+            events,
+            sample_frequency_hz,
+            call_graph,
+            perf_argv,
+        })
+    }
+
+    async fn collect_perf(&self, spec: PerfCollectionSpec) -> Result<PerfCollectionSnapshot> {
+        let _collection_guard = self.collection_lock.lock().await;
+        let selector = spec.selector.clone();
+        let resolved_pids = spec.resolved_pids.clone();
+
+        let command_path = spec.output_dir.join("perf.command.json");
+        let selector_path = spec.output_dir.join("perf.selector.json");
+        let stdout_path = spec.output_dir.join("perf.stdout.log");
+        let stderr_path = spec.output_dir.join("perf.stderr.log");
+        let primary_output_path = spec.output_dir.join(match spec.mode {
+            PerfCollectionMode::Stat => "perf.stat.csv",
+            PerfCollectionMode::Record => "perf.data",
+        });
+
+        std::fs::write(&command_path, serde_json::to_vec_pretty(&spec.perf_argv)?)?;
+        std::fs::write(
+            &selector_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "selector": selector,
+                "resolved_pids": resolved_pids,
+            }))?,
+        )?;
+
+        let stdout_file = std::fs::File::create(&stdout_path)
+            .with_context(|| format!("failed to create {}", stdout_path.display()))?;
+        let stderr_file = std::fs::File::create(&stderr_path)
+            .with_context(|| format!("failed to create {}", stderr_path.display()))?;
+        let started_at_unix_ms = now_unix_ms();
+        let mut child = Command::new("perf")
+            .args(&spec.perf_argv)
+            .current_dir(&spec.output_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file))
+            .spawn()
+            .context("failed to spawn perf collector")?;
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow!("spawned perf collector did not expose a pid"))?;
+
+        let mut stop_reason = "target_exited".to_string();
+        let status = match timeout(Duration::from_millis(spec.duration_ms), child.wait()).await {
+            Ok(status) => status?,
+            Err(_) => {
+                stop_reason = "duration_elapsed".to_string();
+                if let Err(error) = kill(Pid::from_raw(pid as i32), Signal::SIGINT) {
+                    warn!(error = %error, pid, "failed to interrupt perf collector");
+                }
+                match timeout(Duration::from_secs(5), child.wait()).await {
+                    Ok(status) => status?,
+                    Err(_) => {
+                        stop_reason = "forced_kill".to_string();
+                        child.start_kill()?;
+                        child.wait().await?
+                    }
+                }
+            }
+        };
+        let ended_at_unix_ms = now_unix_ms();
+
+        if !primary_output_path.is_file() {
+            bail!(
+                "perf collector did not produce {} ({})",
+                primary_output_path.display(),
+                summarize_output_file(&stdout_path, &stderr_path)?
+            );
+        }
+        if !status.success()
+            && !(stop_reason == "duration_elapsed"
+                && matches!(status.code(), Some(0) | Some(130) | Some(124)))
+        {
+            bail!(
+                "perf collector exited unsuccessfully ({:?}); {}",
+                status.code(),
+                summarize_output_file(&stdout_path, &stderr_path)?
+            );
+        }
+
+        Ok(PerfCollectionSnapshot {
+            label: spec.label,
+            mode: spec.mode,
+            selector: spec.selector,
+            resolved_pids: spec.resolved_pids,
+            requested_duration_ms: spec.duration_ms,
+            events: spec.events,
+            sample_frequency_hz: spec.sample_frequency_hz,
+            call_graph: spec.call_graph,
+            output_dir: spec.output_dir.display().to_string(),
+            primary_output_path: primary_output_path.display().to_string(),
+            command_path: command_path.display().to_string(),
+            selector_path: selector_path.display().to_string(),
+            stdout_path: stdout_path.display().to_string(),
+            stderr_path: stderr_path.display().to_string(),
+            started_at_unix_ms,
+            ended_at_unix_ms,
+            stop_reason,
+            exit_code: status.code(),
+            signal: status.signal(),
+            perf_argv: spec.perf_argv,
+        })
+    }
+
+    fn prepare_output_dir(&self, output_dir: &Path, overwrite: bool) -> Result<()> {
+        if output_dir.exists() {
+            if !output_dir.is_dir() {
+                bail!("output path {} is not a directory", output_dir.display());
+            }
+            if !overwrite && std::fs::read_dir(output_dir)?.next().is_some() {
+                bail!(
+                    "output directory {} is not empty; pass overwrite=true to reuse it",
+                    output_dir.display()
+                );
+            }
+            return Ok(());
+        }
+        std::fs::create_dir_all(output_dir)
+            .with_context(|| format!("failed to create {}", output_dir.display()))?;
+        Ok(())
+    }
+
+    fn resolve_perf_selector(&self, selector: &PerfTargetSelector) -> Result<Vec<u32>> {
+        let mut pids = match selector {
+            PerfTargetSelector::Pid { pids } => pids.clone(),
+            PerfTargetSelector::Uid { uid } => resolve_proc_selector("Uid", *uid),
+            PerfTargetSelector::Gid { gid } => resolve_proc_selector("Gid", *gid),
+            PerfTargetSelector::Cgroup { path } => resolve_cgroup_selector(path)?,
+        };
+        pids.sort_unstable();
+        pids.dedup();
+        Ok(pids)
+    }
+
+    fn ensure_allowed_path_for_create(&self, path: &Path) -> Result<()> {
+        let mut cursor = Some(path);
+        while let Some(candidate) = cursor {
+            if candidate.exists() {
+                let canonical = canonicalize_existing(candidate)?;
+                self.ensure_allowed_path(&canonical)?;
+                return Ok(());
+            }
+            cursor = candidate.parent();
+        }
+        bail!("path {} has no existing ancestor", path.display())
     }
 
     fn validate_launch(
@@ -690,9 +952,203 @@ fn build_exit_snapshot(
     }
 }
 
+fn build_perf_argv(
+    mode: PerfCollectionMode,
+    resolved_pids: &[u32],
+    events: &[String],
+    sample_frequency_hz: Option<u32>,
+    call_graph: Option<PerfCallGraphMode>,
+    output_dir: &Path,
+) -> Vec<String> {
+    let mut argv = Vec::new();
+    match mode {
+        PerfCollectionMode::Stat => {
+            argv.extend([
+                "stat".to_string(),
+                "-x,".to_string(),
+                "--no-big-num".to_string(),
+                "-o".to_string(),
+                output_dir.join("perf.stat.csv").display().to_string(),
+            ]);
+        }
+        PerfCollectionMode::Record => {
+            argv.extend([
+                "record".to_string(),
+                "-o".to_string(),
+                output_dir.join("perf.data").display().to_string(),
+            ]);
+            if let Some(frequency) = sample_frequency_hz {
+                argv.extend(["--freq".to_string(), frequency.to_string()]);
+            }
+            if let Some(mode) = call_graph {
+                argv.extend(["--call-graph".to_string(), perf_call_graph_arg(mode)]);
+            }
+        }
+    }
+    for event in events {
+        argv.extend(["-e".to_string(), event.clone()]);
+    }
+    argv.extend([
+        "-p".to_string(),
+        resolved_pids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    ]);
+    argv
+}
+
+fn perf_call_graph_arg(mode: PerfCallGraphMode) -> String {
+    match mode {
+        PerfCallGraphMode::FramePointer => "fp".to_string(),
+        PerfCallGraphMode::Dwarf => "dwarf".to_string(),
+        PerfCallGraphMode::Lbr => "lbr".to_string(),
+    }
+}
+
+fn validate_perf_event(event: &str) -> Result<()> {
+    let trimmed = event.trim();
+    if trimmed.is_empty() {
+        bail!("perf events must be non-empty");
+    }
+    if trimmed
+        .chars()
+        .any(|value| matches!(value, '\0' | '\n' | '\r'))
+    {
+        bail!("perf events may not contain control characters");
+    }
+    Ok(())
+}
+
+fn resolve_proc_selector(field: &str, expected: u32) -> Vec<u32> {
+    let mut pids = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return pids;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let status_path = entry.path().join("status");
+        let Ok(contents) = std::fs::read_to_string(status_path) else {
+            continue;
+        };
+        let matched = contents.lines().find_map(|line| {
+            let (key, values) = line.split_once(':')?;
+            if key != field {
+                return None;
+            }
+            values
+                .split_whitespace()
+                .next()?
+                .parse::<u32>()
+                .ok()
+                .map(|value| value == expected)
+        });
+        if matched == Some(true) {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+fn resolve_cgroup_selector(raw_path: &str) -> Result<Vec<u32>> {
+    let raw_path = Path::new(raw_path);
+    if raw_path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("cgroup selector may not contain parent directory segments");
+    }
+    let cgroup_path = if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        Path::new("/sys/fs/cgroup").join(raw_path)
+    };
+    if !cgroup_path.starts_with("/sys/fs/cgroup") {
+        bail!(
+            "cgroup path {} must stay under /sys/fs/cgroup",
+            cgroup_path.display()
+        );
+    }
+    let procs_path = if cgroup_path.is_dir() {
+        cgroup_path.join("cgroup.procs")
+    } else {
+        cgroup_path
+    };
+    let contents = std::fs::read_to_string(&procs_path)
+        .with_context(|| format!("failed to read {}", procs_path.display()))?;
+    Ok(contents
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect())
+}
+
+fn summarize_output_file(stdout_path: &Path, stderr_path: &Path) -> Result<String> {
+    let stdout = std::fs::read(stdout_path).unwrap_or_default();
+    let stderr = std::fs::read(stderr_path).unwrap_or_default();
+    Ok(summarize_output(&stdout, &stderr))
+}
+
+fn summarize_output(stdout: &[u8], stderr: &[u8]) -> String {
+    for source in [stderr, stdout] {
+        if let Some(line) = String::from_utf8_lossy(source)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+        {
+            return line.to_string();
+        }
+    }
+    "<no output>".to_string()
+}
+
 fn canonicalize_existing(path: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(path)
         .with_context(|| format!("failed to canonicalize {}", path.display()))
+}
+
+fn resolve_allow_missing_path(base: &Path, path: &Path) -> Result<PathBuf> {
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!(
+            "path {} may not contain parent directory segments",
+            path.display()
+        );
+    }
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    };
+    if candidate.exists() {
+        return canonicalize_existing(&candidate);
+    }
+
+    let mut existing = candidate.as_path();
+    let mut missing = Vec::<OsString>::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            bail!("path {} has no existing ancestor", candidate.display());
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = existing.parent() else {
+            bail!("path {} has no existing ancestor", candidate.display());
+        };
+        existing = parent;
+    }
+
+    let mut resolved = canonicalize_existing(existing)?;
+    for segment in missing.iter().rev() {
+        resolved.push(segment);
+    }
+    Ok(resolved)
 }
 
 fn canonicalize_maybe_relative(base: &Path, path: &Path) -> Result<PathBuf> {

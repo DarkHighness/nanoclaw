@@ -34,6 +34,7 @@ tags:
 4. Use scriptable analysis helpers when the raw files are too wide to inspect directly.
    - `scripts/bootstrap_uv_env.sh` creates a uv-managed Python environment
    - `scripts/analyze_perf_csv.py` reduces one or more `perf stat` CSV captures and can emit JSON, Markdown, or a plot
+   - `scripts/render_perf_report.sh` turns `perf.data` into `perf report --stdio` and optional `perf script` artifacts
    - `scripts/summarize_metrics.py` remains useful for `metrics.env` style files
 5. Persist the conclusion as normal artifacts or notes.
    - include the evidence paths, facts, inferences, unknowns, recommendations, and confidence
@@ -63,6 +64,9 @@ tags:
 - `scripts/analyze_perf_csv.py`
   - summarizes one or more `perf stat` CSV captures
   - can emit JSON, Markdown, and a matplotlib chart
+- `scripts/render_perf_report.sh`
+  - renders `perf.data` into `perf report --stdio`
+  - can also emit `perf script` output for deeper call-chain inspection
 - `scripts/summarize_metrics.py`
   - summarizes one or more `metrics.env` files
   - supports caller-selected reducers instead of enforcing a fixed host policy

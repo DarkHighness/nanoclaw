@@ -10,6 +10,8 @@ Use the lightest collector that can falsify the current hypothesis.
 - Preferred path:
   - run `scripts/collect_perf.sh --mode stat ...` or an equivalent explicit
     `perf stat` command
+  - when attach rights are restricted, use the daemon `collect_perf` action with
+    a `pid`, `uid`, `gid`, or `cgroup` selector instead of escalating to a root shell
   - persist the resulting `perf.stat.csv`, command line, and notes next to the
     workload artifacts
 - Typical commands:
@@ -66,6 +68,7 @@ Use the lightest collector that can falsify the current hypothesis.
 - Typical commands:
   - `perf record -g -- <workload>`
   - `perf report --stdio`
+  - `scripts/render_perf_report.sh --input perf.data --output perf.report.txt`
 - Record:
   - capture scope
   - top DSOs or functions

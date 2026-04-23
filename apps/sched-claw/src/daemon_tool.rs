@@ -27,7 +27,7 @@ impl Tool for SchedExtDaemonTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::function(
             SCHED_EXT_DAEMON_TOOL_NAME,
-            "Call the privileged sched-ext daemon for constrained scheduler lifecycle work. Use it only for status, activate, stop, and logs; do not treat it as a generic root shell.",
+            "Call the privileged sched-ext daemon for constrained scheduler lifecycle work and structured privileged perf capture. Use it only for status, activate, stop, logs, and collect_perf; do not treat it as a generic root shell.",
             serde_json::to_value(schema_for!(SchedExtDaemonRequest))
                 .expect("sched_ext_daemon schema"),
             ToolOutputMode::Text,
@@ -42,7 +42,7 @@ impl Tool for SchedExtDaemonTool {
             ToolApprovalProfile::new(false, true, Some(false), false)
                 .with_host_escape(true)
                 .with_approval_message(
-                    "This tool reaches a privileged daemon that can replace the active Linux scheduler.",
+                    "This tool reaches a privileged daemon that can replace the active Linux scheduler and run structured privileged perf capture.",
                 ),
         )
     }

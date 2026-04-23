@@ -10,12 +10,14 @@
 
 ## Strongly recommended
 - `perf`
+- visible `/proc/sys/kernel/perf_event_paranoid`
 - cgroup v2 controllers
 - shared `apps/code-agent/skills` root
 
 ## Demo-specific
+- Demo requirements are separate from `sched-claw doctor`.
 - LLVM demo: `cmake`, `ninja`
-- MySQL demo: `sysbench`, `docker` in default mode
+- MySQL demo: `docker` in default self-bootstrapped mode
 
 ## Operator rule
 - A missing core prerequisite blocks real end-to-end autotune work.

@@ -43,6 +43,10 @@ tags:
 5. Move immediately into build and verifier capture.
    - build with normal shell commands or the scaffolded `build.sh`
    - verifier or libbpf failures are part of the design loop, not an afterthought
+6. Keep code generation coupled to an evidence loop, not to a fixed host workflow.
+   - use ordinary collection or analysis scripts when the bottleneck is still ambiguous
+   - use the daemon `collect_perf` action only when attach-style privileged PMU capture is the missing evidence
+   - avoid teaching the host one canonical scoring or mutation loop; leave that policy in the design note and the active skill path
 
 ## Rules
 - Do not generate sched-ext code without stating which evidence and analysis records justify it.

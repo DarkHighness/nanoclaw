@@ -12,6 +12,7 @@ fn shell_helper_scripts_have_valid_bash_syntax() -> Result<()> {
     let scripts = [
         repo_root().join("skills/sched-perf-collection/scripts/collect_perf.sh"),
         repo_root().join("skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh"),
+        repo_root().join("skills/sched-perf-analysis/scripts/render_perf_report.sh"),
         repo_root().join("skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh"),
     ];
 
