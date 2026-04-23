@@ -108,8 +108,11 @@ exit 0
     let last_exit = status.last_exit.unwrap();
     assert_eq!(last_exit.label, "fast-exit");
     assert_eq!(last_exit.exit_code, Some(0));
-    let logs = harness.client.logs(Some(32)).await.unwrap();
-    assert!(logs.lines.iter().any(|line| line.line == "fast-exit"));
+    wait_until(Duration::from_secs(5), || async {
+        let logs = harness.client.logs(Some(32)).await.unwrap();
+        logs.lines.iter().any(|line| line.line == "fast-exit")
+    })
+    .await;
 
     harness.shutdown().await;
 }

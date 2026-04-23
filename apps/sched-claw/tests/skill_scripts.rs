@@ -98,6 +98,10 @@ fn compose_perf_evidence_helper_writes_markdown() -> Result<()> {
         capture_dir.join("perf.stat.csv"),
         "1000,,cycles,1.0,100.00,,\n2000,,instructions,1.0,100.00,,\n",
     )?;
+    std::fs::write(
+        capture_dir.join("perf.report.txt"),
+        "# header\n  60.00% busy [kernel] [k] pick_next_task\n  30.00% busy [kernel] [k] ttwu_do_wakeup\n",
+    )?;
     let output = dir.path().join("evidence.md");
     let script = repo_root().join("skills/sched-perf-analysis/scripts/compose_perf_evidence.py");
 
@@ -118,7 +122,47 @@ fn compose_perf_evidence_helper_writes_markdown() -> Result<()> {
     let rendered = std::fs::read_to_string(output)?;
     assert!(rendered.contains("## Direct Facts"));
     assert!(rendered.contains("`cycles` = `1000.0`"));
+    assert!(rendered.contains("## Derived Proxy Metrics"));
+    assert!(rendered.contains("`ipc` = `2.000000`"));
+    assert!(rendered.contains("## Hotspots"));
+    assert!(rendered.contains("pick_next_task"));
     assert!(rendered.contains("IPC fell after migration spikes"));
+    Ok(())
+}
+
+#[test]
+fn analyze_perf_csv_derives_proxy_metrics() -> Result<()> {
+    let dir = tempdir()?;
+    let csv_path = dir.path().join("perf.stat.csv");
+    std::fs::write(
+        &csv_path,
+        "1000,,cycles,1.0,100.00,,\n2500,,instructions,1.0,100.00,,\n10,,branches,1.0,100.00,,\n1,,branch-misses,1.0,100.00,,\n",
+    )?;
+    let markdown_path = dir.path().join("summary.md");
+    let env_path = dir.path().join("summary.env");
+    let script = repo_root().join("skills/sched-perf-analysis/scripts/analyze_perf_csv.py");
+
+    let status = Command::new("python3")
+        .arg(&script)
+        .arg(&csv_path)
+        .args([
+            "--derive-proxies",
+            "--out-markdown",
+            markdown_path.to_str().unwrap(),
+            "--out-env",
+            env_path.to_str().unwrap(),
+        ])
+        .status()
+        .with_context(|| format!("failed to run {}", script.display()))?;
+    assert!(status.success(), "analyze helper failed");
+
+    let markdown = std::fs::read_to_string(markdown_path)?;
+    let env = std::fs::read_to_string(env_path)?;
+    assert!(markdown.contains("## Derived Proxy Metrics"));
+    assert!(markdown.contains("| perf.stat.csv | ipc | 2.500000 |"));
+    assert!(env.contains("IPC=2.5000000000"));
+    assert!(env.contains("CPI=0.4000000000"));
+    assert!(env.contains("BRANCH_MISS_RATE=0.1000000000"));
     Ok(())
 }
 

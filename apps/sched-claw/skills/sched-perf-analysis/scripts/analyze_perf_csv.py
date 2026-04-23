@@ -40,9 +40,11 @@ def parse_args() -> argparse.Namespace:
         default="median",
     )
     parser.add_argument("--out-json", type=Path)
+    parser.add_argument("--out-env", type=Path)
     parser.add_argument("--out-markdown", type=Path)
     parser.add_argument("--plot", type=Path)
     parser.add_argument("--title", default="sched-claw perf summary")
+    parser.add_argument("--derive-proxies", action="store_true")
     return parser.parse_args()
 
 
@@ -130,7 +132,60 @@ def summarize_with_python(rows: list[dict[str, object]], reducer: str) -> list[d
     return summary
 
 
+def reduced_events_by_source(summary: list[dict[str, object]]) -> dict[str, dict[str, float]]:
+    reduced: dict[str, dict[str, float]] = {}
+    for row in summary:
+        source = str(row["source"])
+        event = str(row["event"])
+        reduced.setdefault(source, {})[event] = float(row["summary"])
+    return reduced
+
+
+def divide(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator in (None, 0.0):
+        return None
+    value = numerator / denominator
+    return value if math.isfinite(value) else None
+
+
+def derive_proxy_metrics(summary: list[dict[str, object]]) -> list[dict[str, object]]:
+    derived_rows: list[dict[str, object]] = []
+    for source, events in sorted(reduced_events_by_source(summary).items()):
+        instructions = events.get("instructions")
+        cycles = events.get("cycles")
+        branches = events.get("branches")
+        branch_misses = events.get("branch-misses")
+        cache_refs = events.get("cache-references")
+        cache_misses = events.get("cache-misses")
+        source_metrics = {
+            "ipc": divide(instructions, cycles),
+            "cpi": divide(cycles, instructions),
+            "branch_miss_rate": divide(branch_misses, branches),
+            "cache_miss_rate": divide(cache_misses, cache_refs),
+        }
+        for metric, value in source_metrics.items():
+            if value is None:
+                continue
+            derived_rows.append(
+                {
+                    "source": source,
+                    "metric": metric,
+                    "value": value,
+                }
+            )
+    return derived_rows
+
+
 def write_markdown(path: Path, summary: list[dict[str, object]], reducer: str) -> None:
+    write_markdown_with_proxies(path, summary, reducer, [])
+
+
+def write_markdown_with_proxies(
+    path: Path,
+    summary: list[dict[str, object]],
+    reducer: str,
+    derived: list[dict[str, object]],
+) -> None:
     lines = [
         f"# perf summary ({reducer})",
         "",
@@ -143,7 +198,46 @@ def write_markdown(path: Path, summary: list[dict[str, object]], reducer: str) -
                 **row
             )
         )
+    if derived:
+        lines.extend(
+            [
+                "",
+                "## Derived Proxy Metrics",
+                "",
+                "| source | metric | value |",
+                "| --- | --- | ---: |",
+            ]
+        )
+        for row in derived:
+            lines.append(
+                "| {source} | {metric} | {value:.6f} |".format(
+                    **row
+                )
+            )
     path.write_text("\n".join(lines) + "\n")
+
+
+def sanitize_env_key(value: str) -> str:
+    sanitized = [
+        char.upper() if char.isalnum() else "_"
+        for char in value
+    ]
+    text = "".join(sanitized).strip("_")
+    return text or "SOURCE"
+
+
+def write_env(path: Path, derived: list[dict[str, object]]) -> None:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for row in derived:
+        grouped.setdefault(str(row["source"]), []).append(row)
+    lines: list[str] = []
+    multi_source = len(grouped) > 1
+    for source, rows in sorted(grouped.items()):
+        prefix = f"{sanitize_env_key(source)}__" if multi_source else ""
+        for row in rows:
+            key = f"{prefix}{str(row['metric']).upper()}"
+            lines.append(f"{key}={float(row['value']):.10f}")
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
 
 
 def write_plot(path: Path, summary: list[dict[str, object]], title: str) -> None:
@@ -182,15 +276,28 @@ def main() -> int:
         summary = summarize_with_polars(rows, args.reducer)
     else:
         summary = summarize_with_python(rows, args.reducer)
+    derived = derive_proxy_metrics(summary) if args.derive_proxies else []
 
     if args.out_json:
-        args.out_json.write_text(json.dumps(summary, indent=2) + "\n")
+        payload: object = (
+            {"summary": summary, "derived_proxies": derived}
+            if args.derive_proxies
+            else summary
+        )
+        args.out_json.write_text(json.dumps(payload, indent=2) + "\n")
+    if args.out_env:
+        write_env(args.out_env, derived)
     if args.out_markdown:
-        write_markdown(args.out_markdown, summary, args.reducer)
+        write_markdown_with_proxies(args.out_markdown, summary, args.reducer, derived)
     if args.plot:
         write_plot(args.plot, summary, args.title)
 
-    print(json.dumps(summary, indent=2))
+    payload = (
+        {"summary": summary, "derived_proxies": derived}
+        if args.derive_proxies
+        else summary
+    )
+    print(json.dumps(payload, indent=2))
     return 0
 
 

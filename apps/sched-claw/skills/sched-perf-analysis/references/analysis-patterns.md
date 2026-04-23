@@ -9,6 +9,9 @@ These are heuristics, not automatic truths. Treat them as candidate interpretati
   direct metric moved.
 - If direct metrics and proxy metrics disagree, do not silently override the
   workload outcome with PMU counters.
+- When a capture already includes `instructions`, `cycles`, `branches`,
+  `branch-misses`, `cache-references`, or `cache-misses`, derive IPC, CPI, and
+  miss-rate helpers directly instead of retyping those formulas in each turn.
 
 ## Low IPC / high CPI with heavy migration churn
 - Plausible meaning:

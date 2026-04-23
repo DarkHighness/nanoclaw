@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
 
 
@@ -36,6 +37,13 @@ def parse_counter_value(raw: str) -> float | None:
         return None
 
 
+def divide(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator in (None, 0.0):
+        return None
+    value = numerator / denominator
+    return value if math.isfinite(value) else None
+
+
 def parse_perf_stat(csv_path: Path) -> list[dict[str, object]]:
     if not csv_path.is_file():
         return []
@@ -56,6 +64,23 @@ def parse_perf_stat(csv_path: Path) -> list[dict[str, object]]:
                 }
             )
     return rows
+
+
+def derive_proxy_metrics(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    counters = {str(row["event"]): float(row["value"]) for row in rows}
+    derived = {
+        "ipc": divide(counters.get("instructions"), counters.get("cycles")),
+        "cpi": divide(counters.get("cycles"), counters.get("instructions")),
+        "branch_miss_rate": divide(counters.get("branch-misses"), counters.get("branches")),
+        "cache_miss_rate": divide(
+            counters.get("cache-misses"), counters.get("cache-references")
+        ),
+    }
+    return [
+        {"metric": metric, "value": value}
+        for metric, value in derived.items()
+        if value is not None
+    ]
 
 
 def read_json(path: Path) -> object | None:
@@ -85,6 +110,22 @@ def list_or_placeholder(values: list[str], placeholder: str) -> list[str]:
     return values if values else [placeholder]
 
 
+def extract_hotspots(report_path: Path, limit: int = 10) -> list[str]:
+    if not report_path.is_file():
+        return []
+    hotspots: list[str] = []
+    for raw_line in report_path.read_text(errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "%" not in line:
+            continue
+        hotspots.append(line)
+        if len(hotspots) >= limit:
+            break
+    return hotspots
+
+
 def main() -> int:
     args = parse_args()
     capture_dir = args.capture_dir
@@ -103,6 +144,8 @@ def main() -> int:
     command_doc = read_json(command_path)
     selector_doc = read_json(selector_path)
     counters = parse_perf_stat(stat_path)
+    proxy_metrics = derive_proxy_metrics(counters)
+    hotspots = extract_hotspots(report_path)
 
     mode = "record" if data_path.is_file() else "stat" if stat_path.is_file() else "unknown"
     title = args.title or f"perf evidence: {capture_dir.name}"
@@ -129,6 +172,8 @@ def main() -> int:
         "selector": selector_doc,
         "command": command_doc,
         "counters": counters,
+        "proxy_metrics": proxy_metrics,
+        "hotspots": hotspots,
         "facts": args.fact,
         "inferences": args.inference,
         "unknowns": args.unknown,
@@ -158,6 +203,25 @@ def main() -> int:
             )
     else:
         lines.append("- `<no perf.stat.csv counters detected>`")
+
+    if proxy_metrics:
+        lines.extend(
+            [
+                "",
+                "## Derived Proxy Metrics",
+            ]
+        )
+        for row in proxy_metrics:
+            lines.append("- `{metric}` = `{value:.6f}`".format(**row))
+
+    if hotspots:
+        lines.extend(
+            [
+                "",
+                "## Hotspots",
+            ]
+        )
+        lines.extend(f"- {line}" for line in hotspots)
 
     lines.extend(
         [

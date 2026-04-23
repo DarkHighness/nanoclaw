@@ -62,6 +62,7 @@ belongs in skill scripts, not in more host-side workflow crates.
       with `--driver host|daemon`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/bootstrap_uv_env.sh`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/analyze_perf_csv.py`
+      with optional derived IPC/CPI or miss-rate proxies
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/compose_perf_evidence.py`
     - `apps/sched-claw/skills/sched-perf-analysis/scripts/render_perf_report.sh`
     - `apps/sched-claw/skills/sched-ext-codegen/scripts/scaffold_sched_ext_candidate.sh`

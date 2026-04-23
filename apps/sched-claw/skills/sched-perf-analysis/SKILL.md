@@ -33,8 +33,9 @@ tags:
    - if the collected phase or selector was wrong, say so instead of over-interpreting the data
 4. Use scriptable analysis helpers when the raw files are too wide to inspect directly.
    - `scripts/bootstrap_uv_env.sh` creates a uv-managed Python environment
-   - `scripts/analyze_perf_csv.py` reduces one or more `perf stat` CSV captures and can emit JSON, Markdown, or a plot
-   - `scripts/compose_perf_evidence.py` turns a raw perf capture directory into a durable Markdown or JSON evidence note
+   - `scripts/analyze_perf_csv.py` reduces one or more `perf stat` CSV captures and can emit JSON, Markdown, env-style key-value output, or a plot
+   - with `--derive-proxies`, `scripts/analyze_perf_csv.py` also emits IPC, CPI, and miss-rate style proxy metrics when the source counters exist
+   - `scripts/compose_perf_evidence.py` turns a raw perf capture directory into a durable Markdown or JSON evidence note and now carries derived proxy metrics plus `perf report` hotspot excerpts when available
    - `scripts/render_perf_report.sh` turns `perf.data` into `perf report --stdio` and optional `perf script` artifacts
    - `scripts/summarize_metrics.py` remains useful for `metrics.env` style files
 5. Persist the conclusion as normal artifacts or notes.
@@ -65,10 +66,11 @@ tags:
   - provisions a uv-managed Python environment for analysis helpers
 - `scripts/analyze_perf_csv.py`
   - summarizes one or more `perf stat` CSV captures
-  - can emit JSON, Markdown, and a matplotlib chart
+  - can emit JSON, Markdown, env-style key-value files, and a matplotlib chart
+  - can derive IPC, CPI, and common miss-rate proxies when the needed counters exist
 - `scripts/compose_perf_evidence.py`
   - converts a raw perf capture directory into a durable Markdown or JSON evidence note
-  - keeps facts, inferences, unknowns, recommendations, and artifact paths explicit
+  - keeps facts, inferences, unknowns, recommendations, artifact paths, derived proxy metrics, and optional hotspot excerpts explicit
 - `scripts/render_perf_report.sh`
   - renders `perf.data` into `perf report --stdio`
   - can also emit `perf script` output for deeper call-chain inspection
