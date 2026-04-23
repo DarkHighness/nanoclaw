@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use sched_claw::app_config::{CliOverrides, SchedClawConfig};
 use sched_claw::bootstrap::load_bootstrap;
-use sched_claw::daemon_client::SchedExtDaemonClient;
+use sched_claw::daemon_client::SchedClawDaemonClient;
 use sched_claw::daemon_protocol::{
-    PerfCallGraphMode, PerfCollectionMode, PerfTargetSelector, SchedExtDaemonRequest,
-    SchedExtDaemonResponse,
+    DaemonCapabilityInvocation, PerfCallGraphMode, PerfCollectionMode, PerfTargetSelector,
+    SchedClawDaemonRequest, SchedClawDaemonResponse,
 };
 use sched_claw::display::{
     OutputStyle, render_daemon_response, render_doctor_report, render_session_detail,
@@ -478,22 +478,24 @@ async fn run_daemon_command(
     overrides: &CliOverrides,
     args: DaemonArgs,
 ) -> Result<()> {
-    let client = SchedExtDaemonClient::new(
+    let client = SchedClawDaemonClient::new(
         SchedClawConfig::load_from_dir(workspace_root, overrides)?.daemon,
     );
     let (request, style) = match args.command {
         DaemonCommand::Capabilities(output) => {
-            (SchedExtDaemonRequest::Capabilities {}, output.style)
+            (SchedClawDaemonRequest::Capabilities {}, output.style)
         }
-        DaemonCommand::Status(output) => (SchedExtDaemonRequest::Status {}, output.style),
+        DaemonCommand::Status(output) => (SchedClawDaemonRequest::Status {}, output.style),
         DaemonCommand::Activate(args) => (
-            SchedExtDaemonRequest::Activate {
-                label: args.label,
-                argv: args.argv,
-                cwd: args.cwd,
-                env: args.env.into_iter().collect::<BTreeMap<_, _>>(),
-                lease_timeout_ms: lease_seconds_to_ms(args.lease_seconds),
-                replace_existing: args.replace_existing,
+            SchedClawDaemonRequest::Invoke {
+                invocation: DaemonCapabilityInvocation::RolloutActivate {
+                    label: args.label,
+                    argv: args.argv,
+                    cwd: args.cwd,
+                    env: args.env.into_iter().collect::<BTreeMap<_, _>>(),
+                    lease_timeout_ms: lease_seconds_to_ms(args.lease_seconds),
+                    replace_existing: args.replace_existing,
+                },
             },
             args.output.style,
         ),
@@ -506,16 +508,18 @@ async fn run_daemon_command(
                 args.cgroup.clone(),
             )?;
             (
-                SchedExtDaemonRequest::CollectPerf {
-                    label: args.label,
-                    mode: map_perf_mode(args.mode),
-                    selector,
-                    output_dir: args.output_dir,
-                    duration_ms: args.duration_ms,
-                    events: args.events,
-                    sample_frequency_hz: args.sample_frequency_hz,
-                    call_graph: args.call_graph.map(map_perf_call_graph),
-                    overwrite: args.overwrite,
+                SchedClawDaemonRequest::Invoke {
+                    invocation: DaemonCapabilityInvocation::PerfCapture {
+                        label: args.label,
+                        mode: map_perf_mode(args.mode),
+                        selector,
+                        output_dir: args.output_dir,
+                        duration_ms: args.duration_ms,
+                        events: args.events,
+                        sample_frequency_hz: args.sample_frequency_hz,
+                        call_graph: args.call_graph.map(map_perf_call_graph),
+                        overwrite: args.overwrite,
+                    },
                 },
                 args.output.style,
             )
@@ -529,33 +533,37 @@ async fn run_daemon_command(
                 args.cgroup.clone(),
             )?;
             (
-                SchedExtDaemonRequest::CollectSched {
-                    label: args.label,
-                    selector,
-                    output_dir: args.output_dir,
-                    duration_ms: args.duration_ms,
-                    latency_by_pid: args.latency_by_pid,
-                    overwrite: args.overwrite,
+                SchedClawDaemonRequest::Invoke {
+                    invocation: DaemonCapabilityInvocation::SchedulerTraceCapture {
+                        label: args.label,
+                        selector,
+                        output_dir: args.output_dir,
+                        duration_ms: args.duration_ms,
+                        latency_by_pid: args.latency_by_pid,
+                        overwrite: args.overwrite,
+                    },
                 },
                 args.output.style,
             )
         }
         DaemonCommand::Logs(args) => (
-            SchedExtDaemonRequest::Logs {
+            SchedClawDaemonRequest::Logs {
                 tail_lines: args.tail_lines,
             },
             args.output.style,
         ),
         DaemonCommand::Stop(args) => (
-            SchedExtDaemonRequest::Stop {
-                graceful_timeout_ms: args.graceful_timeout_ms,
+            SchedClawDaemonRequest::Invoke {
+                invocation: DaemonCapabilityInvocation::RolloutStop {
+                    graceful_timeout_ms: args.graceful_timeout_ms,
+                },
             },
             args.output.style,
         ),
     };
     let response = client.send(&request).await?;
     match response {
-        SchedExtDaemonResponse::Error { message } => anyhow::bail!(message),
+        SchedClawDaemonResponse::Error { message } => anyhow::bail!(message),
         other => println!("{}", render_daemon_response(&other, style)),
     }
     Ok(())

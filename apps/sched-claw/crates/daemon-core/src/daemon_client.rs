@@ -1,6 +1,6 @@
 use crate::daemon_protocol::{
     DEFAULT_LOG_TAIL_LINES, DaemonCapabilityDescriptor, DaemonLogsSnapshot, DaemonStatusSnapshot,
-    SchedExtDaemonRequest, SchedExtDaemonResponse,
+    SchedClawDaemonRequest, SchedClawDaemonResponse,
 };
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
@@ -15,17 +15,17 @@ pub struct DaemonClientConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct SchedExtDaemonClient {
+pub struct SchedClawDaemonClient {
     config: DaemonClientConfig,
 }
 
-impl SchedExtDaemonClient {
+impl SchedClawDaemonClient {
     #[must_use]
     pub fn new(config: DaemonClientConfig) -> Self {
         Self { config }
     }
 
-    pub async fn send(&self, request: &SchedExtDaemonRequest) -> Result<SchedExtDaemonResponse> {
+    pub async fn send(&self, request: &SchedClawDaemonRequest) -> Result<SchedClawDaemonResponse> {
         let timeout_window = Duration::from_millis(self.config.request_timeout_ms);
         let stream = timeout(
             timeout_window,
@@ -60,31 +60,30 @@ impl SchedExtDaemonClient {
     }
 
     pub async fn status(&self) -> Result<DaemonStatusSnapshot> {
-        match self.send(&SchedExtDaemonRequest::Status {}).await? {
-            SchedExtDaemonResponse::Status { snapshot }
-            | SchedExtDaemonResponse::Ack { snapshot, .. } => Ok(snapshot),
-            SchedExtDaemonResponse::Error { message } => bail!(message),
+        match self.send(&SchedClawDaemonRequest::Status {}).await? {
+            SchedClawDaemonResponse::Status { snapshot } => Ok(snapshot),
+            SchedClawDaemonResponse::Error { message } => bail!(message),
             other => bail!("daemon returned unexpected response for status: {other:?}"),
         }
     }
 
     pub async fn logs(&self, tail_lines: Option<usize>) -> Result<DaemonLogsSnapshot> {
         match self
-            .send(&SchedExtDaemonRequest::Logs {
+            .send(&SchedClawDaemonRequest::Logs {
                 tail_lines: Some(tail_lines.unwrap_or(DEFAULT_LOG_TAIL_LINES)),
             })
             .await?
         {
-            SchedExtDaemonResponse::Logs { snapshot } => Ok(snapshot),
-            SchedExtDaemonResponse::Error { message } => bail!(message),
+            SchedClawDaemonResponse::Logs { snapshot } => Ok(snapshot),
+            SchedClawDaemonResponse::Error { message } => bail!(message),
             other => bail!("daemon returned unexpected response for logs: {other:?}"),
         }
     }
 
     pub async fn capabilities(&self) -> Result<Vec<DaemonCapabilityDescriptor>> {
-        match self.send(&SchedExtDaemonRequest::Capabilities {}).await? {
-            SchedExtDaemonResponse::Capabilities { capabilities } => Ok(capabilities),
-            SchedExtDaemonResponse::Error { message } => bail!(message),
+        match self.send(&SchedClawDaemonRequest::Capabilities {}).await? {
+            SchedClawDaemonResponse::Capabilities { capabilities } => Ok(capabilities),
+            SchedClawDaemonResponse::Error { message } => bail!(message),
             other => bail!("daemon returned unexpected response for capabilities: {other:?}"),
         }
     }

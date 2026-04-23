@@ -1,7 +1,8 @@
 use crate::daemon_protocol::{
-    ActiveDeploymentSnapshot, DaemonCapabilityDescriptor, DaemonLogsSnapshot, DaemonStatusSnapshot,
-    DeploymentExitSnapshot, PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot,
-    PerfTargetSelector, SchedCollectionSnapshot, SchedExtDaemonResponse,
+    ActiveDeploymentSnapshot, DaemonCapabilityDescriptor, DaemonCapabilityResult,
+    DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot, PerfCallGraphMode,
+    PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector, SchedClawDaemonResponse,
+    SchedCollectionSnapshot,
 };
 use crate::doctor::DoctorReport;
 use crate::history::{LoadedSessionDetail, SessionExportArtifact, SessionExportKind, preview_id};
@@ -289,20 +290,21 @@ pub fn render_skill_detail(skill: &Skill, style: OutputStyle) -> String {
     )
 }
 
-pub fn render_daemon_response(response: &SchedExtDaemonResponse, style: OutputStyle) -> String {
+pub fn render_daemon_response(response: &SchedClawDaemonResponse, style: OutputStyle) -> String {
     match response {
-        SchedExtDaemonResponse::Status { snapshot } => render_daemon_status(snapshot, style),
-        SchedExtDaemonResponse::Capabilities { capabilities } => {
+        SchedClawDaemonResponse::Status { snapshot } => render_daemon_status(snapshot, style),
+        SchedClawDaemonResponse::Capabilities { capabilities } => {
             render_daemon_capabilities(capabilities, style)
         }
-        SchedExtDaemonResponse::Logs { snapshot } => render_daemon_logs(snapshot, style),
-        SchedExtDaemonResponse::PerfCollection { snapshot } => {
-            render_perf_collection(snapshot, style)
-        }
-        SchedExtDaemonResponse::SchedCollection { snapshot } => {
-            render_sched_collection(snapshot, style)
-        }
-        SchedExtDaemonResponse::Ack { message, snapshot } => {
+        SchedClawDaemonResponse::Logs { snapshot } => render_daemon_logs(snapshot, style),
+        SchedClawDaemonResponse::Invocation { result } => render_daemon_invocation(result, style),
+        SchedClawDaemonResponse::Error { message } => format!("daemon error: {message}"),
+    }
+}
+
+fn render_daemon_invocation(result: &DaemonCapabilityResult, style: OutputStyle) -> String {
+    match result {
+        DaemonCapabilityResult::Rollout { message, snapshot } => {
             let body = render_daemon_status(snapshot, style);
             if body.is_empty() {
                 message.clone()
@@ -310,7 +312,10 @@ pub fn render_daemon_response(response: &SchedExtDaemonResponse, style: OutputSt
                 format!("{message}\n\n{body}")
             }
         }
-        SchedExtDaemonResponse::Error { message } => format!("daemon error: {message}"),
+        DaemonCapabilityResult::PerfCapture { snapshot } => render_perf_collection(snapshot, style),
+        DaemonCapabilityResult::SchedulerTraceCapture { snapshot } => {
+            render_sched_collection(snapshot, style)
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::app_config::{CliOverrides, SchedClawConfig};
 use crate::builtin_skills::{builtin_skill_root, materialize_builtin_skills};
-use crate::daemon_client::SchedExtDaemonClient;
+use crate::daemon_client::SchedClawDaemonClient;
 use crate::daemon_tool::SchedClawDaemonTool;
 use crate::preamble::build_system_preamble;
 use crate::startup_catalog::StartupCatalog;
@@ -29,14 +29,14 @@ pub struct RuntimeBootstrap {
     tool_context: ToolExecutionContext,
     instructions: Vec<String>,
     tool_registry: ToolRegistry,
-    daemon_client: SchedExtDaemonClient,
+    daemon_client: SchedClawDaemonClient,
 }
 
 pub struct BuiltRuntime {
     pub config: SchedClawConfig,
     pub runtime: AgentRuntime,
     pub startup_catalog: StartupCatalog,
-    pub daemon_client: SchedExtDaemonClient,
+    pub daemon_client: SchedClawDaemonClient,
     pub workspace_root: PathBuf,
 }
 
@@ -57,7 +57,7 @@ pub async fn load_bootstrap(
             .context("failed to load sched-claw skill roots")?,
     );
     let tool_context = build_tool_context(workspace_root, &config);
-    let daemon_client = SchedExtDaemonClient::new(config.daemon.clone());
+    let daemon_client = SchedClawDaemonClient::new(config.daemon.clone());
     let tool_registry = build_tool_registry(&tool_context, &skill_catalog, daemon_client.clone());
     apply_disabled_tools(&tool_registry, &config.disabled_tools);
     let startup_catalog = StartupCatalog::from_parts(tool_registry.specs(), &skill_catalog);
@@ -109,7 +109,7 @@ impl RuntimeBootstrap {
 fn build_tool_registry(
     tool_context: &ToolExecutionContext,
     skill_catalog: &SkillCatalog,
-    daemon_client: SchedExtDaemonClient,
+    daemon_client: SchedClawDaemonClient,
 ) -> ToolRegistry {
     let mut tools = ToolRegistry::new();
     let discovery_registry = tools.clone();

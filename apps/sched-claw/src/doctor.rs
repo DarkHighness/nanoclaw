@@ -1,5 +1,5 @@
 use crate::app_config::{SchedClawConfig, app_state_dir};
-use crate::daemon_client::SchedExtDaemonClient;
+use crate::daemon_client::SchedClawDaemonClient;
 use crate::daemon_protocol::DaemonCapabilityDescriptor;
 use agent_env::vars;
 use anyhow::Result;
@@ -418,7 +418,7 @@ async fn daemon_diagnostics(
         );
     }
 
-    let client = SchedExtDaemonClient::new(config.daemon.clone());
+    let client = SchedClawDaemonClient::new(config.daemon.clone());
     match client.status().await {
         Ok(snapshot) => {
             let capabilities = client.capabilities().await.unwrap_or_default();

@@ -96,6 +96,10 @@ belongs in skill scripts, not in more host-side workflow crates.
   - `collect_sched`
   - `stop`
   - `logs`
+  - internally, the daemon protocol now separates static discovery
+    (`status`/`capabilities`/`logs`) from bounded capability invocation, so the
+    host can discover what privilege exists before selecting a rollout or
+    capture path
 
 ## Skills
 

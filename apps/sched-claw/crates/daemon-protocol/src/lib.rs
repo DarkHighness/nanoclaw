@@ -41,10 +41,22 @@ pub struct DaemonCapabilityDescriptor {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
-pub enum SchedExtDaemonRequest {
+pub enum SchedClawDaemonRequest {
     Status {},
     Capabilities {},
-    Activate {
+    Logs {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail_lines: Option<usize>,
+    },
+    Invoke {
+        invocation: DaemonCapabilityInvocation,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DaemonCapabilityInvocation {
+    RolloutActivate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
         argv: Vec<String>,
@@ -57,15 +69,11 @@ pub enum SchedExtDaemonRequest {
         #[serde(default)]
         replace_existing: bool,
     },
-    Stop {
+    RolloutStop {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         graceful_timeout_ms: Option<u64>,
     },
-    Logs {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tail_lines: Option<usize>,
-    },
-    CollectPerf {
+    PerfCapture {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
         mode: PerfCollectionMode,
@@ -81,7 +89,7 @@ pub enum SchedExtDaemonRequest {
         #[serde(default)]
         overwrite: bool,
     },
-    CollectSched {
+    SchedulerTraceCapture {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
         selector: PerfTargetSelector,
@@ -96,7 +104,7 @@ pub enum SchedExtDaemonRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SchedExtDaemonResponse {
+pub enum SchedClawDaemonResponse {
     Status {
         snapshot: DaemonStatusSnapshot,
     },
@@ -106,18 +114,26 @@ pub enum SchedExtDaemonResponse {
     Logs {
         snapshot: DaemonLogsSnapshot,
     },
-    PerfCollection {
-        snapshot: PerfCollectionSnapshot,
-    },
-    SchedCollection {
-        snapshot: SchedCollectionSnapshot,
-    },
-    Ack {
-        message: String,
-        snapshot: DaemonStatusSnapshot,
+    Invocation {
+        result: DaemonCapabilityResult,
     },
     Error {
         message: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DaemonCapabilityResult {
+    Rollout {
+        message: String,
+        snapshot: DaemonStatusSnapshot,
+    },
+    PerfCapture {
+        snapshot: PerfCollectionSnapshot,
+    },
+    SchedulerTraceCapture {
+        snapshot: SchedCollectionSnapshot,
     },
 }
 

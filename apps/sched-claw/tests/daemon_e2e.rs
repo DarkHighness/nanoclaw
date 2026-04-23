@@ -1,8 +1,8 @@
 use sched_claw::app_config::DaemonClientConfig;
-use sched_claw::daemon_client::SchedExtDaemonClient;
+use sched_claw::daemon_client::SchedClawDaemonClient;
 use sched_claw::daemon_protocol::{
-    PerfCallGraphMode, PerfCollectionMode, PerfTargetSelector, SchedExtDaemonRequest,
-    SchedExtDaemonResponse,
+    DaemonCapabilityInvocation, DaemonCapabilityResult, PerfCallGraphMode, PerfCollectionMode,
+    PerfTargetSelector, SchedClawDaemonRequest, SchedClawDaemonResponse,
 };
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -35,19 +35,21 @@ echo "completed"
 
     let response = harness
         .client
-        .send(&SchedExtDaemonRequest::Activate {
-            label: Some("loop-test".to_string()),
-            argv: vec![script.display().to_string(), "--demo".to_string()],
-            cwd: Some(harness.workspace_root().display().to_string()),
-            env: Default::default(),
-            lease_timeout_ms: None,
-            replace_existing: false,
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::RolloutActivate {
+                label: Some("loop-test".to_string()),
+                argv: vec![script.display().to_string(), "--demo".to_string()],
+                cwd: Some(harness.workspace_root().display().to_string()),
+                env: Default::default(),
+                lease_timeout_ms: None,
+                replace_existing: false,
+            },
         })
         .await
         .unwrap();
     let value = serde_json::to_value(response).unwrap();
-    assert_eq!(value["kind"], "ack");
-    assert_eq!(value["snapshot"]["active"]["label"], "loop-test");
+    assert_eq!(value["kind"], "invocation");
+    assert_eq!(value["result"]["snapshot"]["active"]["label"], "loop-test");
 
     wait_until(Duration::from_secs(5), || async {
         let logs = harness.client.logs(Some(64)).await.unwrap();
@@ -59,14 +61,19 @@ echo "completed"
 
     let stopped = harness
         .client
-        .send(&SchedExtDaemonRequest::Stop {
-            graceful_timeout_ms: Some(2_000),
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::RolloutStop {
+                graceful_timeout_ms: Some(2_000),
+            },
         })
         .await
         .unwrap();
     let stopped = serde_json::to_value(stopped).unwrap();
-    assert!(stopped["snapshot"]["active"].is_null());
-    assert_eq!(stopped["snapshot"]["last_exit"]["label"], "loop-test");
+    assert!(stopped["result"]["snapshot"]["active"].is_null());
+    assert_eq!(
+        stopped["result"]["snapshot"]["last_exit"]["label"],
+        "loop-test"
+    );
 
     let logs = harness.client.logs(Some(128)).await.unwrap();
     assert!(logs.lines.iter().any(|line| line.line.contains("tick:")));
@@ -80,12 +87,12 @@ async fn daemon_reports_capabilities() {
 
     let response = harness
         .client
-        .send(&SchedExtDaemonRequest::Capabilities {})
+        .send(&SchedClawDaemonRequest::Capabilities {})
         .await
         .unwrap();
 
     let capabilities = match response {
-        SchedExtDaemonResponse::Capabilities { capabilities } => capabilities,
+        SchedClawDaemonResponse::Capabilities { capabilities } => capabilities,
         other => panic!("expected capabilities response, got {other:?}"),
     };
     assert!(
@@ -115,13 +122,15 @@ exit 0
 
     harness
         .client
-        .send(&SchedExtDaemonRequest::Activate {
-            label: Some("fast-exit".to_string()),
-            argv: vec![script.display().to_string()],
-            cwd: Some(harness.workspace_root().display().to_string()),
-            env: Default::default(),
-            lease_timeout_ms: None,
-            replace_existing: false,
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::RolloutActivate {
+                label: Some("fast-exit".to_string()),
+                argv: vec![script.display().to_string()],
+                cwd: Some(harness.workspace_root().display().to_string()),
+                env: Default::default(),
+                lease_timeout_ms: None,
+                replace_existing: false,
+            },
         })
         .await
         .unwrap();
@@ -161,13 +170,15 @@ done
 
     harness
         .client
-        .send(&SchedExtDaemonRequest::Activate {
-            label: Some("lease-test".to_string()),
-            argv: vec![script.display().to_string()],
-            cwd: Some(harness.workspace_root().display().to_string()),
-            env: Default::default(),
-            lease_timeout_ms: Some(500),
-            replace_existing: false,
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::RolloutActivate {
+                label: Some("lease-test".to_string()),
+                argv: vec![script.display().to_string()],
+                cwd: Some(harness.workspace_root().display().to_string()),
+                env: Default::default(),
+                lease_timeout_ms: Some(500),
+                replace_existing: false,
+            },
         })
         .await
         .unwrap();
@@ -208,22 +219,26 @@ done
 
     let response = harness
         .client
-        .send(&SchedExtDaemonRequest::CollectPerf {
-            label: Some("pid-stat".to_string()),
-            mode: PerfCollectionMode::Stat,
-            selector: PerfTargetSelector::Pid { pids: vec![pid] },
-            output_dir: "artifacts/perf-a".to_string(),
-            duration_ms: 250,
-            events: vec!["cycles".to_string(), "instructions".to_string()],
-            sample_frequency_hz: None,
-            call_graph: None,
-            overwrite: false,
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::PerfCapture {
+                label: Some("pid-stat".to_string()),
+                mode: PerfCollectionMode::Stat,
+                selector: PerfTargetSelector::Pid { pids: vec![pid] },
+                output_dir: "artifacts/perf-a".to_string(),
+                duration_ms: 250,
+                events: vec!["cycles".to_string(), "instructions".to_string()],
+                sample_frequency_hz: None,
+                call_graph: None,
+                overwrite: false,
+            },
         })
         .await
         .unwrap();
 
     let snapshot = match response {
-        SchedExtDaemonResponse::PerfCollection { snapshot } => snapshot,
+        SchedClawDaemonResponse::Invocation {
+            result: DaemonCapabilityResult::PerfCapture { snapshot },
+        } => snapshot,
         other => panic!("expected perf collection response, got {other:?}"),
     };
     assert_eq!(snapshot.label, "pid-stat");
@@ -270,22 +285,26 @@ done
 
     let response = harness
         .client
-        .send(&SchedExtDaemonRequest::CollectPerf {
-            label: Some("pid-record".to_string()),
-            mode: PerfCollectionMode::Record,
-            selector: PerfTargetSelector::Pid { pids: vec![pid] },
-            output_dir: "artifacts/perf-record".to_string(),
-            duration_ms: 250,
-            events: vec!["cpu-clock".to_string()],
-            sample_frequency_hz: Some(199),
-            call_graph: Some(PerfCallGraphMode::Dwarf),
-            overwrite: false,
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::PerfCapture {
+                label: Some("pid-record".to_string()),
+                mode: PerfCollectionMode::Record,
+                selector: PerfTargetSelector::Pid { pids: vec![pid] },
+                output_dir: "artifacts/perf-record".to_string(),
+                duration_ms: 250,
+                events: vec!["cpu-clock".to_string()],
+                sample_frequency_hz: Some(199),
+                call_graph: Some(PerfCallGraphMode::Dwarf),
+                overwrite: false,
+            },
         })
         .await
         .unwrap();
 
     let snapshot = match response {
-        SchedExtDaemonResponse::PerfCollection { snapshot } => snapshot,
+        SchedClawDaemonResponse::Invocation {
+            result: DaemonCapabilityResult::PerfCapture { snapshot },
+        } => snapshot,
         other => panic!("expected perf collection response, got {other:?}"),
     };
     assert_eq!(snapshot.mode, PerfCollectionMode::Record);
@@ -325,19 +344,23 @@ done
 
     let response = harness
         .client
-        .send(&SchedExtDaemonRequest::CollectSched {
-            label: Some("pid-sched".to_string()),
-            selector: PerfTargetSelector::Pid { pids: vec![pid] },
-            output_dir: "artifacts/sched-a".to_string(),
-            duration_ms: 250,
-            latency_by_pid: true,
-            overwrite: false,
+        .send(&SchedClawDaemonRequest::Invoke {
+            invocation: DaemonCapabilityInvocation::SchedulerTraceCapture {
+                label: Some("pid-sched".to_string()),
+                selector: PerfTargetSelector::Pid { pids: vec![pid] },
+                output_dir: "artifacts/sched-a".to_string(),
+                duration_ms: 250,
+                latency_by_pid: true,
+                overwrite: false,
+            },
         })
         .await
         .unwrap();
 
     let snapshot = match response {
-        SchedExtDaemonResponse::SchedCollection { snapshot } => snapshot,
+        SchedClawDaemonResponse::Invocation {
+            result: DaemonCapabilityResult::SchedulerTraceCapture { snapshot },
+        } => snapshot,
         other => panic!("expected sched collection response, got {other:?}"),
     };
     assert_eq!(snapshot.label, "pid-sched");
@@ -372,7 +395,7 @@ struct DaemonHarness {
     _workspace: TempDir,
     socket_path: PathBuf,
     child: Child,
-    client: SchedExtDaemonClient,
+    client: SchedClawDaemonClient,
 }
 
 impl DaemonHarness {
@@ -410,7 +433,7 @@ impl DaemonHarness {
             .spawn()
             .unwrap();
 
-        let client = SchedExtDaemonClient::new(DaemonClientConfig {
+        let client = SchedClawDaemonClient::new(DaemonClientConfig {
             socket_path: socket_path.clone(),
             request_timeout_ms: 5_000,
         });
@@ -446,8 +469,10 @@ impl DaemonHarness {
     async fn shutdown(mut self) {
         let _ = self
             .client
-            .send(&SchedExtDaemonRequest::Stop {
-                graceful_timeout_ms: Some(1_000),
+            .send(&SchedClawDaemonRequest::Invoke {
+                invocation: DaemonCapabilityInvocation::RolloutStop {
+                    graceful_timeout_ms: Some(1_000),
+                },
             })
             .await;
         let _ = self.child.start_kill();

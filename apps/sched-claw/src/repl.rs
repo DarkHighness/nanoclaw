@@ -4,7 +4,7 @@ use std::io::{self, Write};
 
 use crate::app_config::CliOverrides;
 use crate::bootstrap::BuiltRuntime;
-use crate::daemon_protocol::SchedExtDaemonRequest;
+use crate::daemon_protocol::SchedClawDaemonRequest;
 use crate::display::{
     OutputStyle, render_daemon_response, render_doctor_report, render_session_detail,
     render_session_list, render_session_search_results, render_skill_detail, render_skill_list,
@@ -104,14 +104,14 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
             ReplCommand::DaemonStatus => {
                 let response = host
                     .daemon_client
-                    .send(&SchedExtDaemonRequest::Status {})
+                    .send(&SchedClawDaemonRequest::Status {})
                     .await?;
                 println!("{}", render_daemon_response(&response, output_style));
             }
             ReplCommand::DaemonLogs { tail_lines } => {
                 let response = host
                     .daemon_client
-                    .send(&SchedExtDaemonRequest::Logs { tail_lines })
+                    .send(&SchedClawDaemonRequest::Logs { tail_lines })
                     .await?;
                 println!("{}", render_daemon_response(&response, output_style));
             }

@@ -1,9 +1,10 @@
 use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DEFAULT_LOG_TAIL_LINES, DEFAULT_STOP_TIMEOUT_MS,
-    DaemonCapabilityDescriptor, DaemonCapabilityKind, DaemonLogLine, DaemonLogsSnapshot,
-    DaemonSelectorKind, DaemonStatusSnapshot, DeploymentExitSnapshot, MAX_PERF_DURATION_MS,
-    MIN_PERF_DURATION_MS, PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot,
-    PerfTargetSelector, SchedCollectionSnapshot, SchedExtDaemonRequest, SchedExtDaemonResponse,
+    DaemonCapabilityDescriptor, DaemonCapabilityInvocation, DaemonCapabilityKind,
+    DaemonCapabilityResult, DaemonLogLine, DaemonLogsSnapshot, DaemonSelectorKind,
+    DaemonStatusSnapshot, DeploymentExitSnapshot, MAX_PERF_DURATION_MS, MIN_PERF_DURATION_MS,
+    PerfCallGraphMode, PerfCollectionMode, PerfCollectionSnapshot, PerfTargetSelector,
+    SchedClawDaemonRequest, SchedClawDaemonResponse, SchedCollectionSnapshot,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use nix::sys::signal::{Signal, kill};
@@ -286,14 +287,14 @@ impl DaemonServer {
         if request_line.trim().is_empty() {
             return Ok(());
         }
-        let response = match serde_json::from_str::<SchedExtDaemonRequest>(request_line.trim()) {
+        let response = match serde_json::from_str::<SchedClawDaemonRequest>(request_line.trim()) {
             Ok(request) => match self.dispatch(request).await {
                 Ok(response) => response,
-                Err(error) => SchedExtDaemonResponse::Error {
+                Err(error) => SchedClawDaemonResponse::Error {
                     message: error.to_string(),
                 },
             },
-            Err(error) => SchedExtDaemonResponse::Error {
+            Err(error) => SchedClawDaemonResponse::Error {
                 message: format!("invalid daemon request: {error}"),
             },
         };
@@ -304,19 +305,32 @@ impl DaemonServer {
         Ok(())
     }
 
-    async fn dispatch(&self, request: SchedExtDaemonRequest) -> Result<SchedExtDaemonResponse> {
+    async fn dispatch(&self, request: SchedClawDaemonRequest) -> Result<SchedClawDaemonResponse> {
         self.reap_active_if_exited().await?;
         match request {
-            SchedExtDaemonRequest::Status {} => Ok(SchedExtDaemonResponse::Status {
+            SchedClawDaemonRequest::Status {} => Ok(SchedClawDaemonResponse::Status {
                 snapshot: self.status_snapshot(),
             }),
-            SchedExtDaemonRequest::Capabilities {} => Ok(SchedExtDaemonResponse::Capabilities {
+            SchedClawDaemonRequest::Capabilities {} => Ok(SchedClawDaemonResponse::Capabilities {
                 capabilities: self.capability_descriptors(),
             }),
-            SchedExtDaemonRequest::Logs { tail_lines } => Ok(SchedExtDaemonResponse::Logs {
+            SchedClawDaemonRequest::Logs { tail_lines } => Ok(SchedClawDaemonResponse::Logs {
                 snapshot: self.logs_snapshot(tail_lines.unwrap_or(DEFAULT_LOG_TAIL_LINES)),
             }),
-            SchedExtDaemonRequest::CollectPerf {
+            SchedClawDaemonRequest::Invoke { invocation } => {
+                Ok(SchedClawDaemonResponse::Invocation {
+                    result: self.invoke_capability(invocation).await?,
+                })
+            }
+        }
+    }
+
+    async fn invoke_capability(
+        &self,
+        invocation: DaemonCapabilityInvocation,
+    ) -> Result<DaemonCapabilityResult> {
+        match invocation {
+            DaemonCapabilityInvocation::PerfCapture {
                 label,
                 mode,
                 selector,
@@ -339,9 +353,9 @@ impl DaemonServer {
                     overwrite,
                 )?;
                 let snapshot = self.collect_perf(spec).await?;
-                Ok(SchedExtDaemonResponse::PerfCollection { snapshot })
+                Ok(DaemonCapabilityResult::PerfCapture { snapshot })
             }
-            SchedExtDaemonRequest::CollectSched {
+            DaemonCapabilityInvocation::SchedulerTraceCapture {
                 label,
                 selector,
                 output_dir,
@@ -358,9 +372,9 @@ impl DaemonServer {
                     overwrite,
                 )?;
                 let snapshot = self.collect_sched(spec).await?;
-                Ok(SchedExtDaemonResponse::SchedCollection { snapshot })
+                Ok(DaemonCapabilityResult::SchedulerTraceCapture { snapshot })
             }
-            SchedExtDaemonRequest::Activate {
+            DaemonCapabilityInvocation::RolloutActivate {
                 label,
                 argv,
                 cwd,
@@ -379,12 +393,12 @@ impl DaemonServer {
                 }
                 let launch = self.validate_launch(label, argv, cwd, env, lease_timeout_ms)?;
                 let snapshot = self.start_active(launch).await?;
-                Ok(SchedExtDaemonResponse::Ack {
+                Ok(DaemonCapabilityResult::Rollout {
                     message: "activated sched-ext deployment".to_string(),
                     snapshot,
                 })
             }
-            SchedExtDaemonRequest::Stop {
+            DaemonCapabilityInvocation::RolloutStop {
                 graceful_timeout_ms,
             } => {
                 let snapshot = self
@@ -393,7 +407,7 @@ impl DaemonServer {
                         StopReason::Requested,
                     )
                     .await?;
-                Ok(SchedExtDaemonResponse::Ack {
+                Ok(DaemonCapabilityResult::Rollout {
                     message: "stopped active sched-ext deployment".to_string(),
                     snapshot,
                 })
