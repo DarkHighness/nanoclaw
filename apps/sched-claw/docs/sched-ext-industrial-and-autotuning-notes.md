@@ -74,6 +74,8 @@ Design implication for `sched-claw`:
 
 - keep search policy, lineage, and decisions in the manifest
 - avoid a single lucky run deciding promotion
+- keep the search space structured through template and knob mutations rather
+  than blank-page code regeneration on every iteration
 - prefer explicit trial budgets and evidence gates over open-ended transcript
   memory
 

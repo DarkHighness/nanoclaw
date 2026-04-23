@@ -50,6 +50,7 @@ template materialization, scoring, and privileged rollout.
     - `sched-claw experiment add-candidate demo --candidate-id locality-v1 --template dsq_local`
     - `sched-claw experiment set-candidate demo --candidate-id locality-v1 --template dsq_local --daemon-arg loader --daemon-arg {source}`
     - `sched-claw experiment fork-candidate demo --from-candidate locality-v1 --candidate-id locality-v2 --lineage-analysis-id locality-a --mutation-note "tighten slice budget"`
+    - `sched-claw experiment mutate-candidate demo --from-candidate locality-v1 --candidate-id locality-v2 --knob slice_us=800 --mutation-note "tighten slice budget"`
     - `sched-claw experiment materialize demo --candidate-id locality-v1 --template dsq_locality --loader ./loader --loader-arg {source}`
     - `sched-claw experiment build demo --candidate-id locality-v1 --style table`
     - `sched-claw experiment run demo --label cfs-a --style table`
@@ -218,6 +219,11 @@ The substrate is generic on purpose. Typical commands include:
   - persist candidate metadata, lineage, source/object paths, daemon argv, build commands, and knobs
 - `experiment fork-candidate`
   - create a new candidate from an existing parent while keeping lineage, mutation note, and evidence or analysis references explicit
+- `experiment mutate-candidate`
+  - create a new candidate from an existing parent and immediately materialize a
+    fresh source/object pair with merged knob overrides
+  - keep the parent lineage explicit while copying forward daemon settings and
+    template-backed code generation state
 - `experiment materialize`
   - turn a named sched-ext template plus knob values into concrete source under the experiment directory
 - `experiment build`

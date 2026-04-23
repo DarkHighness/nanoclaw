@@ -37,6 +37,8 @@ pub fn build_system_preamble(
             .to_string(),
         "When candidate search is iterative, keep lineage, search budgets, and final decisions durable with fork-candidate, search-policy updates, and record-decision instead of relying on transcript memory."
             .to_string(),
+        "When an iteration is mostly a template-backed knob or small policy mutation, prefer `experiment mutate-candidate` over hand-assembling fork, materialize, and set-candidate steps."
+            .to_string(),
         "Use the experiment evaluation policy to keep promotion criteria explicit: minimum run counts, minimum primary improvement, and optional primary-metric spread gates should live in the manifest instead of ad hoc transcript rules."
             .to_string(),
         "When defining a workload contract, keep the target selector explicit: script, pid, uid, gid, or cgroup."

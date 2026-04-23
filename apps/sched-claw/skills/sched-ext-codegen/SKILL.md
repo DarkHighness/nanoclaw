@@ -30,6 +30,7 @@ tags:
 3. Choose the narrowest implementation surface.
    - reuse an existing candidate when the change is iterative
    - when the change is a mutation of an earlier idea, prefer `sched-claw experiment fork-candidate ...` so lineage and mutation notes stay explicit
+   - when the change is template-backed and mostly a knob or small policy variation, prefer `sched-claw experiment mutate-candidate ...` so lineage, knob deltas, fresh source paths, and daemon wiring stay synchronized
    - materialize a template only when it genuinely reduces boilerplate
 4. Keep the code change scoped to the chosen levers.
    - wakeup placement

@@ -153,6 +153,7 @@ enum ExperimentCommand {
     AddCandidate(ExperimentAddCandidateArgs),
     SetCandidate(ExperimentAddCandidateArgs),
     ForkCandidate(ExperimentForkCandidateArgs),
+    MutateCandidate(ExperimentMutateCandidateArgs),
     Materialize(ExperimentMaterializeArgs),
     Build(ExperimentBuildArgs),
     Run(ExperimentRunArgs),
@@ -427,6 +428,42 @@ struct ExperimentMaterializeArgs {
     template: Option<String>,
     #[arg(long = "knob", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
     knobs: Vec<(String, String)>,
+    #[arg(long, value_name = "PATH")]
+    output: Option<String>,
+    #[arg(long, value_name = "TEXT")]
+    build_command: Option<String>,
+    #[arg(long, value_name = "PATH")]
+    loader: Option<String>,
+    #[arg(long = "loader-arg", value_name = "ARG", allow_hyphen_values = true)]
+    loader_args: Vec<String>,
+    #[arg(long = "daemon-cwd", value_name = "PATH")]
+    daemon_cwd: Option<String>,
+    #[arg(long = "daemon-env", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    daemon_env: Vec<(String, String)>,
+    #[arg(long, value_name = "TEXT")]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ExperimentMutateCandidateArgs {
+    #[arg(value_name = "EXPERIMENT")]
+    experiment_ref: String,
+    #[arg(long = "from-candidate", value_name = "ID")]
+    from_candidate_id: String,
+    #[arg(long, value_name = "ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "NAME")]
+    template: Option<String>,
+    #[arg(long = "knob", value_name = "KEY=VALUE", value_parser = parse_key_value_arg)]
+    knobs: Vec<(String, String)>,
+    #[arg(long = "lineage-evidence-id", value_name = "ID")]
+    lineage_evidence_ids: Vec<String>,
+    #[arg(long = "lineage-analysis-id", value_name = "ID")]
+    lineage_analysis_ids: Vec<String>,
+    #[arg(long = "lineage-design-id", value_name = "ID")]
+    lineage_design_ids: Vec<String>,
+    #[arg(long, value_name = "TEXT")]
+    mutation_note: Option<String>,
     #[arg(long, value_name = "PATH")]
     output: Option<String>,
     #[arg(long, value_name = "TEXT")]
@@ -1045,6 +1082,98 @@ async fn run_experiment_command(
                     notes: args.notes,
                 },
             )?;
+            println!("{}", render_experiment_artifact(&artifact));
+        }
+        ExperimentCommand::MutateCandidate(args) => {
+            if !args.loader_args.is_empty() && args.loader.is_none() {
+                anyhow::bail!("--loader-arg requires --loader");
+            }
+            let experiment = catalog.load(&args.experiment_ref)?;
+            let parent = experiment
+                .manifest
+                .candidates
+                .iter()
+                .find(|candidate| candidate.spec.candidate_id == args.from_candidate_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown candidate {} in experiment {}",
+                        args.from_candidate_id,
+                        experiment.manifest.experiment_id
+                    )
+                })?;
+            let template_name = args
+                .template
+                .clone()
+                .unwrap_or_else(|| parent.spec.template.clone());
+            let template = find_template(&template_name)
+                .with_context(|| format!("unknown template `{template_name}`"))?;
+            let mut knobs = parent.spec.knobs.clone();
+            knobs.extend(args.knobs.into_iter());
+            let materialized = materialize_template(
+                workspace_root,
+                &experiment.manifest.experiment_id,
+                &args.candidate_id,
+                template,
+                &knobs,
+                args.output.as_deref(),
+            )?;
+            let mut spec = CandidateSpec {
+                candidate_id: args.candidate_id.clone(),
+                template: template.name.to_string(),
+                lineage: build_candidate_lineage(
+                    Some(args.from_candidate_id.clone()),
+                    args.lineage_evidence_ids,
+                    args.lineage_analysis_ids,
+                    args.lineage_design_ids,
+                    args.mutation_note,
+                ),
+                source_path: Some(materialized.relative_source_path.clone()),
+                object_path: Some(materialized.relative_object_path.clone()),
+                build_command: Some(args.build_command.unwrap_or_else(|| {
+                    render_build_command(
+                        template,
+                        &materialized.relative_source_path,
+                        &materialized.relative_object_path,
+                    )
+                })),
+                daemon_argv: parent.spec.daemon_argv.clone(),
+                daemon_cwd: args
+                    .daemon_cwd
+                    .clone()
+                    .or_else(|| parent.spec.daemon_cwd.clone()),
+                daemon_env: {
+                    let mut env = parent.spec.daemon_env.clone();
+                    env.extend(args.daemon_env.into_iter());
+                    env
+                },
+                knobs: materialized.applied_knobs.clone(),
+                notes: args.notes,
+            };
+            rewrite_materialized_candidate_refs(&parent.spec, &mut spec);
+            if args.loader.is_some() {
+                let plan = build_activation_plan(
+                    &experiment.manifest.experiment_id,
+                    &spec,
+                    &DeployOverrides {
+                        loader: args.loader,
+                        loader_args: args.loader_args,
+                        cwd: spec.daemon_cwd.clone(),
+                        env: spec.daemon_env.clone(),
+                        ..DeployOverrides::default()
+                    },
+                )?;
+                spec.daemon_argv = plan.argv;
+                spec.daemon_cwd = plan.cwd;
+                spec.daemon_env = plan.env;
+            }
+            let mut artifact =
+                catalog.fork_candidate(&args.experiment_ref, &args.from_candidate_id, spec)?;
+            artifact
+                .details
+                .push(("source".to_string(), materialized.relative_source_path));
+            artifact
+                .details
+                .push(("object".to_string(), materialized.relative_object_path));
             println!("{}", render_experiment_artifact(&artifact));
         }
         ExperimentCommand::Materialize(args) => {
@@ -1800,6 +1929,34 @@ fn build_candidate_lineage(
     }
 }
 
+fn rewrite_materialized_candidate_refs(parent: &CandidateSpec, candidate: &mut CandidateSpec) {
+    let rewrites = [
+        (
+            parent.source_path.as_deref(),
+            candidate.source_path.as_deref(),
+        ),
+        (
+            parent.object_path.as_deref(),
+            candidate.object_path.as_deref(),
+        ),
+    ];
+    for (from, to) in rewrites {
+        let (Some(from), Some(to)) = (from, to) else {
+            continue;
+        };
+        for arg in &mut candidate.daemon_argv {
+            if arg.contains(from) {
+                *arg = arg.replace(from, to);
+            }
+        }
+        for value in candidate.daemon_env.values_mut() {
+            if value.contains(from) {
+                *value = value.replace(from, to);
+            }
+        }
+    }
+}
+
 fn build_run_perf_evidence(
     capture: &sched_claw::run_capture::WorkloadRunCapture,
     phase: Option<String>,
@@ -1939,7 +2096,7 @@ mod tests {
     use super::{
         Cli, Command, DaemonCommand, ExperimentCommand, ExperimentInitArgs, OutputStyle,
         RunFailureMode, build_workload_target, ensure_candidate_ready_for_rollout,
-        resolve_performance_policy,
+        resolve_performance_policy, rewrite_materialized_candidate_refs,
     };
     use clap::Parser;
     use sched_claw::experiment::{
@@ -2298,6 +2455,44 @@ mod tests {
     }
 
     #[test]
+    fn parses_mutate_candidate_command() {
+        let cli = Cli::try_parse_from([
+            "sched-claw",
+            "experiment",
+            "mutate-candidate",
+            "demo",
+            "--from-candidate",
+            "cand-a",
+            "--candidate-id",
+            "cand-b",
+            "--knob",
+            "slice_us=800",
+            "--loader",
+            "/tmp/loader",
+            "--loader-arg",
+            "--sched-ext",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Experiment(args)) => match args.command {
+                ExperimentCommand::MutateCandidate(args) => {
+                    assert_eq!(args.from_candidate_id, "cand-a");
+                    assert_eq!(args.candidate_id, "cand-b");
+                    assert_eq!(
+                        args.knobs,
+                        vec![("slice_us".to_string(), "800".to_string())]
+                    );
+                    assert_eq!(args.loader.as_deref(), Some("/tmp/loader"));
+                    assert_eq!(args.loader_args, vec!["--sched-ext".to_string()]);
+                }
+                other => panic!("expected mutate-candidate command, got {other:?}"),
+            },
+            other => panic!("expected experiment command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_record_decision_command() {
         let cli = Cli::try_parse_from([
             "sched-claw",
@@ -2430,6 +2625,52 @@ mod tests {
             },
             other => panic!("expected experiment command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rewrite_materialized_candidate_refs_updates_parent_paths() {
+        let parent = CandidateSpec {
+            candidate_id: "cand-a".to_string(),
+            template: "latency_guard".to_string(),
+            lineage: CandidateLineage::default(),
+            source_path: Some("sources/cand-a.bpf.c".to_string()),
+            object_path: Some("sources/cand-a.bpf.o".to_string()),
+            build_command: None,
+            daemon_argv: vec![
+                "./loader".to_string(),
+                "sources/cand-a.bpf.c".to_string(),
+                "--obj=sources/cand-a.bpf.o".to_string(),
+            ],
+            daemon_cwd: None,
+            daemon_env: BTreeMap::from([(
+                "SCHED_OBJECT".to_string(),
+                "sources/cand-a.bpf.o".to_string(),
+            )]),
+            knobs: BTreeMap::new(),
+            notes: None,
+        };
+        let mut child = CandidateSpec {
+            candidate_id: "cand-b".to_string(),
+            template: "latency_guard".to_string(),
+            lineage: CandidateLineage::default(),
+            source_path: Some("sources/cand-b.bpf.c".to_string()),
+            object_path: Some("sources/cand-b.bpf.o".to_string()),
+            build_command: None,
+            daemon_argv: parent.daemon_argv.clone(),
+            daemon_cwd: None,
+            daemon_env: parent.daemon_env.clone(),
+            knobs: BTreeMap::new(),
+            notes: None,
+        };
+
+        rewrite_materialized_candidate_refs(&parent, &mut child);
+
+        assert_eq!(child.daemon_argv[1], "sources/cand-b.bpf.c");
+        assert_eq!(child.daemon_argv[2], "--obj=sources/cand-b.bpf.o");
+        assert_eq!(
+            child.daemon_env.get("SCHED_OBJECT").map(String::as_str),
+            Some("sources/cand-b.bpf.o")
+        );
     }
 
     #[test]

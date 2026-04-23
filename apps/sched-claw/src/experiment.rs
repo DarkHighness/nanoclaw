@@ -2593,6 +2593,94 @@ mod tests {
     }
 
     #[test]
+    fn fork_candidate_can_capture_materialized_mutation_state() {
+        let dir = tempdir().unwrap();
+        let catalog = ExperimentCatalog::open(dir.path()).unwrap();
+        catalog
+            .init(ExperimentInitSpec {
+                experiment_id: "mutate-demo".to_string(),
+                workload: WorkloadContract {
+                    name: "bench".to_string(),
+                    ..Default::default()
+                },
+                primary_metric: MetricTarget {
+                    name: "latency_ms".to_string(),
+                    goal: MetricGoal::Minimize,
+                    unit: Some("ms".to_string()),
+                    notes: None,
+                },
+                performance_policy: PerformancePolicy::default(),
+                collection_policy: CollectionPolicy::default(),
+                evaluation_policy: EvaluationPolicy::default(),
+                search_policy: SearchPolicy::default(),
+                guardrails: Vec::new(),
+            })
+            .unwrap();
+        catalog
+            .set_candidate(
+                "mutate-demo",
+                CandidateSpec {
+                    candidate_id: "cand-a".to_string(),
+                    template: "latency_guard".to_string(),
+                    lineage: CandidateLineage::default(),
+                    source_path: Some("sources/cand-a.bpf.c".to_string()),
+                    object_path: Some("sources/cand-a.bpf.o".to_string()),
+                    build_command: Some("clang -O2 -c cand-a.bpf.c -o cand-a.bpf.o".to_string()),
+                    daemon_argv: vec!["loader".to_string(), "{source}".to_string()],
+                    daemon_cwd: Some("/tmp/demo".to_string()),
+                    daemon_env: BTreeMap::from([("MODE".to_string(), "baseline".to_string())]),
+                    knobs: BTreeMap::from([("slice_us".to_string(), "1000".to_string())]),
+                    notes: Some("parent".to_string()),
+                },
+            )
+            .unwrap();
+        catalog
+            .fork_candidate(
+                "mutate-demo",
+                "cand-a",
+                CandidateSpec {
+                    candidate_id: "cand-b".to_string(),
+                    template: "latency_guard".to_string(),
+                    lineage: CandidateLineage {
+                        parent_candidate_id: Some("cand-a".to_string()),
+                        evidence_ids: Vec::new(),
+                        analysis_ids: Vec::new(),
+                        design_ids: Vec::new(),
+                        mutation_note: Some("shorter slice".to_string()),
+                    },
+                    source_path: Some("sources/cand-b.bpf.c".to_string()),
+                    object_path: Some("sources/cand-b.bpf.o".to_string()),
+                    build_command: Some("clang -O2 -c cand-b.bpf.c -o cand-b.bpf.o".to_string()),
+                    daemon_argv: vec!["loader".to_string(), "{source}".to_string()],
+                    daemon_cwd: Some("/tmp/demo".to_string()),
+                    daemon_env: BTreeMap::from([("MODE".to_string(), "baseline".to_string())]),
+                    knobs: BTreeMap::from([("slice_us".to_string(), "800".to_string())]),
+                    notes: Some("child".to_string()),
+                },
+            )
+            .unwrap();
+        let loaded = catalog.load("mutate-demo").unwrap();
+        let child = loaded
+            .manifest
+            .candidates
+            .iter()
+            .find(|candidate| candidate.spec.candidate_id == "cand-b")
+            .unwrap();
+        assert_eq!(
+            child.spec.source_path.as_deref(),
+            Some("sources/cand-b.bpf.c")
+        );
+        assert_eq!(
+            child.spec.knobs.get("slice_us").map(String::as_str),
+            Some("800")
+        );
+        assert_eq!(
+            child.spec.lineage.parent_candidate_id.as_deref(),
+            Some("cand-a")
+        );
+    }
+
+    #[test]
     fn promoted_decision_stops_candidate_search_when_policy_requires_it() {
         let dir = tempdir().unwrap();
         let catalog = ExperimentCatalog::open(dir.path()).unwrap();
