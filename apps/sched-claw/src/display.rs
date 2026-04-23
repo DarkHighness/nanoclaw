@@ -1,3 +1,6 @@
+use crate::daemon_projection::{
+    DaemonProjectionDescriptor, DaemonProjectionKind, find_projection_capabilities,
+};
 use crate::daemon_protocol::{
     ActiveDeploymentSnapshot, DaemonCapabilityDescriptor, DaemonCapabilityResult,
     DaemonLogsSnapshot, DaemonStatusSnapshot, DeploymentExitSnapshot, PerfCallGraphMode,
@@ -379,6 +382,168 @@ pub fn render_daemon_capability_detail(
     )
 }
 
+pub fn render_daemon_projection_list(
+    projections: &[DaemonProjectionDescriptor],
+    style: OutputStyle,
+) -> String {
+    match style {
+        OutputStyle::Table => render_grid(
+            Some(format!("Daemon Projections · {}", projections.len())),
+            &["Name", "Kind", "Capabilities", "Selectors", "Summary"],
+            &projections
+                .iter()
+                .map(|projection| {
+                    vec![
+                        projection.name.to_string(),
+                        daemon_projection_kind_label(projection.kind).to_string(),
+                        join_or_none(
+                            projection
+                                .capabilities
+                                .iter()
+                                .map(|name| name.as_str().to_string())
+                                .collect(),
+                        ),
+                        join_or_none(
+                            projection
+                                .selectors
+                                .iter()
+                                .map(daemon_selector_kind_label)
+                                .map(ToString::to_string)
+                                .collect(),
+                        ),
+                        projection.summary.to_string(),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ),
+        OutputStyle::Plain => {
+            let mut out = String::new();
+            let _ = writeln!(&mut out, "Daemon Projections ({})", projections.len());
+            for projection in projections {
+                let _ = writeln!(
+                    &mut out,
+                    "- {} [{}]",
+                    projection.name,
+                    daemon_projection_kind_label(projection.kind)
+                );
+                let _ = writeln!(&mut out, "  {}", projection.summary);
+                let _ = writeln!(
+                    &mut out,
+                    "  capabilities: {}",
+                    join_or_none(
+                        projection
+                            .capabilities
+                            .iter()
+                            .map(|name| name.as_str().to_string())
+                            .collect(),
+                    )
+                );
+                let _ = writeln!(
+                    &mut out,
+                    "  selectors: {}",
+                    join_or_none(
+                        projection
+                            .selectors
+                            .iter()
+                            .map(daemon_selector_kind_label)
+                            .map(ToString::to_string)
+                            .collect(),
+                    )
+                );
+            }
+            out.trim_end().to_string()
+        }
+    }
+}
+
+pub fn render_daemon_projection_detail(
+    projection: &DaemonProjectionDescriptor,
+    style: OutputStyle,
+) -> String {
+    let capabilities = find_projection_capabilities(projection);
+    let sections = vec![
+        (
+            "Overview",
+            vec![
+                ("Name".to_string(), projection.name.to_string()),
+                (
+                    "Kind".to_string(),
+                    daemon_projection_kind_label(projection.kind).to_string(),
+                ),
+                ("Summary".to_string(), projection.summary.to_string()),
+            ],
+        ),
+        (
+            "Projection",
+            vec![
+                (
+                    "Capabilities".to_string(),
+                    join_or_none(
+                        projection
+                            .capabilities
+                            .iter()
+                            .map(|name| name.as_str().to_string())
+                            .collect(),
+                    ),
+                ),
+                (
+                    "Selectors".to_string(),
+                    join_or_none(
+                        projection
+                            .selectors
+                            .iter()
+                            .map(daemon_selector_kind_label)
+                            .map(ToString::to_string)
+                            .collect(),
+                    ),
+                ),
+                (
+                    "Examples".to_string(),
+                    join_or_none(
+                        projection
+                            .examples
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect(),
+                    ),
+                ),
+            ],
+        ),
+        (
+            "Mapped Capabilities",
+            vec![(
+                "Contracts".to_string(),
+                join_or_none(
+                    capabilities
+                        .iter()
+                        .map(|capability| {
+                            format!(
+                                "{} [{}]",
+                                capability.name.as_str(),
+                                daemon_capability_kind_label(&capability.kind)
+                            )
+                        })
+                        .collect(),
+                ),
+            )],
+        ),
+    ];
+    render_sections(
+        &format!("Daemon Projection · {}", projection.name),
+        &sections,
+        style,
+        if capabilities.is_empty() {
+            None
+        } else {
+            Some(render_named_daemon_capabilities(
+                "Capability Contracts",
+                &capabilities,
+                style,
+            ))
+        },
+    )
+}
+
 fn render_named_daemon_capabilities(
     title: &str,
     capabilities: &[DaemonCapabilityDescriptor],
@@ -649,6 +814,13 @@ fn perf_call_graph_label(mode: PerfCallGraphMode) -> String {
         PerfCallGraphMode::FramePointer => "frame_pointer".to_string(),
         PerfCallGraphMode::Dwarf => "dwarf".to_string(),
         PerfCallGraphMode::Lbr => "lbr".to_string(),
+    }
+}
+
+fn daemon_projection_kind_label(kind: DaemonProjectionKind) -> &'static str {
+    match kind {
+        DaemonProjectionKind::Discovery => "discovery",
+        DaemonProjectionKind::Invocation => "invocation",
     }
 }
 
@@ -1377,9 +1549,13 @@ fn tool_origin_label(origin: &ToolOrigin) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputStyle, render_daemon_capabilities, render_daemon_status, render_doctor_report,
+        OutputStyle, render_daemon_capabilities, render_daemon_projection_detail,
+        render_daemon_projection_list, render_daemon_status, render_doctor_report,
         render_perf_collection, render_sched_collection, render_session_export_artifact,
         render_session_list, render_skill_list, render_tool_list,
+    };
+    use crate::daemon_projection::{
+        DaemonProjectionDescriptor, DaemonProjectionKind, expected_daemon_projections,
     };
     use crate::daemon_protocol::{
         DaemonCapabilityDescriptor, DaemonCapabilityKind, DaemonCapabilityName, DaemonSelectorKind,
@@ -1501,6 +1677,37 @@ mod tests {
         assert!(rendered.contains("Daemon Capabilities (1)"));
         assert!(rendered.contains("scheduler_trace_capture"));
         assert!(rendered.contains("selectors: pid, cgroup"));
+    }
+
+    #[test]
+    fn renders_daemon_projection_list_plain_view() {
+        let rendered =
+            render_daemon_projection_list(&expected_daemon_projections(), OutputStyle::Plain);
+        assert!(rendered.contains("Daemon Projections"));
+        assert!(rendered.contains("collect-perf"));
+        assert!(rendered.contains("capabilities: perf_stat_capture, perf_record_capture"));
+    }
+
+    #[test]
+    fn renders_daemon_projection_detail_with_capability_contracts() {
+        let rendered = render_daemon_projection_detail(
+            &DaemonProjectionDescriptor {
+                name: "collect-sched",
+                kind: DaemonProjectionKind::Invocation,
+                summary: "trace",
+                capabilities: vec![DaemonCapabilityName::SchedulerTraceCapture],
+                selectors: vec![DaemonSelectorKind::Pid, DaemonSelectorKind::Cgroup],
+                examples: vec!["sched-claw daemon collect-sched --pid 42 --duration-ms 1000"],
+            },
+            OutputStyle::Plain,
+        );
+        assert!(rendered.contains("Daemon Projection · collect-sched"));
+        assert!(
+            rendered
+                .contains("Examples: sched-claw daemon collect-sched --pid 42 --duration-ms 1000")
+        );
+        assert!(rendered.contains("Capability Contracts"));
+        assert!(rendered.contains("scheduler_trace_capture"));
     }
 
     #[test]

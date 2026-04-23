@@ -83,7 +83,9 @@ belongs in skill scripts, not in more host-side workflow crates.
     - `sched-claw export-events last artifacts/session.jsonl`
     - `sched-claw resume last "continue from the prior analysis"`
   - `sched-claw daemon status --style table`
+  - `sched-claw daemon list --style table`
   - `sched-claw daemon capabilities --style table`
+  - `sched-claw daemon show activate --style plain`
   - `sched-claw daemon show perf_record_capture --style plain`
   - `sched-claw daemon collect-perf --pid 4242 --duration-ms 1000 --output-dir artifacts/perf-a`
   - `sched-claw daemon collect-sched --pid 4242 --duration-ms 1000 --output-dir artifacts/sched-a`
@@ -104,6 +106,9 @@ belongs in skill scripts, not in more host-side workflow crates.
   - the canonical capability catalog lives in `daemon-protocol`, and `doctor`
     reports both the expected host contract and the daemon's advertised
     capability set so version skew is visible
+  - the host-side operator wrappers are now projected from a local catalog as
+    well, so `daemon list` and `daemon show <name>` stay aligned with the same
+    capability contract instead of repeating ad-hoc wrapper descriptions
 
 ## Skills
 
@@ -166,7 +171,9 @@ The style switch applies to:
 - `sched-claw skill list`
 - `sched-claw skill show <name>`
 - `sched-claw daemon status`
+- `sched-claw daemon list`
 - `sched-claw daemon activate ...`
+- `sched-claw daemon show <name>`
 - `sched-claw daemon logs`
 - `sched-claw daemon stop`
 
