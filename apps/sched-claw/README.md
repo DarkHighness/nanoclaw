@@ -107,7 +107,7 @@ belongs in skill scripts, not in more host-side workflow crates.
     reports both the expected host contract and the daemon's advertised
     capability set so version skew is visible
   - the host-side operator wrappers are now projected from a local catalog as
-    well, so `daemon list` and `daemon show <name>` stay aligned with the same
+    well, so `daemon list` and `daemon show <projection|capability>` stay aligned with the same
     capability contract instead of repeating ad-hoc wrapper descriptions
 
 ## Skills
@@ -173,7 +173,7 @@ The style switch applies to:
 - `sched-claw daemon status`
 - `sched-claw daemon list`
 - `sched-claw daemon activate ...`
-- `sched-claw daemon show <name>`
+- `sched-claw daemon show <projection|capability>`
 - `sched-claw daemon logs`
 - `sched-claw daemon stop`
 

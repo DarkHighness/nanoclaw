@@ -3,7 +3,10 @@ use clap::{Args, Parser, Subcommand};
 use sched_claw::app_config::{CliOverrides, SchedClawConfig};
 use sched_claw::bootstrap::load_bootstrap;
 use sched_claw::daemon_client::SchedClawDaemonClient;
-use sched_claw::daemon_projection::{expected_daemon_projections, find_daemon_projection};
+use sched_claw::daemon_projection::{
+    DaemonProjectionName, expected_daemon_projections, find_expected_daemon_projection,
+    parse_daemon_projection_name,
+};
 use sched_claw::daemon_protocol::{
     DaemonCapabilityInvocation, DaemonCapabilityName, PerfCallGraphMode, PerfCollectionMode,
     PerfTargetSelector, SchedClawDaemonRequest, SchedClawDaemonResponse,
@@ -184,10 +187,19 @@ enum DaemonCommand {
     Stop(DaemonStopArgs),
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum DaemonShowTarget {
+    Projection(DaemonProjectionName),
+    Capability(DaemonCapabilityName),
+}
+
 #[derive(Debug, Args)]
 struct DaemonShowArgs {
-    #[arg(value_name = "NAME")]
-    name: String,
+    // One inspection entrypoint intentionally spans both the host-side wrapper
+    // catalog and the daemon capability contract so operators can inspect the
+    // ergonomic command surface and the privileged boundary together.
+    #[arg(value_name = "NAME", value_parser = parse_daemon_show_target)]
+    name: DaemonShowTarget,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -506,30 +518,26 @@ async fn run_daemon_command(
         DaemonCommand::Capabilities(output) => {
             (SchedClawDaemonRequest::Capabilities {}, output.style)
         }
-        DaemonCommand::Show(args) => {
-            if let Some(projection) = find_daemon_projection(&args.name) {
+        DaemonCommand::Show(args) => match args.name {
+            DaemonShowTarget::Projection(name) => {
+                let projection = find_expected_daemon_projection(name)
+                    .with_context(|| format!("unknown daemon projection `{}`", name.as_str()))?;
                 println!(
                     "{}",
                     render_daemon_projection_detail(&projection, args.output.style)
                 );
                 return Ok(());
             }
-            let capability_name = parse_daemon_capability_name(&args.name).with_context(|| {
-                format!(
-                    "unknown daemon projection or capability `{}`",
-                    args.name.trim()
-                )
-            })?;
-            let descriptor =
-                find_expected_daemon_capability(capability_name).with_context(|| {
-                    format!("unknown daemon capability `{}`", capability_name.as_str())
-                })?;
-            println!(
-                "{}",
-                render_daemon_capability_detail(&descriptor, args.output.style)
-            );
-            return Ok(());
-        }
+            DaemonShowTarget::Capability(name) => {
+                let descriptor = find_expected_daemon_capability(name)
+                    .with_context(|| format!("unknown daemon capability `{}`", name.as_str()))?;
+                println!(
+                    "{}",
+                    render_daemon_capability_detail(&descriptor, args.output.style)
+                );
+                return Ok(());
+            }
+        },
         DaemonCommand::Status(output) => (SchedClawDaemonRequest::Status {}, output.style),
         DaemonCommand::Activate(args) => (
             SchedClawDaemonRequest::Invoke {
@@ -626,6 +634,15 @@ fn parse_daemon_capability_name(value: &str) -> Result<DaemonCapabilityName> {
     }
 }
 
+fn parse_daemon_show_target(value: &str) -> Result<DaemonShowTarget> {
+    if let Some(name) = parse_daemon_projection_name(value) {
+        return Ok(DaemonShowTarget::Projection(name));
+    }
+    Ok(DaemonShowTarget::Capability(parse_daemon_capability_name(
+        value,
+    )?))
+}
+
 fn join_prompt(parts: Vec<String>) -> Result<String> {
     let prompt = parts.join(" ");
     if prompt.trim().is_empty() {
@@ -713,8 +730,10 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, DaemonCommand};
+    use super::{Cli, Command, DaemonCommand, DaemonShowTarget};
     use clap::Parser;
+    use sched_claw::daemon_projection::DaemonProjectionName;
+    use sched_claw::daemon_protocol::DaemonCapabilityName;
 
     #[test]
     fn parses_sessions_query_with_style_after_query() {
@@ -875,7 +894,10 @@ mod tests {
         match cli.command {
             Some(Command::Daemon(args)) => match args.command {
                 DaemonCommand::Show(args) => {
-                    assert_eq!(args.name, "perf_record_capture");
+                    assert_eq!(
+                        args.name,
+                        DaemonShowTarget::Capability(DaemonCapabilityName::PerfRecordCapture)
+                    );
                     assert_eq!(args.output.style.as_str(), "plain");
                 }
                 other => panic!("expected show command, got {other:?}"),
@@ -898,7 +920,10 @@ mod tests {
         match cli.command {
             Some(Command::Daemon(args)) => match args.command {
                 DaemonCommand::Show(args) => {
-                    assert_eq!(args.name, "activate");
+                    assert_eq!(
+                        args.name,
+                        DaemonShowTarget::Projection(DaemonProjectionName::Activate)
+                    );
                     assert_eq!(args.output.style.as_str(), "plain");
                 }
                 other => panic!("expected show command, got {other:?}"),

@@ -3,6 +3,32 @@ use crate::daemon_protocol::{
     find_expected_daemon_capability,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum DaemonProjectionName {
+    Status,
+    Capabilities,
+    Logs,
+    Activate,
+    Stop,
+    CollectPerf,
+    CollectSched,
+}
+
+impl DaemonProjectionName {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Capabilities => "capabilities",
+            Self::Logs => "logs",
+            Self::Activate => "activate",
+            Self::Stop => "stop",
+            Self::CollectPerf => "collect-perf",
+            Self::CollectSched => "collect-sched",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DaemonProjectionKind {
     Discovery,
@@ -21,7 +47,7 @@ impl DaemonProjectionKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DaemonProjectionDescriptor {
-    pub name: &'static str,
+    pub name: DaemonProjectionName,
     pub kind: DaemonProjectionKind,
     pub summary: &'static str,
     pub capabilities: Vec<DaemonCapabilityName>,
@@ -33,7 +59,7 @@ pub struct DaemonProjectionDescriptor {
 pub fn expected_daemon_projections() -> Vec<DaemonProjectionDescriptor> {
     vec![
         DaemonProjectionDescriptor {
-            name: "status",
+            name: DaemonProjectionName::Status,
             kind: DaemonProjectionKind::Discovery,
             summary: "Read the current daemon status snapshot without mutating the active rollout.",
             capabilities: Vec::new(),
@@ -41,7 +67,7 @@ pub fn expected_daemon_projections() -> Vec<DaemonProjectionDescriptor> {
             examples: vec!["sched-claw daemon status --style table"],
         },
         DaemonProjectionDescriptor {
-            name: "capabilities",
+            name: DaemonProjectionName::Capabilities,
             kind: DaemonProjectionKind::Discovery,
             summary: "Read the daemon advertised capability catalog from the live root daemon.",
             capabilities: Vec::new(),
@@ -49,7 +75,7 @@ pub fn expected_daemon_projections() -> Vec<DaemonProjectionDescriptor> {
             examples: vec!["sched-claw daemon capabilities --style plain"],
         },
         DaemonProjectionDescriptor {
-            name: "logs",
+            name: DaemonProjectionName::Logs,
             kind: DaemonProjectionKind::Discovery,
             summary: "Tail the active or last deployment logs from the privileged daemon.",
             capabilities: Vec::new(),
@@ -57,7 +83,7 @@ pub fn expected_daemon_projections() -> Vec<DaemonProjectionDescriptor> {
             examples: vec!["sched-claw daemon logs --tail-lines 50 --style plain"],
         },
         DaemonProjectionDescriptor {
-            name: "activate",
+            name: DaemonProjectionName::Activate,
             kind: DaemonProjectionKind::Invocation,
             summary: "Start a bounded sched-ext rollout through the deployment-control capability.",
             capabilities: vec![DaemonCapabilityName::DeploymentControl],
@@ -65,7 +91,7 @@ pub fn expected_daemon_projections() -> Vec<DaemonProjectionDescriptor> {
             examples: vec!["sched-claw daemon activate --lease-seconds 30 loader --flag"],
         },
         DaemonProjectionDescriptor {
-            name: "stop",
+            name: DaemonProjectionName::Stop,
             kind: DaemonProjectionKind::Invocation,
             summary: "Stop the active bounded sched-ext rollout through the deployment-control capability.",
             capabilities: vec![DaemonCapabilityName::DeploymentControl],
@@ -73,7 +99,7 @@ pub fn expected_daemon_projections() -> Vec<DaemonProjectionDescriptor> {
             examples: vec!["sched-claw daemon stop --graceful-timeout-ms 2000"],
         },
         DaemonProjectionDescriptor {
-            name: "collect-perf",
+            name: DaemonProjectionName::CollectPerf,
             kind: DaemonProjectionKind::Invocation,
             summary: "Run bounded perf stat or perf record capture through the structured perf capabilities.",
             capabilities: vec![
@@ -90,7 +116,7 @@ pub fn expected_daemon_projections() -> Vec<DaemonProjectionDescriptor> {
             ],
         },
         DaemonProjectionDescriptor {
-            name: "collect-sched",
+            name: DaemonProjectionName::CollectSched,
             kind: DaemonProjectionKind::Invocation,
             summary: "Run bounded scheduler trace capture through the scheduler-trace capability.",
             capabilities: vec![DaemonCapabilityName::SchedulerTraceCapture],
@@ -103,14 +129,26 @@ pub fn expected_daemon_projections() -> Vec<DaemonProjectionDescriptor> {
 }
 
 #[must_use]
-pub fn find_daemon_projection(query: &str) -> Option<DaemonProjectionDescriptor> {
-    let normalized = query.trim();
-    if normalized.is_empty() {
-        return None;
-    }
+pub fn find_expected_daemon_projection(
+    name: DaemonProjectionName,
+) -> Option<DaemonProjectionDescriptor> {
     expected_daemon_projections()
         .into_iter()
-        .find(|projection| projection.name == normalized)
+        .find(|projection| projection.name == name)
+}
+
+#[must_use]
+pub fn parse_daemon_projection_name(query: &str) -> Option<DaemonProjectionName> {
+    match query.trim() {
+        "status" => Some(DaemonProjectionName::Status),
+        "capabilities" => Some(DaemonProjectionName::Capabilities),
+        "logs" => Some(DaemonProjectionName::Logs),
+        "activate" => Some(DaemonProjectionName::Activate),
+        "stop" => Some(DaemonProjectionName::Stop),
+        "collect-perf" => Some(DaemonProjectionName::CollectPerf),
+        "collect-sched" => Some(DaemonProjectionName::CollectSched),
+        _ => None,
+    }
 }
 
 fn selectors_for_capabilities(capabilities: &[DaemonCapabilityName]) -> Vec<DaemonSelectorKind> {
@@ -141,14 +179,16 @@ pub fn find_projection_capabilities(
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonProjectionKind, expected_daemon_projections, find_daemon_projection,
-        find_projection_capabilities,
+        DaemonProjectionKind, DaemonProjectionName, expected_daemon_projections,
+        find_expected_daemon_projection, find_projection_capabilities,
+        parse_daemon_projection_name,
     };
     use crate::daemon_protocol::DaemonCapabilityName;
 
     #[test]
     fn projection_catalog_contains_collect_perf_mapping() {
-        let projection = find_daemon_projection("collect-perf").expect("collect-perf projection");
+        let projection = find_expected_daemon_projection(DaemonProjectionName::CollectPerf)
+            .expect("collect-perf projection");
         assert_eq!(projection.kind, DaemonProjectionKind::Invocation);
         assert_eq!(
             projection.capabilities,
@@ -162,7 +202,8 @@ mod tests {
 
     #[test]
     fn projection_capabilities_expand_from_catalog() {
-        let projection = find_daemon_projection("collect-sched").expect("collect-sched projection");
+        let projection = find_expected_daemon_projection(DaemonProjectionName::CollectSched)
+            .expect("collect-sched projection");
         let capabilities = find_projection_capabilities(&projection);
         assert_eq!(capabilities.len(), 1);
         assert_eq!(
@@ -172,22 +213,31 @@ mod tests {
     }
 
     #[test]
+    fn parses_projection_names() {
+        assert_eq!(
+            parse_daemon_projection_name("collect-perf"),
+            Some(DaemonProjectionName::CollectPerf)
+        );
+        assert_eq!(parse_daemon_projection_name("unknown"), None);
+    }
+
+    #[test]
     fn projection_catalog_is_stable_and_small() {
         let projections = expected_daemon_projections();
         assert!(
             projections
                 .iter()
-                .any(|projection| projection.name == "status")
+                .any(|projection| projection.name == DaemonProjectionName::Status)
         );
         assert!(
             projections
                 .iter()
-                .any(|projection| projection.name == "activate")
+                .any(|projection| projection.name == DaemonProjectionName::Activate)
         );
         assert!(
             projections
                 .iter()
-                .any(|projection| projection.name == "collect-perf")
+                .any(|projection| projection.name == DaemonProjectionName::CollectPerf)
         );
     }
 }

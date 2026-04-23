@@ -394,7 +394,7 @@ pub fn render_daemon_projection_list(
                 .iter()
                 .map(|projection| {
                     vec![
-                        projection.name.to_string(),
+                        projection.name.as_str().to_string(),
                         daemon_projection_kind_label(projection.kind).to_string(),
                         join_or_none(
                             projection
@@ -423,7 +423,7 @@ pub fn render_daemon_projection_list(
                 let _ = writeln!(
                     &mut out,
                     "- {} [{}]",
-                    projection.name,
+                    projection.name.as_str(),
                     daemon_projection_kind_label(projection.kind)
                 );
                 let _ = writeln!(&mut out, "  {}", projection.summary);
@@ -465,7 +465,7 @@ pub fn render_daemon_projection_detail(
         (
             "Overview",
             vec![
-                ("Name".to_string(), projection.name.to_string()),
+                ("Name".to_string(), projection.name.as_str().to_string()),
                 (
                     "Kind".to_string(),
                     daemon_projection_kind_label(projection.kind).to_string(),
@@ -529,7 +529,7 @@ pub fn render_daemon_projection_detail(
         ),
     ];
     render_sections(
-        &format!("Daemon Projection · {}", projection.name),
+        &format!("Daemon Projection · {}", projection.name.as_str()),
         &sections,
         style,
         if capabilities.is_empty() {
@@ -1692,7 +1692,7 @@ mod tests {
     fn renders_daemon_projection_detail_with_capability_contracts() {
         let rendered = render_daemon_projection_detail(
             &DaemonProjectionDescriptor {
-                name: "collect-sched",
+                name: crate::daemon_projection::DaemonProjectionName::CollectSched,
                 kind: DaemonProjectionKind::Invocation,
                 summary: "trace",
                 capabilities: vec![DaemonCapabilityName::SchedulerTraceCapture],
