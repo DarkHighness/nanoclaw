@@ -3204,9 +3204,10 @@ dependencies = [
  "code-agent-backend",
  "include_dir",
  "nanoclaw-config",
- "nix",
+ "sched-claw-daemon-core",
  "sched-claw-daemon-protocol",
  "sched-claw-domain",
+ "sched-claw-execution",
  "schemars",
  "serde",
  "serde_json",
@@ -3217,6 +3218,19 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "sched-claw-daemon-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nix",
+ "sched-claw-daemon-protocol",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3235,6 +3249,18 @@ dependencies = [
  "serde",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "sched-claw-execution"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "sched-claw-daemon-protocol",
+ "sched-claw-domain",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

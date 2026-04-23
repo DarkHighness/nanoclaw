@@ -10,14 +10,15 @@ agent = { path = "../../crates/core", features = ["agentic-tools", "web-tools"] 
 agent-env = { path = "../../crates/env" }
 code-agent-backend = { path = "../code-agent/crates/backend", default-features = false }
 nanoclaw-config = { path = "../../crates/config" }
+sched-claw-daemon-core = { path = "crates/daemon-core" }
 sched-claw-daemon-protocol = { path = "crates/daemon-protocol" }
 sched-claw-domain = { path = "crates/domain" }
+sched-claw-execution = { path = "crates/execution" }
 store = { path = "../../crates/store" }
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 clap = { version = "4.5.38", features = ["derive"] }
 include_dir = "0.7.4"
-nix = { version = "0.31.2", features = ["fs", "signal", "user"] }
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

@@ -6,8 +6,10 @@ members = [
     "code-agent/crates/config",
     "code-agent/crates/contracts",
     "code-agent/crates/tui",
+    "sched-claw/crates/daemon-core",
     "sched-claw/crates/daemon-protocol",
     "sched-claw/crates/domain",
+    "sched-claw/crates/execution",
     "sched-claw",
 ]
 resolver = "2"

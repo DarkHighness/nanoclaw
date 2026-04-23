@@ -29,11 +29,14 @@ pub struct MaterializedTemplate {
     pub applied_knobs: BTreeMap<String, String>,
 }
 
-const DSQ_LOCALITY_SOURCE: &str = include_str!("../templates/sched_ext/dsq_locality.bpf.c.tmpl");
-const LATENCY_GUARD_SOURCE: &str = include_str!("../templates/sched_ext/latency_guard.bpf.c.tmpl");
+const DSQ_LOCALITY_SOURCE: &str =
+    include_str!("../../../templates/sched_ext/dsq_locality.bpf.c.tmpl");
+const LATENCY_GUARD_SOURCE: &str =
+    include_str!("../../../templates/sched_ext/latency_guard.bpf.c.tmpl");
 const BALANCED_QUEUE_SOURCE: &str =
-    include_str!("../templates/sched_ext/balanced_queue.bpf.c.tmpl");
-const CGROUP_LANE_SOURCE: &str = include_str!("../templates/sched_ext/cgroup_lane.bpf.c.tmpl");
+    include_str!("../../../templates/sched_ext/balanced_queue.bpf.c.tmpl");
+const CGROUP_LANE_SOURCE: &str =
+    include_str!("../../../templates/sched_ext/cgroup_lane.bpf.c.tmpl");
 
 const DSQ_LOCALITY_KNOBS: &[TemplateKnobSpec] = &[
     TemplateKnobSpec {

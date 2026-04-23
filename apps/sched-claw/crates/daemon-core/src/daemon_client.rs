@@ -1,12 +1,18 @@
-use crate::app_config::DaemonClientConfig;
 use crate::daemon_protocol::{
     DEFAULT_LOG_TAIL_LINES, DaemonLogsSnapshot, DaemonStatusSnapshot, SchedExtDaemonRequest,
     SchedExtDaemonResponse,
 };
 use anyhow::{Context, Result, bail};
+use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::{Duration, timeout};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DaemonClientConfig {
+    pub socket_path: PathBuf,
+    pub request_timeout_ms: u64,
+}
 
 #[derive(Clone, Debug)]
 pub struct SchedExtDaemonClient {

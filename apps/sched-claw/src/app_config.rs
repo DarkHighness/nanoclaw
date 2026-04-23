@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+pub use sched_claw_daemon_core::daemon_client::DaemonClientConfig;
 pub use sched_claw_domain::paths::{APP_NAME, app_state_dir};
 const DEFAULT_DAEMON_TIMEOUT_MS: u64 = 30_000;
 const MAX_DAEMON_TIMEOUT_MS: u64 = 5 * 60_000;
@@ -15,12 +16,6 @@ pub struct CliOverrides {
     pub skill_roots: Vec<PathBuf>,
     pub daemon_socket: Option<PathBuf>,
     pub sandbox_fail_if_unavailable: Option<bool>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DaemonClientConfig {
-    pub socket_path: PathBuf,
-    pub request_timeout_ms: u64,
 }
 
 #[derive(Clone, Debug)]

@@ -36,13 +36,20 @@ The `sched-claw` app is no longer a single monolithic crate.
 - `apps/sched-claw/crates/daemon-protocol`
   - owns the daemon request/response contract only
   - keeps the privileged boundary reusable by the CLI, daemon server, and tool adapter
+- `apps/sched-claw/crates/execution`
+  - owns sched-ext template materialization, build capture, rollout planning, and workload run capture
+  - stays focused on execution artifacts and experiment-facing state transitions instead of CLI or REPL policy
+- `apps/sched-claw/crates/daemon-core`
+  - owns daemon client and server transport plus privileged process lifecycle enforcement
+  - keeps Unix-socket I/O and rollout safety checks out of the host composition crate
 - `apps/sched-claw`
   - remains the host composition crate
-  - owns bootstrap, CLI, REPL, display, daemon client/server, skill materialization, and operator surfaces
+  - owns bootstrap, CLI, REPL, display, doctor surfaces, skill materialization, and operator-facing composition
 
-The intent is to keep pure domain code and daemon contracts stable while the
-host crate continues to evolve. Richer trial analysis or custom comparison
-logic belongs in skill scripts, not in the domain crate or the host runtime.
+The intent is to keep pure domain code, execution substrate, and daemon
+contracts stable while the host crate continues to evolve. Richer trial
+analysis or custom comparison logic belongs in skill scripts, not in the
+domain crate, execution crate, or host runtime.
 
 ## Runtime shape
 
