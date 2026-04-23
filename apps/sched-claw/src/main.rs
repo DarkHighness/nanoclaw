@@ -3,20 +3,18 @@ use clap::{Args, Parser, Subcommand};
 use sched_claw::app_config::{CliOverrides, SchedClawConfig};
 use sched_claw::bootstrap::load_bootstrap;
 use sched_claw::daemon_client::SchedClawDaemonClient;
-use sched_claw::daemon_projection::{
-    DaemonInspectionTarget, expected_daemon_projections, find_expected_daemon_projection,
-    parse_daemon_inspection_target,
+use sched_claw::daemon_inspection::{
+    render_daemon_inspection_target, render_daemon_projection_catalog,
 };
+use sched_claw::daemon_projection::{DaemonInspectionTarget, parse_daemon_inspection_target};
 use sched_claw::daemon_protocol::{
     DaemonCapabilityInvocation, PerfCallGraphMode, PerfCollectionMode, PerfTargetSelector,
-    SchedClawDaemonRequest, SchedClawDaemonResponse, find_expected_daemon_capability,
+    SchedClawDaemonRequest, SchedClawDaemonResponse,
 };
 use sched_claw::display::{
-    OutputStyle, render_daemon_capability_detail, render_daemon_projection_detail,
-    render_daemon_projection_list, render_daemon_response, render_doctor_report,
-    render_session_detail, render_session_export_artifact, render_session_list,
-    render_session_search_results, render_skill_detail, render_skill_list, render_tool_detail,
-    render_tool_list,
+    OutputStyle, render_daemon_response, render_doctor_report, render_session_detail,
+    render_session_export_artifact, render_session_list, render_session_search_results,
+    render_skill_detail, render_skill_list, render_tool_detail, render_tool_list,
 };
 use sched_claw::doctor::collect_doctor_report;
 use sched_claw::history::SessionHistory;
@@ -502,31 +500,17 @@ async fn run_daemon_command(
     );
     let (request, style) = match args.command {
         DaemonCommand::List(output) => {
-            println!(
-                "{}",
-                render_daemon_projection_list(&expected_daemon_projections(), output.style)
-            );
+            println!("{}", render_daemon_projection_catalog(output.style));
             return Ok(());
         }
         DaemonCommand::Capabilities(output) => {
             (SchedClawDaemonRequest::Capabilities {}, output.style)
         }
         DaemonCommand::Show(args) => match args.name {
-            DaemonInspectionTarget::Projection(name) => {
-                let projection = find_expected_daemon_projection(name)
-                    .with_context(|| format!("unknown daemon projection `{}`", name.as_str()))?;
+            target => {
                 println!(
                     "{}",
-                    render_daemon_projection_detail(&projection, args.output.style)
-                );
-                return Ok(());
-            }
-            DaemonInspectionTarget::Capability(name) => {
-                let descriptor = find_expected_daemon_capability(name)
-                    .with_context(|| format!("unknown daemon capability `{}`", name.as_str()))?;
-                println!(
-                    "{}",
-                    render_daemon_capability_detail(&descriptor, args.output.style)
+                    render_daemon_inspection_target(target, args.output.style)?
                 );
                 return Ok(());
             }

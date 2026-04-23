@@ -109,6 +109,8 @@ belongs in skill scripts, not in more host-side workflow crates.
   - the host-side operator wrappers are now projected from a local catalog as
     well, so `daemon list` and `daemon show <projection|capability>` stay aligned with the same
     capability contract instead of repeating ad-hoc wrapper descriptions
+  - CLI and REPL local inspection now both reuse the same daemon inspection target
+    layer, so projection and capability lookup stay consistent across both surfaces
 
 ## Skills
 

@@ -4,16 +4,13 @@ use std::io::{self, Write};
 
 use crate::app_config::CliOverrides;
 use crate::bootstrap::BuiltRuntime;
-use crate::daemon_projection::{
-    DaemonInspectionTarget, expected_daemon_projections, find_expected_daemon_projection,
-    parse_daemon_inspection_target,
-};
-use crate::daemon_protocol::{SchedClawDaemonRequest, find_expected_daemon_capability};
+use crate::daemon_inspection::{render_daemon_inspection_target, render_daemon_projection_catalog};
+use crate::daemon_projection::{DaemonInspectionTarget, parse_daemon_inspection_target};
+use crate::daemon_protocol::SchedClawDaemonRequest;
 use crate::display::{
-    OutputStyle, render_daemon_capability_detail, render_daemon_projection_detail,
-    render_daemon_projection_list, render_daemon_response, render_doctor_report,
-    render_session_detail, render_session_list, render_session_search_results, render_skill_detail,
-    render_skill_list, render_tool_detail, render_tool_list,
+    OutputStyle, render_daemon_response, render_doctor_report, render_session_detail,
+    render_session_list, render_session_search_results, render_skill_detail, render_skill_list,
+    render_tool_detail, render_tool_list,
 };
 use crate::doctor::collect_doctor_report;
 use crate::history::SessionHistory;
@@ -33,135 +30,20 @@ pub async fn run_repl(host: &mut BuiltRuntime, mut output_style: OutputStyle) ->
             println!();
             break;
         }
-        match parse_repl_command(&line)? {
-            ReplCommand::Quit => break,
-            ReplCommand::Help => {
-                println!("Type a normal prompt to run a turn.");
-                println!(":format <table|plain>  switch local inspection output style");
-                println!(":doctor                inspect host readiness for sched-claw");
-                println!(":tools                 show the startup tool surface");
-                println!(":tool <name>           inspect one tool from the startup catalog");
-                println!(":skills                show available skills");
-                println!(":skill <name>          inspect one skill from the startup catalog");
-                println!(":sessions [query]      list persisted sessions or search them");
-                println!(":session <id>          inspect one persisted session");
-                println!(":resume <id>           attach the repl to a persisted session");
-                println!(":daemon list           inspect the local daemon wrapper catalog");
-                println!(":daemon show <name>    inspect one daemon projection or capability");
-                println!(":daemon status         inspect the privileged daemon snapshot");
-                println!(":daemon capabilities   inspect the live daemon capability set");
-                println!(":daemon logs [N]       inspect daemon logs with an optional tail size");
-                println!(":quit                  exit the repl");
+        let command = match parse_repl_command(&line) {
+            Ok(command) => command,
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                continue;
             }
-            ReplCommand::SetFormat(style) => {
-                output_style = style;
-                println!("output format: {}", output_style.as_str());
-            }
-            ReplCommand::Doctor => {
-                let report = collect_doctor_report(&host.workspace_root, &host.config).await?;
-                println!("{}", render_doctor_report(&report, output_style));
-            }
-            ReplCommand::Tools => {
-                println!(
-                    "{}",
-                    render_tool_list(host.startup_catalog.tool_specs(), output_style)
-                );
-            }
-            ReplCommand::ToolShow(name) => {
-                let spec = host
-                    .startup_catalog
-                    .resolve_tool(&name)
-                    .ok_or_else(|| anyhow::anyhow!("unknown tool `{name}`"))?;
-                println!("{}", render_tool_detail(spec, output_style));
-            }
-            ReplCommand::Skills => {
-                println!(
-                    "{}",
-                    render_skill_list(host.startup_catalog.skills(), output_style)
-                );
-            }
-            ReplCommand::SkillShow(name) => {
-                let skill = host
-                    .startup_catalog
-                    .resolve_skill(&name)
-                    .ok_or_else(|| anyhow::anyhow!("unknown skill `{name}`"))?;
-                println!("{}", render_skill_detail(skill, output_style));
-            }
-            ReplCommand::Sessions { query } => {
-                let history = open_history(host).await?;
-                if let Some(query) = query {
-                    let results = history.search_sessions(&query).await?;
-                    println!("{}", render_session_search_results(&results, output_style));
-                } else {
-                    let sessions = history.list_sessions().await?;
-                    println!("{}", render_session_list(&sessions, output_style));
-                }
-            }
-            ReplCommand::SessionShow(session_ref) => {
-                let history = open_history(host).await?;
-                let detail = history.load_session(&session_ref).await?;
-                println!("{}", render_session_detail(&detail, output_style));
-            }
-            ReplCommand::Resume(session_ref) => {
-                let history = open_history(host).await?;
-                let (summary, runtime_session) =
-                    history.load_resumable_session(&session_ref).await?;
-                host.runtime.resume_session(runtime_session).await?;
-                println!("resumed session {}", summary.session_id);
-            }
-            ReplCommand::DaemonList => {
-                println!(
-                    "{}",
-                    render_daemon_projection_list(&expected_daemon_projections(), output_style)
-                );
-            }
-            ReplCommand::DaemonShow(target) => match target {
-                DaemonInspectionTarget::Projection(name) => {
-                    let projection = find_expected_daemon_projection(name).ok_or_else(|| {
-                        anyhow::anyhow!("unknown daemon projection `{}`", name.as_str())
-                    })?;
-                    println!(
-                        "{}",
-                        render_daemon_projection_detail(&projection, output_style)
-                    );
-                }
-                DaemonInspectionTarget::Capability(name) => {
-                    let capability = find_expected_daemon_capability(name).ok_or_else(|| {
-                        anyhow::anyhow!("unknown daemon capability `{}`", name.as_str())
-                    })?;
-                    println!(
-                        "{}",
-                        render_daemon_capability_detail(&capability, output_style)
-                    );
-                }
-            },
-            ReplCommand::DaemonStatus => {
-                let response = host
-                    .daemon_client
-                    .send(&SchedClawDaemonRequest::Status {})
-                    .await?;
-                println!("{}", render_daemon_response(&response, output_style));
-            }
-            ReplCommand::DaemonCapabilities => {
-                let response = host
-                    .daemon_client
-                    .send(&SchedClawDaemonRequest::Capabilities {})
-                    .await?;
-                println!("{}", render_daemon_response(&response, output_style));
-            }
-            ReplCommand::DaemonLogs { tail_lines } => {
-                let response = host
-                    .daemon_client
-                    .send(&SchedClawDaemonRequest::Logs { tail_lines })
-                    .await?;
-                println!("{}", render_daemon_response(&response, output_style));
-            }
-            ReplCommand::Prompt(prompt) => {
-                let mut observer = StreamingObserver::default();
-                host.runtime
-                    .run_user_prompt_with_observer(prompt, &mut observer)
-                    .await?;
-                observer.finish()?;
+        };
+        match execute_repl_command(host, command, &mut output_style).await {
+            Ok(ReplControlFlow::Continue) => {}
+            Ok(ReplControlFlow::Break) => break,
+            Err(error) => {
+                // Local inspection failures such as a missing daemon socket should
+                // not kill the whole REPL session; report and keep the shell alive.
+                eprintln!("Error: {error:#}");
             }
         }
     }
@@ -178,6 +60,133 @@ pub async fn run_exec(host: &mut BuiltRuntime, prompt: String) -> Result<()> {
 
 async fn open_history(host: &BuiltRuntime) -> Result<SessionHistory> {
     SessionHistory::open(&host.workspace_root, &CliOverrides::default()).await
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ReplControlFlow {
+    Continue,
+    Break,
+}
+
+async fn execute_repl_command(
+    host: &mut BuiltRuntime,
+    command: ReplCommand,
+    output_style: &mut OutputStyle,
+) -> Result<ReplControlFlow> {
+    match command {
+        ReplCommand::Quit => return Ok(ReplControlFlow::Break),
+        ReplCommand::Help => {
+            println!("Type a normal prompt to run a turn.");
+            println!(":format <table|plain>  switch local inspection output style");
+            println!(":doctor                inspect host readiness for sched-claw");
+            println!(":tools                 show the startup tool surface");
+            println!(":tool <name>           inspect one tool from the startup catalog");
+            println!(":skills                show available skills");
+            println!(":skill <name>          inspect one skill from the startup catalog");
+            println!(":sessions [query]      list persisted sessions or search them");
+            println!(":session <id>          inspect one persisted session");
+            println!(":resume <id>           attach the repl to a persisted session");
+            println!(":daemon list           inspect the local daemon wrapper catalog");
+            println!(":daemon show <name>    inspect one daemon projection or capability");
+            println!(":daemon status         inspect the privileged daemon snapshot");
+            println!(":daemon capabilities   inspect the live daemon capability set");
+            println!(":daemon logs [N]       inspect daemon logs with an optional tail size");
+            println!(":quit                  exit the repl");
+        }
+        ReplCommand::SetFormat(style) => {
+            *output_style = style;
+            println!("output format: {}", output_style.as_str());
+        }
+        ReplCommand::Doctor => {
+            let report = collect_doctor_report(&host.workspace_root, &host.config).await?;
+            println!("{}", render_doctor_report(&report, *output_style));
+        }
+        ReplCommand::Tools => {
+            println!(
+                "{}",
+                render_tool_list(host.startup_catalog.tool_specs(), *output_style)
+            );
+        }
+        ReplCommand::ToolShow(name) => {
+            let spec = host
+                .startup_catalog
+                .resolve_tool(&name)
+                .ok_or_else(|| anyhow::anyhow!("unknown tool `{name}`"))?;
+            println!("{}", render_tool_detail(spec, *output_style));
+        }
+        ReplCommand::Skills => {
+            println!(
+                "{}",
+                render_skill_list(host.startup_catalog.skills(), *output_style)
+            );
+        }
+        ReplCommand::SkillShow(name) => {
+            let skill = host
+                .startup_catalog
+                .resolve_skill(&name)
+                .ok_or_else(|| anyhow::anyhow!("unknown skill `{name}`"))?;
+            println!("{}", render_skill_detail(skill, *output_style));
+        }
+        ReplCommand::Sessions { query } => {
+            let history = open_history(host).await?;
+            if let Some(query) = query {
+                let results = history.search_sessions(&query).await?;
+                println!("{}", render_session_search_results(&results, *output_style));
+            } else {
+                let sessions = history.list_sessions().await?;
+                println!("{}", render_session_list(&sessions, *output_style));
+            }
+        }
+        ReplCommand::SessionShow(session_ref) => {
+            let history = open_history(host).await?;
+            let detail = history.load_session(&session_ref).await?;
+            println!("{}", render_session_detail(&detail, *output_style));
+        }
+        ReplCommand::Resume(session_ref) => {
+            let history = open_history(host).await?;
+            let (summary, runtime_session) = history.load_resumable_session(&session_ref).await?;
+            host.runtime.resume_session(runtime_session).await?;
+            println!("resumed session {}", summary.session_id);
+        }
+        ReplCommand::DaemonList => {
+            println!("{}", render_daemon_projection_catalog(*output_style));
+        }
+        ReplCommand::DaemonShow(target) => {
+            println!(
+                "{}",
+                render_daemon_inspection_target(target, *output_style)?
+            );
+        }
+        ReplCommand::DaemonStatus => {
+            let response = host
+                .daemon_client
+                .send(&SchedClawDaemonRequest::Status {})
+                .await?;
+            println!("{}", render_daemon_response(&response, *output_style));
+        }
+        ReplCommand::DaemonCapabilities => {
+            let response = host
+                .daemon_client
+                .send(&SchedClawDaemonRequest::Capabilities {})
+                .await?;
+            println!("{}", render_daemon_response(&response, *output_style));
+        }
+        ReplCommand::DaemonLogs { tail_lines } => {
+            let response = host
+                .daemon_client
+                .send(&SchedClawDaemonRequest::Logs { tail_lines })
+                .await?;
+            println!("{}", render_daemon_response(&response, *output_style));
+        }
+        ReplCommand::Prompt(prompt) => {
+            let mut observer = StreamingObserver::default();
+            host.runtime
+                .run_user_prompt_with_observer(prompt, &mut observer)
+                .await?;
+            observer.finish()?;
+        }
+    }
+    Ok(ReplControlFlow::Continue)
 }
 
 #[derive(Debug, PartialEq, Eq)]

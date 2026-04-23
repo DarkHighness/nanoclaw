@@ -1,6 +1,7 @@
 pub mod app_config;
 pub mod bootstrap;
 pub mod builtin_skills;
+pub mod daemon_inspection;
 pub mod daemon_projection;
 pub mod daemon_tool;
 pub mod display;
